@@ -44,13 +44,6 @@ $:
                 script:
                     - chmod +x /workspace/install_agents.sh
                     - /workspace/install_agents.sh
-              - name: 配置coscli
-                script:
-                    - coscli config set --secret_id ${TENCENT_SECRET_ID}  --secret_key ${TENCENT_SECRET_KEY}
-                    - coscli config add -b ${TENCENT_BUCKET} -r ${TENCENT_ENDPOINT}
-                    - echo "coscli配置完成"
-                    - echo "开始测试"
-                    - coscli ls cos://${TENCENT_BUCKET}
 
 main:
       push:
