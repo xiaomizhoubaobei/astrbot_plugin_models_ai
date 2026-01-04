@@ -13,6 +13,12 @@ jobs:
     # 任务名称
     name: Codeball
     steps:
+      # Harden Runner 安全加固
+      - name: Harden Runner
+        uses: step-security/harden-runner@c6295a65d1254861815972266d5933fd6e532bdf # v2.11.1
+        with:
+          egress-policy: audit
+
       # Codeball 步骤
       - name: Codeball
         # 使用 Codeball Action v2 版本

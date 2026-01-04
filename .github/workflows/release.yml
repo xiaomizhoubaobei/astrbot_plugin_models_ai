@@ -1,10 +1,11 @@
 name: Release Build
 
-# 触发条件：创建新的标签时触发
+# 触发条件：推送到 main 分支时触发或手动触发
 on:
   push:
-    tags:
-      - 'v*.*.*'  # 匹配版本号格式，如 v1.0.0
+    branches:
+      - main
+  workflow_dispatch:  # 允许手动触发
 
 jobs:
   build:
@@ -15,6 +16,12 @@ jobs:
       id-token: write  # REQUIRED for signing
 
     steps:
+      # 0. 安全加固
+      - name: Harden Runner
+        uses: step-security/harden-runner@c6295a65d1254861815972266d5933fd6e532bdf # v2.11.1
+        with:
+          egress-policy: audit
+
       # 1. 检出代码
       - name: Checkout code
         uses: actions/checkout@v4
@@ -31,10 +38,10 @@ jobs:
       - name: Get version
         id: get_version
         run: |
-          # 从标签名中提取版本号（去掉 v 前缀）
-          VERSION=${GITHUB_REF#refs/tags/v}
+          # 从 metadata.yaml 文件中读取版本号
+          VERSION=$(grep "^version:" metadata.yaml | awk '{print $2}')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          echo "tag_name=v$VERSION" >> $GITHUB_OUTPUT
 
       # 4. 安装依赖
       - name: Install dependencies
