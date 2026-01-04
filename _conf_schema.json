@@ -1,0 +1,39 @@
+{
+    "api_key": {
+        "description": "API 密钥 (支持多 Key 轮询)",
+        "type": "list",
+        "hint": "Gitee AI API Key，支持配置多个 Key 以实现轮询调用",
+        "default": [],
+        "obvious_hint": true
+    },
+    "model": {
+        "description": "使用的模型名称",
+        "type": "string",
+        "default": "z-image-turbo",
+        "hint": "例如: z-image-turbo"
+    },
+    "size": {
+        "description": "图片大小",
+        "type": "string",
+        "default": "1024x1024",
+        "hint": "例如: 1024x1024"
+    },
+    "num_inference_steps": {
+        "description": "推理步数",
+        "type": "int",
+        "default": 9,
+        "hint": "推理步数，默认 9"
+    },
+    "negative_prompt": {
+        "description": "负面提示词",
+        "type": "string",
+        "default": "",
+        "hint": "用于指定不希望出现在生成图片中的内容"
+    },
+    "debug_mode": {
+        "description": "启用 Debug 日志",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后输出详细的 Debug 日志，便于调试和问题诊断"
+    }
+}
