@@ -102,7 +102,7 @@ class ImageManager:
 
         async with session.get(url) as resp:
             if resp.status != 200:
-                raise Exception(f"下载图片失败: HTTP {resp.status}")
+                raise RuntimeError(f"下载图片失败: HTTP {resp.status}")
             data = await resp.read()
 
         debug_log(f"图片下载完成: size={len(data)} bytes")
@@ -172,7 +172,7 @@ class ImageManager:
                         # 忽略删除失败的文件，可能是已被其他进程删除
                         pass
                 debug_log(f"清理完成: deleted={deleted_count}, kept={len(images) - deleted_count}")
-        except Exception as e:
+        except OSError as e:
             logger.warning(f"清理旧图片时出错: {e}")
             debug_log(f"清理旧图片失败: {e}")
 

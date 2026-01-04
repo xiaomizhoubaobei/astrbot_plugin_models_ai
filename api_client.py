@@ -68,7 +68,10 @@ class GiteeAIClient:
         self._generation_count = 0
         self._background_tasks: set[asyncio.Task[Any]] = set()
 
-        debug_log(f"初始化 Gitee AI 客户端: model={model}, size={default_size}, api_keys={len(api_keys)}, debug_mode={debug_mode}")
+        debug_log(
+            f"初始化 Gitee AI 客户端: model={model}, size={default_size}, "
+            f"api_keys={len(api_keys)}, debug_mode={debug_mode}"
+        )
 
     def _get_next_api_key(self) -> str:
         """轮询获取下一个 API Key
@@ -132,16 +135,15 @@ class GiteeAIClient:
             error_msg = str(e)
             debug_log(f"API 调用失败: {error_msg}")
             if "401" in error_msg:
-                raise Exception("API Key 无效或已过期，请检查配置。")
-            elif "429" in error_msg:
-                raise Exception("API 调用次数超限或并发过高，请稍后再试。")
-            elif "500" in error_msg:
-                raise Exception("Gitee AI 服务器内部错误，请稍后再试。")
-            else:
-                raise Exception(f"API调用失败: {error_msg}")
+                raise RuntimeError("API Key 无效或已过期，请检查配置。") from e
+            if "429" in error_msg:
+                raise RuntimeError("API 调用次数超限或并发过高，请稍后再试。") from e
+            if "500" in error_msg:
+                raise RuntimeError("Gitee AI 服务器内部错误，请稍后再试。") from e
+            raise RuntimeError(f"API调用失败: {error_msg}") from e
 
         if not response.data:  # type: ignore
-            raise Exception("生成图片失败：未返回数据")
+            raise RuntimeError("生成图片失败：未返回数据")
 
         image_data = response.data[0]  # type: ignore
 
@@ -154,7 +156,7 @@ class GiteeAIClient:
             debug_log("图片数据格式: Base64")
             filepath = await self.image_manager.save_base64_image(image_data.b64_json)
         else:
-            raise Exception("生成图片失败：未返回 URL 或 Base64 数据")
+            raise RuntimeError("生成图片失败：未返回 URL 或 Base64 数据")
 
         debug_log(f"图片保存成功: {filepath}")
 
@@ -166,7 +168,7 @@ class GiteeAIClient:
             task = asyncio.create_task(self.image_manager.cleanup_old_images())
             # 保存任务引用防止 GC 回收
             self._background_tasks.add(task)
-            task.add_done_callback(lambda t: self._background_tasks.discard(t))
+            task.add_done_callback(self._background_tasks.discard)
 
         return filepath
 

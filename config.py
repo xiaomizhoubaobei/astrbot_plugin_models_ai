@@ -48,6 +48,6 @@ def parse_api_keys(api_keys: Any) -> list[str]:
         if api_keys:
             return [k.strip() for k in api_keys.split(",") if k.strip()]
         return []
-    elif isinstance(api_keys, list):
+    if isinstance(api_keys, list):
         return [str(k).strip() for k in api_keys if str(k).strip()]
     return []

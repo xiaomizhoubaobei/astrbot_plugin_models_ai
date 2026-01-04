@@ -7,9 +7,10 @@ import time
 from typing import Any, AsyncGenerator
 
 from astrbot.api import logger
-from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.event import AstrMessageEvent, filter as filter_cmd
 from astrbot.api.message_components import Image, Plain
 from astrbot.api.star import Context, Star, register
+
 from .api_client import GiteeAIClient
 from .config import (
     DEFAULT_BASE_URL,
@@ -73,7 +74,10 @@ class GiteeAIImage(Star):
         num_inference_steps = config.get("num_inference_steps", DEFAULT_INFERENCE_STEPS)
         negative_prompt = config.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
 
-        debug_log(f"配置解析完成: model={model}, size={default_size}, api_keys_count={len(api_keys)}, debug_mode={DEBUG_MODE}")
+        debug_log(
+            f"配置解析完成: model={model}, size={default_size}, "
+            f"api_keys_count={len(api_keys)}, debug_mode={DEBUG_MODE}"
+        )
 
         # 初始化组件
         self.api_client = GiteeAIClient(
@@ -89,8 +93,10 @@ class GiteeAIImage(Star):
 
         debug_log("插件初始化完成")
 
-    @filter.command("ai-gitee")
-    async def generate_image_command(self, event: "AstrMessageEvent", prompt: str) -> AsyncGenerator[Any, None]:
+    @filter_cmd.command("ai-gitee")
+    async def generate_image_command(
+        self, event: "AstrMessageEvent", prompt: str
+    ) -> AsyncGenerator[Any, None]:
         """生成图片指令（命令行调用）
 
         通过命令行调用，支持指定图片比例。
@@ -158,7 +164,10 @@ class GiteeAIImage(Star):
             image_path = await self.api_client.generate_image(prompt, size=target_size)
             end_time = time.time()
             elapsed_time = end_time - start_time
-            debug_log(f"[命令] 图片生成成功: path={image_path},耗时={elapsed_time:.2f}秒")
+            debug_log(
+                f"[命令] 图片生成成功: path={image_path},"
+                f"耗时={elapsed_time:.2f}秒"
+            )
             # 将图片和耗时信息合并到一个消息中发送
             yield event.chain_result([
                 Image.fromFileSystem(image_path),  # type: ignore
@@ -173,7 +182,7 @@ class GiteeAIImage(Star):
             self.rate_limiter.remove_processing(request_id)
             debug_log(f"[命令] 处理完成: user_id={user_id}")
 
-    @filter.llm_tool(name="draw_image")
+    @filter_cmd.llm_tool(name="draw_image")
     async def draw(self, event: "AstrMessageEvent", prompt: str):
         """根据提示词生成图片。
 
@@ -204,7 +213,10 @@ class GiteeAIImage(Star):
             image_path = await self.api_client.generate_image(prompt)
             end_time = time.time()
             elapsed_time = end_time - start_time
-            debug_log(f"[LLM工具] 图片生成成功: path={image_path},耗时={elapsed_time:.2f}秒")
+            debug_log(
+                f"[LLM工具] 图片生成成功: path={image_path},"
+                f"耗时={elapsed_time:.2f}秒"
+            )
             # 将图片和耗时信息合并到一个消息中发送
             await event.send(event.chain_result([
                 Image.fromFileSystem(image_path),  # type: ignore
