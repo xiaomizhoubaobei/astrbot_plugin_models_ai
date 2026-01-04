@@ -1,0 +1,16 @@
+name: Check PR Sign Off
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  check-sign-off:
+    name: Check if commits are signed
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check PR sign off
+        uses: live627/check-pr-signoff-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
