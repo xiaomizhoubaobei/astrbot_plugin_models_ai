@@ -1,5 +1,9 @@
 # AstrBot AI 图像生成插件 （有免费额度）
 
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fxiaomizhoubaobei%2Fastrbot_plugin_models_ai.svg?type=shield&issueType=security)](https://app.fossa.com/projects/git%2Bgithub.com%2Fxiaomizhoubaobei%2Fastrbot_plugin_models_ai?ref=badge_shield&issueType=security)
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fxiaomizhoubaobei%2Fastrbot_plugin_models_ai.svg?type=large&issueType=license)](https://app.fossa.com/projects/git%2Bgithub.com%2Bxiaomizhoubaobei%2Fastrbot_plugin_models_ai?ref=badge_large&issueType=license)
+[![Built with Jules](https://img.shields.io/badge/Built%20with-Jules-715cd7?link=https://jules.google)](https://jules.google)
+
 > **当前版本**: v0.0.1
 
 本插件为 AstrBot 接入 Gitee AI 的图像生成能力，支持通过自然语言或指令调用，支持多 Key 轮询。

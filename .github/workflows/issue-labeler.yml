@@ -1,0 +1,28 @@
+# Issue 自动标签和指派工作流
+# 功能：根据 Issue 内容自动添加标签和分配人员
+name: Issue Labeler
+
+# 触发条件：当有新的 Issue 被打开或编辑时
+on:
+  issues:
+    types: [opened, edited, reopened]
+
+jobs:
+  labeler:
+    # 运行环境：最新版本的 Ubuntu
+    runs-on: ubuntu-latest
+    # 任务名称
+    name: Auto-label and assign issues
+    steps:
+      # 检出代码仓库
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 运行 tag-ur-it Action
+      - name: Tag-ur-it
+        uses: damccorm/tag-ur-it@master
+        with:
+          # GitHub Token，用于添加标签和分配人员
+          repo-token: "${{ secrets.GITHUB_TOKEN }}"
+          # Issue 规则配置文件路径
+          configuration-path: ".github/issue-rules.yml"

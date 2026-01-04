@@ -1,0 +1,119 @@
+name: Release Build
+
+# 触发条件：创建新的标签时触发
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # 匹配版本号格式，如 v1.0.0
+
+jobs:
+  build:
+    name: Build Release
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 检出代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 获取完整的 git 历史
+
+      # 2. 设置 Python 环境
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # 3. 获取版本号
+      - name: Get version
+        id: get_version
+        run: |
+          # 从标签名中提取版本号（去掉 v 前缀）
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag_name=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      # 4. 创建插件目录
+      - name: Create plugin directory
+        run: |
+          mkdir -p astrbot_plugin_models_ai
+
+      # 5. 复制插件文件到构建目录
+      - name: Copy plugin files
+        run: |
+          # 复制所有必要的插件文件
+          cp __init__.py astrbot_plugin_models_ai/
+          cp _conf_schema.json astrbot_plugin_models_ai/
+          cp api_client.py astrbot_plugin_models_ai/
+          cp client_manager.py astrbot_plugin_models_ai/
+          cp config.py astrbot_plugin_models_ai/
+          cp image_manager.py astrbot_plugin_models_ai/
+          cp main.py astrbot_plugin_models_ai/
+          cp metadata.yaml astrbot_plugin_models_ai/
+          cp rate_limiter.py astrbot_plugin_models_ai/
+          cp requirements.txt astrbot_plugin_models_ai/
+          cp LICENSE astrbot_plugin_models_ai/
+          cp logo.png astrbot_plugin_models_ai/
+
+      # 6. 打包为 zip 文件
+      - name: Create zip package
+        run: |
+          zip -r astrbot_plugin_models_ai-${{ steps.get_version.outputs.version }}.zip astrbot_plugin_models_ai/
+
+      # 7. 生成 Release Notes
+      - name: Generate Release Notes
+        id: release_notes
+        run: |
+          # 从上一个标签生成 Release Notes
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          
+          if [ -z "$PREVIOUS_TAG" ]; then
+            NOTES="## 🎉 首次发布\n\n这是 AstrBot AI 图像生成插件的首次正式发布。"
+          else
+            NOTES="## 📝 更新日志\n\n"
+            NOTES+="### 自 ${PREVIOUS_TAG} 以来的变更\n\n"
+            NOTES+="$(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"- %s" --no-merges)"
+          fi
+          
+          # 保存到文件
+          echo "$NOTES" > release_notes.md
+          
+          # 输出到环境变量
+          {
+            echo 'notes<<EOF'
+            cat release_notes.md
+            echo EOF
+          } >> $GITHUB_OUTPUT
+
+      # 8. 创建 GitHub Release
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.get_version.outputs.tag_name }}
+          name: Release ${{ steps.get_version.outputs.version }}
+          body: ${{ steps.release_notes.outputs.notes }}
+          draft: false
+          prerelease: false
+          files: |
+            astrbot_plugin_models_ai-${{ steps.get_version.outputs.version }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 9. 生成构建摘要
+      - name: Build Summary
+        run: |
+          echo "## 🎉 Release 构建完成！" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 构建信息" >> $GITHUB_STEP_SUMMARY
+          echo "- **版本**: ${{ steps.get_version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **标签**: ${{ steps.get_version.outputs.tag_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **构建产物**: astrbot_plugin_models_ai-${{ steps.get_version.outputs.version }}.zip" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ✅ 完成步骤" >> $GITHUB_STEP_SUMMARY
+          echo "- [x] 检出代码" >> $GITHUB_STEP_SUMMARY
+          echo "- [x] 设置 Python 环境" >> $GITHUB_STEP_SUMMARY
+          echo "- [x] 复制插件文件" >> $GITHUB_STEP_SUMMARY
+          echo "- [x] 打包为 zip 文件" >> $GITHUB_STEP_SUMMARY
+          echo "- [x] 生成 Release Notes" >> $GITHUB_STEP_SUMMARY
+          echo "- [x] 创建 GitHub Release" >> $GITHUB_STEP_SUMMARY
+          echo "- [x] 上传构建产物" >> $GITHUB_STEP_SUMMARY

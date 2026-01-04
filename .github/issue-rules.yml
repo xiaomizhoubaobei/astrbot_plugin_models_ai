@@ -1,0 +1,345 @@
+# Issue 自动标签和指派规则配置
+# 功能：根据 Issue 内容自动添加标签和分配人员
+# 项目：AstrBot AI 图像生成插件
+
+# 主要规则列表
+rules:
+  # ============================================
+  # Issue 类型识别
+  # ============================================
+  - valueFor: '**Type**'
+    contains: Bug
+    addLabels: ['bug', 'triage']
+  - valueFor: '**Type**'
+    contains: Feature
+    addLabels: ['enhancement', 'triage']
+  - valueFor: '**Type**'
+    contains: Question
+    addLabels: ['question', 'triage']
+  - valueFor: '**Type**'
+    contains: Documentation
+    addLabels: ['documentation', 'triage']
+  - valueFor: '**Type**'
+    contains: Performance
+    addLabels: ['performance', 'triage']
+  - valueFor: '**Type**'
+    contains: Security
+    addLabels: ['security', 'triage']
+  - valueFor: '**Type**'
+    contains: Refactoring
+    addLabels: ['refactoring', 'triage']
+  - valueFor: '**Type**'
+    contains: Testing
+    addLabels: ['testing', 'triage']
+
+  # ============================================
+  # 优先级识别
+  # ============================================
+  - valueFor: '**Priority**'
+    contains: Critical
+    addLabels: ['priority: critical']
+  - valueFor: '**Priority**'
+    contains: High
+    addLabels: ['priority: high']
+  - valueFor: '**Priority**'
+    contains: Medium
+    addLabels: ['priority: medium']
+  - valueFor: '**Priority**'
+    contains: Low
+    addLabels: ['priority: low']
+
+  # ============================================
+  # 组件识别 - 核心功能
+  # ============================================
+  - valueFor: '**Component**'
+    contains: API Client
+    addLabels: ['component: api-client']
+  - valueFor: '**Component**'
+    contains: Image Generation
+    addLabels: ['component: image-generation']
+  - valueFor: '**Component**'
+    contains: Image Manager
+    addLabels: ['component: image-manager']
+  - valueFor: '**Component**'
+    contains: Rate Limiter
+    addLabels: ['component: rate-limiter']
+  - valueFor: '**Component**'
+    contains: Configuration
+    addLabels: ['component: configuration']
+  - valueFor: '**Component**'
+    contains: Client Manager
+    addLabels: ['component: client-manager']
+
+  # ============================================
+  # 组件识别 - 功能模块
+  # ============================================
+  - valueFor: '**Component**'
+    contains: Command Line
+    addLabels: ['component: command-line']
+  - valueFor: '**Component**'
+    contains: LLM Tool
+    addLabels: ['component: llm-tool']
+  - valueFor: '**Component**'
+    contains: Multi Key
+    addLabels: ['component: multi-key']
+  - valueFor: '**Component**'
+    contains: Image Cleanup
+    addLabels: ['component: image-cleanup']
+
+  # ============================================
+  #  AI 相关
+  # ============================================
+  - valueFor: '**Related To**'
+    contains: Gitee AI
+    addLabels: ['related: gitee-ai']
+  - valueFor: '**Related To**'
+    contains: API Key
+    addLabels: ['related: api-key']
+  - valueFor: '**Related To**'
+    contains: Model
+    addLabels: ['related: model']
+  - valueFor: '**Related To**'
+    contains: Image Size
+    addLabels: ['related: image-size']
+
+  # ============================================
+  # 技术栈相关
+  # ============================================
+  - valueFor: '**Technology**'
+    contains: Python
+    addLabels: ['technology: python']
+  - valueFor: '**Technology**'
+    contains: AsyncIO
+    addLabels: ['technology: asyncio']
+  - valueFor: '**Technology**'
+    contains: HTTP
+    addLabels: ['technology: http']
+  - valueFor: '**Technology**'
+    contains: Base64
+    addLabels: ['technology: base64']
+  - valueFor: '**Technology**'
+    contains: OpenAI
+    addLabels: ['technology: openai']
+
+  # ============================================
+  # 难度级别
+  # ============================================
+  - valueFor: '**Difficulty**'
+    contains: Easy
+    addLabels: ['difficulty: easy']
+  - valueFor: '**Difficulty**'
+    contains: Medium
+    addLabels: ['difficulty: medium']
+  - valueFor: '**Difficulty**'
+    contains: Hard
+    addLabels: ['difficulty: hard']
+
+# ============================================
+# 次要规则列表（关键词检测）
+# ============================================
+nomatches:
+  # --------------------------------------------
+  # Bug 关键词检测
+  # --------------------------------------------
+  - contains: 'crash'
+    addLabels: ['bug', 'triage', 'severity: high']
+  - contains: 'segfault'
+    addLabels: ['bug', 'triage', 'severity: critical']
+  - contains: 'memory leak'
+    addLabels: ['bug', 'triage', 'severity: high']
+  - contains: 'deadlock'
+    addLabels: ['bug', 'triage', 'severity: high']
+  - contains: 'race condition'
+    addLabels: ['bug', 'triage', 'severity: high']
+  - contains: 'not working'
+    addLabels: ['bug', 'triage']
+  - contains: 'broken'
+    addLabels: ['bug', 'triage']
+  - contains: 'fail'
+    addLabels: ['bug', 'triage']
+  - contains: 'exception'
+    addLabels: ['bug', 'triage']
+  - contains: 'error'
+    addLabels: ['bug', 'triage']
+
+  # --------------------------------------------
+  # 功能请求关键词检测
+  # --------------------------------------------
+  - contains: 'add feature'
+    addLabels: ['enhancement', 'triage']
+  - contains: 'would like'
+    addLabels: ['enhancement', 'triage']
+  - contains: 'support for'
+    addLabels: ['enhancement', 'triage']
+  - contains: 'implement'
+    addLabels: ['enhancement', 'triage']
+  - contains: 'new feature'
+    addLabels: ['enhancement', 'triage']
+  - contains: 'enhancement'
+    addLabels: ['enhancement', 'triage']
+  - contains: 'improve'
+    addLabels: ['enhancement', 'triage']
+  - contains: 'optimize'
+    addLabels: ['enhancement', 'triage']
+
+  # --------------------------------------------
+  # 问题咨询关键词检测
+  # --------------------------------------------
+  - contains: 'how to'
+    addLabels: ['question', 'triage']
+  - contains: 'help'
+    addLabels: ['question', 'triage']
+  - contains: 'question'
+    addLabels: ['question', 'triage']
+  - contains: 'ask'
+    addLabels: ['question', 'triage']
+  - contains: 'tutorial'
+    addLabels: ['question', 'triage', 'documentation']
+  - contains: 'example'
+    addLabels: ['question', 'triage', 'documentation']
+
+  # --------------------------------------------
+  # 性能问题关键词检测
+  # --------------------------------------------
+  - contains: 'slow'
+    addLabels: ['performance', 'triage']
+  - contains: 'latency'
+    addLabels: ['performance', 'triage']
+  - contains: 'timeout'
+    addLabels: ['performance', 'triage']
+  - contains: 'memory'
+    addLabels: ['performance', 'triage']
+  - contains: 'performance'
+    addLabels: ['performance', 'triage']
+  - contains: 'optimize'
+    addLabels: ['performance', 'triage']
+
+  # --------------------------------------------
+  # 安全问题关键词检测
+  # --------------------------------------------
+  - contains: 'security'
+    addLabels: ['security', 'triage', 'severity: high']
+  - contains: 'vulnerability'
+    addLabels: ['security', 'triage', 'severity: high']
+  - contains: 'exploit'
+    addLabels: ['security', 'triage', 'severity: critical']
+  - contains: 'injection'
+    addLabels: ['security', 'triage', 'severity: high']
+  - contains: 'xss'
+    addLabels: ['security', 'triage', 'severity: high']
+  - contains: 'csrf'
+    addLabels: ['security', 'triage', 'severity: high']
+
+  # --------------------------------------------
+  # 文档相关关键词检测
+  # --------------------------------------------
+  - contains: 'documentation'
+    addLabels: ['documentation', 'triage']
+  - contains: 'readme'
+    addLabels: ['documentation', 'triage']
+  - contains: 'guide'
+    addLabels: ['documentation', 'triage']
+  - contains: 'tutorial'
+    addLabels: ['documentation', 'triage']
+
+  # --------------------------------------------
+  # 测试相关关键词检测
+  # --------------------------------------------
+  - contains: 'test'
+    addLabels: ['testing', 'triage']
+  - contains: 'unit test'
+    addLabels: ['testing', 'triage']
+  - contains: 'integration test'
+    addLabels: ['testing', 'triage']
+  - contains: 'coverage'
+    addLabels: ['testing', 'triage']
+
+  # --------------------------------------------
+  # 部署相关关键词检测
+  # --------------------------------------------
+  - contains: 'deploy'
+    addLabels: ['deployment', 'triage']
+  - contains: 'install'
+    addLabels: ['deployment', 'triage']
+  - contains: 'setup'
+    addLabels: ['deployment', 'triage']
+  - contains: 'build'
+    addLabels: ['deployment', 'triage']
+
+  # --------------------------------------------
+  # 图像生成相关关键词检测
+  # --------------------------------------------
+  - contains: 'image generation'
+    addLabels: ['component: image-generation', 'triage']
+  - contains: 'generate image'
+    addLabels: ['component: image-generation', 'triage']
+  - contains: 'download image'
+    addLabels: ['component: image-manager', 'triage']
+  - contains: 'save image'
+    addLabels: ['component: image-manager', 'triage']
+  - contains: 'image format'
+    addLabels: ['component: image-generation', 'triage']
+  - contains: 'resolution'
+    addLabels: ['component: image-generation', 'triage']
+  - contains: 'aspect ratio'
+    addLabels: ['component: image-generation', 'triage']
+
+  # --------------------------------------------
+  # API 相关关键词检测
+  # --------------------------------------------
+  - contains: 'api'
+    addLabels: ['component: api-client', 'triage']
+  - contains: 'api key'
+    addLabels: ['related: api-key', 'triage']
+  - contains: 'authentication'
+    addLabels: ['component: api-client', 'triage']
+  - contains: 'rate limit'
+    addLabels: ['component: rate-limiter', 'triage']
+  - contains: 'quota'
+    addLabels: ['component: rate-limiter', 'triage']
+
+  # --------------------------------------------
+  # 配置相关关键词检测
+  # --------------------------------------------
+  - contains: 'config'
+    addLabels: ['component: configuration', 'triage']
+  - contains: 'configuration'
+    addLabels: ['component: configuration', 'triage']
+  - contains: 'settings'
+    addLabels: ['component: configuration', 'triage']
+  - contains: 'preference'
+    addLabels: ['component: configuration', 'triage']
+
+# ============================================
+# 标签列表（默认标签规则）
+# ============================================
+tags:
+  # --------------------------------------------
+  # 类型标签默认值
+  # --------------------------------------------
+  - noneIn: ['bug', 'enhancement', 'question', 'documentation', 'performance', 'security', 'refactoring', 'testing']
+    addLabels: ['triage']
+
+  # --------------------------------------------
+  # 优先级标签默认值
+  # --------------------------------------------
+  - noneIn: ['priority: critical', 'priority: high', 'priority: medium', 'priority: low']
+    addLabels: ['priority: medium']
+
+  # --------------------------------------------
+  # 组件标签默认值
+  # --------------------------------------------
+  - noneIn: ['component: api-client', 'component: image-generation', 'component: image-manager', 'component: rate-limiter', 'component: configuration', 'component: client-manager', 'component: command-line', 'component: llm-tool', 'component: multi-key', 'component: image-cleanup']
+    addLabels: ['component: unknown']
+
+  # --------------------------------------------
+  # 严重程度标签默认值
+  # --------------------------------------------
+  - noneIn: ['severity: critical', 'severity: high', 'severity: medium', 'severity: low']
+    addLabels: ['severity: medium']
+
+  # --------------------------------------------
+  # 难度标签默认值
+  # --------------------------------------------
+  - noneIn: ['difficulty: easy', 'difficulty: medium', 'difficulty: hard']
+    addLabels: ['difficulty: unknown']
