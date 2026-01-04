@@ -41,7 +41,7 @@ jobs:
           # 从 metadata.yaml 文件中读取版本号
           VERSION=$(grep "^version:" metadata.yaml | awk '{print $2}')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag_name=v$VERSION" >> $GITHUB_OUTPUT
+          echo "tag_name=$VERSION" >> $GITHUB_OUTPUT
 
       # 4. 安装依赖
       - name: Install dependencies
