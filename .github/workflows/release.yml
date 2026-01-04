@@ -73,10 +73,10 @@ jobs:
           VERSION=${GITHUB_REF#refs/tags/v}
 
           if [ -z "$PREVIOUS_TAG" ]; then
-            NOTES="## 🎉 首次发布\n\n这是 AstrBot AI 图像生成插件的首次正式发布。"
+            NOTES="## 🎉 首次发布这是 AstrBot AI 图像生成插件的首次正式发布。"
           else
-            NOTES="## 📝 更新日志\n\n### 本次更新了\n\n"
-            NOTES+="$(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"- %s" --no-merges)"
+            NOTES="## 📝 更新日志
+          ### 本次更新了$(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"- %s" --no-merges)"
           fi
 
           # 保存到文件
@@ -94,9 +94,7 @@ jobs:
         if: always()  # Run even if build fails
         uses: OrygnsCode/ci-evidence-pack@main
         with:
-          upload-name: evidence-bundle
           sign: 'true'
-          retention-days: 90
 
       # 10. 创建 GitHub Release
       - name: Create Release
@@ -127,8 +125,8 @@ jobs:
           prerelease: false
           files: |
             astrbot_plugin_models_ai-${{ steps.get_version.outputs.version }}.zip
-            evidence-bundle-*.tar.gz
-            evidence-bundle-*.tar.gz.sig
-            evidence-bundle-*.tar.gz.crt
+            _evidence_dist/*.tar.gz
+            _evidence_dist/*.sig
+            _evidence_dist/*.crt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
