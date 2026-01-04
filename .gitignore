@@ -30,9 +30,6 @@ wheels/
 AstrBot/
 astrbot/
 
-# Plugin zip（插件打包文件）
-astrbot_plugin_models_ai.zip
-
 # OS（操作系统文件）
 .DS_Store
 Thumbs.db

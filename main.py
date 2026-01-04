@@ -70,6 +70,47 @@ class GiteeAIImage(Star):
 
         self.debug_log("插件初始化完成")
 
+    def _parse_prompt_and_size(self, prompt: str) -> tuple[str, str]:
+        """解析提示词和目标尺寸
+
+        从提示词中提取比例参数，并计算目标尺寸。
+
+        Args:
+            prompt: 原始提示词，可能包含比例参数（格式：<提示词> [比例]）
+
+        Returns:
+            tuple[str, str]: (解析后的提示词, 目标尺寸)
+
+        Raises:
+            ValueError: 当提示词为空或仅包含比例时抛出异常
+        """
+        # 去除首尾空白字符
+        prompt = prompt.strip()
+
+        # 检查是否为空
+        if not prompt:
+            raise ValueError("提示词不能为空")
+
+        # 解析比例参数
+        ratio = "1:1"
+        prompt_parts = prompt.rsplit(" ", 1)
+        if len(prompt_parts) > 1 and prompt_parts[1] in SUPPORTED_RATIOS:
+            ratio = prompt_parts[1]
+            prompt = prompt_parts[0].strip()
+
+        # 分割后再次检查提示词是否为空
+        if not prompt:
+            raise ValueError("请提供提示词，不能仅指定比例")
+
+        # 确定目标尺寸
+        target_size = self.api_client.default_size
+        if ratio != "1:1" or (
+            ratio == "1:1" and self.api_client.default_size not in SUPPORTED_RATIOS["1:1"]
+        ):
+            target_size = SUPPORTED_RATIOS[ratio][0]
+
+        return prompt, target_size
+
     def debug_log(self, message: str) -> None:
         """输出 Debug 日志
 
@@ -106,9 +147,6 @@ class GiteeAIImage(Star):
             yield event.plain_result("请提供提示词！使用方法：/ai-gitee <提示词> [比例]")
             return
 
-        # 去除首尾空白字符
-        prompt = prompt.strip()
-
         user_id = event.get_sender_id()
         request_id = user_id
 
@@ -127,29 +165,15 @@ class GiteeAIImage(Star):
 
         self.rate_limiter.add_processing(request_id)
 
-        # 解析比例参数
-        ratio = "1:1"
-        prompt_parts = prompt.rsplit(" ", 1)
-        if len(prompt_parts) > 1 and prompt_parts[1] in SUPPORTED_RATIOS:
-            ratio = prompt_parts[1]
-            prompt = prompt_parts[0].strip()
-
-        # 分割后再次检查提示词是否为空
-        if not prompt:
-            self.debug_log("[命令] 分割后提示词为空")
-            yield event.plain_result("请提供提示词！使用方法：/ai-gitee <提示词> [比例]")
+        # 解析提示词和目标尺寸
+        try:
+            prompt, target_size = self._parse_prompt_and_size(prompt)
+        except ValueError as e:
+            self.debug_log(f"[命令] 参数解析失败: {e}")
+            yield event.plain_result(f"{e}。使用方法：/ai-gitee <提示词> [比例]")
             return
 
-        self.debug_log(f"[命令] 解析参数: ratio={ratio}, prompt={prompt[:50]}...")
-
-        # 确定目标尺寸
-        target_size = self.api_client.default_size
-        if ratio != "1:1" or (
-            ratio == "1:1" and self.api_client.default_size not in SUPPORTED_RATIOS["1:1"]
-        ):
-            target_size = SUPPORTED_RATIOS[ratio][0]
-
-        self.debug_log(f"[命令] 目标尺寸: size={target_size}")
+        self.debug_log(f"[命令] 解析参数: prompt={prompt[:50]}..., size={target_size}")
 
         try:
             self.debug_log(f"[命令] 开始生成图片: user_id={user_id}")
@@ -200,21 +224,15 @@ class GiteeAIImage(Star):
 
         self.rate_limiter.add_processing(request_id)
 
-        # 解析比例参数（与命令行指令保持一致）
-        target_size = ""
-        prompt = prompt.strip()
-        prompt_parts = prompt.rsplit(" ", 1)
-        if len(prompt_parts) > 1 and prompt_parts[1] in SUPPORTED_RATIOS:
-            ratio = prompt_parts[1]
-            prompt = prompt_parts[0].strip()
-            # 确定目标尺寸
-            if ratio != "1:1" or (
-                ratio == "1:1" and self.api_client.default_size not in SUPPORTED_RATIOS["1:1"]
-            ):
-                target_size = SUPPORTED_RATIOS[ratio][0]
+        # 解析提示词和目标尺寸
+        try:
+            prompt, target_size = self._parse_prompt_and_size(prompt)
+        except ValueError as e:
+            self.debug_log(f"[LLM工具] 参数解析失败: {e}")
+            return f"{e}。请提供完整的提示词和可选的比例参数。"
 
         try:
-            self.debug_log(f"[LLM工具] 开始生成图片: user_id={user_id}, size={target_size or 'default'}")
+            self.debug_log(f"[LLM工具] 开始生成图片: user_id={user_id}, size={target_size}")
             # 先发送提示消息
             await event.send(event.plain_result("正在生成图片，请稍候..."))
             start_time = time.time()
