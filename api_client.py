@@ -13,20 +13,6 @@ from .config import CLEANUP_INTERVAL
 from .image_manager import ImageManager
 
 
-# Debug 日志开关（默认关闭，通过配置文件控制）
-DEBUG_MODE = False
-
-
-def debug_log(message: str) -> None:
-    """输出 Debug 日志
-
-    Args:
-        message: 日志消息
-    """
-    if DEBUG_MODE:
-        logger.debug(f"[GiteeAIClient] {message}")
-
-
 class GiteeAIClient:
     """Gitee AI API 客户端，负责调用图像生成 API"""
 
@@ -51,9 +37,7 @@ class GiteeAIClient:
             base_url: API 基础 URL
             debug_mode: 是否启用 Debug 日志
         """
-        global DEBUG_MODE
-        DEBUG_MODE = debug_mode
-
+        self.debug_mode = debug_mode
         self.api_keys = api_keys
         self.model = model
         self.default_size = default_size
@@ -68,10 +52,19 @@ class GiteeAIClient:
         self._generation_count = 0
         self._background_tasks: set[asyncio.Task[Any]] = set()
 
-        debug_log(
+        self.debug_log(
             f"初始化 Gitee AI 客户端: model={model}, size={default_size}, "
             f"api_keys={len(api_keys)}, debug_mode={debug_mode}"
         )
+
+    def debug_log(self, message: str) -> None:
+        """输出 Debug 日志
+
+        Args:
+            message: 日志消息
+        """
+        if self.debug_mode:
+            logger.debug(f"[GiteeAIClient] {message}")
 
     def _get_next_api_key(self) -> str:
         """轮询获取下一个 API Key
@@ -87,7 +80,7 @@ class GiteeAIClient:
 
         api_key = self.api_keys[self.current_key_index]
         self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
-        debug_log(f"轮询 API Key: index={self.current_key_index - 1}, api_key={api_key[:10]}...")
+        self.debug_log(f"轮询 API Key: index={self.current_key_index - 1}, api_key={api_key[:10]}...")
         return api_key
 
     async def generate_image(self, prompt: str, size: str = "") -> str:
@@ -103,7 +96,7 @@ class GiteeAIClient:
         Raises:
             Exception: API 调用失败时抛出异常
         """
-        debug_log(f"开始生成图片: prompt={prompt[:50]}..., size={size or self.default_size}")
+        self.debug_log(f"开始生成图片: prompt={prompt[:50]}..., size={size or self.default_size}")
 
         api_key = self._get_next_api_key()
         client = self.client_manager.get_openai_client(api_key)
@@ -126,14 +119,14 @@ class GiteeAIClient:
         if target_size:
             kwargs["size"] = target_size
 
-        debug_log(f"发送 API 请求: model={self.model}, size={target_size}")
+        self.debug_log(f"发送 API 请求: model={self.model}, size={target_size}")
 
         try:
             response = await client.images.generate(**kwargs)  # type: ignore
-            debug_log("API 响应接收成功")
+            self.debug_log("API 响应接收成功")
         except Exception as e:
             error_msg = str(e)
-            debug_log(f"API 调用失败: {error_msg}")
+            self.debug_log(f"API 调用失败: {error_msg}")
             if "401" in error_msg:
                 raise RuntimeError("API Key 无效或已过期，请检查配置。") from e
             if "429" in error_msg:
@@ -149,22 +142,22 @@ class GiteeAIClient:
 
         # 检查图片数据是否包含 url 属性
         if hasattr(image_data, "url") and image_data.url:
-            debug_log("图片数据格式: URL")
+            self.debug_log("图片数据格式: URL")
             session = await self.client_manager.get_http_session()
             filepath = await self.image_manager.download_image(image_data.url, session)
         elif hasattr(image_data, "b64_json") and image_data.b64_json:
-            debug_log("图片数据格式: Base64")
+            self.debug_log("图片数据格式: Base64")
             filepath = await self.image_manager.save_base64_image(image_data.b64_json)
         else:
             raise RuntimeError("生成图片失败：未返回 URL 或 Base64 数据")
 
-        debug_log(f"图片保存成功: {filepath}")
+        self.debug_log(f"图片保存成功: {filepath}")
 
         # 每 N 次生成执行一次清理
         self._generation_count += 1
         if self._generation_count >= CLEANUP_INTERVAL:
             self._generation_count = 0
-            debug_log("触发图片清理任务")
+            self.debug_log("触发图片清理任务")
             task = asyncio.create_task(self.image_manager.cleanup_old_images())
             # 保存任务引用防止 GC 回收
             self._background_tasks.add(task)
@@ -174,6 +167,6 @@ class GiteeAIClient:
 
     async def close(self) -> None:
         """清理资源"""
-        debug_log("开始清理 API 客户端资源")
+        self.debug_log("开始清理 API 客户端资源")
         await self.client_manager.close()
-        debug_log("API 客户端资源清理完成")
+        self.debug_log("API 客户端资源清理完成")

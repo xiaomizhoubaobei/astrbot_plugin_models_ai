@@ -11,20 +11,6 @@ from astrbot.api import logger
 from .config import DEBOUNCE_SECONDS, OPERATION_CACHE_TTL
 
 
-# Debug 日志开关（默认关闭，通过配置文件控制）
-DEBUG_MODE = False
-
-
-def debug_log(message: str) -> None:
-    """输出 Debug 日志
-
-    Args:
-        message: 日志消息
-    """
-    if DEBUG_MODE:
-        logger.debug(f"[RateLimiter] {message}")
-
-
 class RateLimiter:
     """速率限制器，负责防抖检查和并发控制"""
 
@@ -34,12 +20,19 @@ class RateLimiter:
         Args:
             debug_mode: 是否启用 Debug 日志
         """
-        global DEBUG_MODE
-        DEBUG_MODE = debug_mode
-
+        self.debug_mode = debug_mode
         self.processing_users: Set[str] = set()
         self.last_operations: dict[str, float] = {}
-        debug_log(f"初始化速率限制器: debug_mode={debug_mode}")
+        self.debug_log(f"初始化速率限制器: debug_mode={debug_mode}")
+
+    def debug_log(self, message: str) -> None:
+        """输出 Debug 日志
+
+        Args:
+            message: 日志消息
+        """
+        if self.debug_mode:
+            logger.debug(f"[RateLimiter] {message}")
 
     def _cleanup_expired_operations(self) -> None:
         """清理过期的操作记录，防止内存泄漏"""
@@ -70,11 +63,11 @@ class RateLimiter:
         if request_id in self.last_operations:
             elapsed = current_time - self.last_operations[request_id]
             if elapsed < DEBOUNCE_SECONDS:
-                debug_log(f"防抖拦截: request_id={request_id}, elapsed={elapsed:.2f}s")
+                self.debug_log(f"防抖拦截: request_id={request_id}, elapsed={elapsed:.2f}s")
                 return True
 
         self.last_operations[request_id] = current_time
-        debug_log(f"防抖通过: request_id={request_id}")
+        self.debug_log(f"防抖通过: request_id={request_id}")
         return False
 
     def is_processing(self, request_id: str) -> bool:
@@ -95,7 +88,7 @@ class RateLimiter:
             request_id: 请求标识符
         """
         self.processing_users.add(request_id)
-        debug_log(f"添加到处理队列: request_id={request_id}, queue_size={len(self.processing_users)}")
+        self.debug_log(f"添加到处理队列: request_id={request_id}, queue_size={len(self.processing_users)}")
 
     def remove_processing(self, request_id: str) -> None:
         """从处理中列表移除请求
@@ -104,4 +97,4 @@ class RateLimiter:
             request_id: 请求标识符
         """
         self.processing_users.discard(request_id)
-        debug_log(f"从处理队列移除: request_id={request_id}, queue_size={len(self.processing_users)}")
+        self.debug_log(f"从处理队列移除: request_id={request_id}, queue_size={len(self.processing_users)}")

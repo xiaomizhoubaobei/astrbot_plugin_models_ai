@@ -19,20 +19,6 @@ from astrbot.api.star import StarTools
 from .config import MAX_CACHED_IMAGES
 
 
-# Debug 日志开关（默认关闭，通过配置文件控制）
-DEBUG_MODE = False
-
-
-def debug_log(message: str) -> None:
-    """输出 Debug 日志
-
-    Args:
-        message: 日志消息
-    """
-    if DEBUG_MODE:
-        logger.debug(f"[ImageManager] {message}")
-
-
 class ImageManager:
     """图片管理器，负责图片的保存、下载和清理
 
@@ -45,11 +31,18 @@ class ImageManager:
         Args:
             debug_mode: 是否启用 Debug 日志
         """
-        global DEBUG_MODE
-        DEBUG_MODE = debug_mode
-
+        self.debug_mode = debug_mode
         self._image_dir: Optional[Path] = None
-        debug_log(f"初始化图片管理器: debug_mode={debug_mode}")
+        self.debug_log(f"初始化图片管理器: debug_mode={debug_mode}")
+
+    def debug_log(self, message: str) -> None:
+        """输出 Debug 日志
+
+        Args:
+            message: 日志消息
+        """
+        if self.debug_mode:
+            logger.debug(f"[ImageManager] {message}")
 
     def _get_image_dir(self) -> Path:
         """获取图片保存目录（延迟初始化）
@@ -64,7 +57,7 @@ class ImageManager:
             base_dir = StarTools.get_data_dir("astrbot_plugin_models_ai")
             self._image_dir = base_dir / "images"
             self._image_dir.mkdir(exist_ok=True)
-            debug_log(f"初始化图片目录: {self._image_dir}")
+            self.debug_log(f"初始化图片目录: {self._image_dir}")
         return self._image_dir
 
     def get_save_path(self, extension: str = ".jpg") -> str:
@@ -98,20 +91,20 @@ class ImageManager:
             Exception: 当 HTTP 状态码不是 200 时抛出异常
             Exception: 当网络请求失败时抛出异常
         """
-        debug_log(f"开始下载图片: url={url[:50]}...")
+        self.debug_log(f"开始下载图片: url={url[:50]}...")
 
         async with session.get(url) as resp:
             if resp.status != 200:
                 raise RuntimeError(f"下载图片失败: HTTP {resp.status}")
             data = await resp.read()
 
-        debug_log(f"图片下载完成: size={len(data)} bytes")
+        self.debug_log(f"图片下载完成: size={len(data)} bytes")
 
         filepath = self.get_save_path()
         async with aiofiles.open(filepath, "wb") as f:
             await f.write(data)
 
-        debug_log(f"图片保存成功: {filepath}")
+        self.debug_log(f"图片保存成功: {filepath}")
         return filepath
 
     async def save_base64_image(self, b64_data: str) -> str:
@@ -129,7 +122,7 @@ class ImageManager:
             ValueError: 当 Base64 数据无效时抛出异常
             OSError: 当文件写入失败时抛出异常
         """
-        debug_log(f"开始保存 Base64 图片: data_size={len(b64_data)}")
+        self.debug_log(f"开始保存 Base64 图片: data_size={len(b64_data)}")
 
         filepath = self.get_save_path()
         image_bytes = base64.b64decode(b64_data)
@@ -137,7 +130,7 @@ class ImageManager:
         async with aiofiles.open(filepath, "wb") as f:
             await f.write(image_bytes)
 
-        debug_log(f"Base64 图片保存成功: {filepath}, size={len(image_bytes)} bytes")
+        self.debug_log(f"Base64 图片保存成功: {filepath}, size={len(image_bytes)} bytes")
         return filepath
 
     def _sync_cleanup_old_images(self) -> None:
@@ -156,7 +149,7 @@ class ImageManager:
             for ext in ("*.jpg", "*.png", "*.webp"):
                 images.extend(image_dir.glob(ext))
 
-            debug_log(f"清理旧图片: total={len(images)}, max={MAX_CACHED_IMAGES}")
+            self.debug_log(f"清理旧图片: total={len(images)}, max={MAX_CACHED_IMAGES}")
 
             # 按修改时间排序
             images.sort(key=lambda p: p.stat().st_mtime)
@@ -168,13 +161,13 @@ class ImageManager:
                     try:
                         img_path.unlink()
                         deleted_count += 1
-                    except OSError:
-                        # 忽略删除失败的文件，可能是已被其他进程删除
-                        pass
-                debug_log(f"清理完成: deleted={deleted_count}, kept={len(images) - deleted_count}")
+                    except OSError as e:
+                        # 记录删除失败的文件，可能是已被其他进程删除
+                        self.debug_log(f"删除文件失败: {img_path}, 错误: {e}")
+                self.debug_log(f"清理完成: deleted={deleted_count}, kept={len(images) - deleted_count}")
         except OSError as e:
             logger.warning(f"清理旧图片时出错: {e}")
-            debug_log(f"清理旧图片失败: {e}")
+            self.debug_log(f"清理旧图片失败: {e}")
 
     async def cleanup_old_images(self) -> None:
         """异步清理旧图片，使用线程池执行阻塞操作
@@ -182,6 +175,6 @@ class ImageManager:
         在线程池中执行清理操作，避免阻塞事件循环。
         当图片数量超过 MAX_CACHED_IMAGES 时，自动删除最旧的图片。
         """
-        debug_log("触发异步清理任务")
+        self.debug_log("触发异步清理任务")
         await asyncio.to_thread(self._sync_cleanup_old_images)
-        debug_log("异步清理任务完成")
+        self.debug_log("异步清理任务完成")

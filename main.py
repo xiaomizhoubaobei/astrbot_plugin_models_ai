@@ -23,19 +23,6 @@ from .config import (
 )
 from .rate_limiter import RateLimiter
 
-# Debug 日志开关（默认关闭，可通过配置文件启用）
-DEBUG_MODE = False
-
-
-def debug_log(message: str) -> None:
-    """输出 Debug 日志
-
-    Args:
-        message: 日志消息
-    """
-    if DEBUG_MODE:
-        logger.debug(f"[AstrBot-GiteeAI] {message}")
-
 
 @register(
     "astrbot_plugin_models_ai",
@@ -59,12 +46,9 @@ class GiteeAIImage(Star):
         """
         super().__init__(context)
         self.config = config
+        self.debug_mode = config.get("debug_mode", False)
 
-        # 从配置中读取 Debug 模式开关
-        global DEBUG_MODE
-        DEBUG_MODE = config.get("debug_mode", False)
-
-        debug_log("开始初始化插件")
+        self.debug_log("开始初始化插件")
 
         # 解析配置
         base_url = config.get("base_url", DEFAULT_BASE_URL)
@@ -74,9 +58,9 @@ class GiteeAIImage(Star):
         num_inference_steps = config.get("num_inference_steps", DEFAULT_INFERENCE_STEPS)
         negative_prompt = config.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
 
-        debug_log(
+        self.debug_log(
             f"配置解析完成: model={model}, size={default_size}, "
-            f"api_keys_count={len(api_keys)}, debug_mode={DEBUG_MODE}"
+            f"api_keys_count={len(api_keys)}, debug_mode={self.debug_mode}"
         )
 
         # 初始化组件
@@ -87,11 +71,20 @@ class GiteeAIImage(Star):
             num_inference_steps=num_inference_steps,
             negative_prompt=negative_prompt,
             base_url=base_url,
-            debug_mode=DEBUG_MODE,
+            debug_mode=self.debug_mode,
         )
-        self.rate_limiter = RateLimiter(debug_mode=DEBUG_MODE)
+        self.rate_limiter = RateLimiter(debug_mode=self.debug_mode)
 
-        debug_log("插件初始化完成")
+        self.debug_log("插件初始化完成")
+
+    def debug_log(self, message: str) -> None:
+        """输出 Debug 日志
+
+        Args:
+            message: 日志消息
+        """
+        if self.debug_mode:
+            logger.debug(f"[AstrBot-GiteeAI] {message}")
 
     @filter_cmd.command("ai-gitee")
     async def generate_image_command(
@@ -116,23 +109,23 @@ class GiteeAIImage(Star):
             Exception: 图片生成失败时抛出异常
         """
         if not prompt:
-            debug_log("[命令] 收到空提示词")
+            self.debug_log("[命令] 收到空提示词")
             yield event.plain_result("请提供提示词！使用方法：/ai-gitee <提示词> [比例]")
             return
 
         user_id = event.get_sender_id()
         request_id = user_id
 
-        debug_log(f"[命令] 收到生图请求: user_id={user_id}, prompt={prompt[:50]}...")
+        self.debug_log(f"[命令] 收到生图请求: user_id={user_id}, prompt={prompt[:50]}...")
 
         # 防抖检查
         if self.rate_limiter.check_debounce(request_id):
-            debug_log(f"[命令] 请求被防抖拦截: user_id={user_id}")
+            self.debug_log(f"[命令] 请求被防抖拦截: user_id={user_id}")
             yield event.plain_result("操作太快了，请稍后再试。")
             return
 
         if self.rate_limiter.is_processing(request_id):
-            debug_log(f"[命令] 用户正在处理中: user_id={user_id}")
+            self.debug_log(f"[命令] 用户正在处理中: user_id={user_id}")
             yield event.plain_result("您有正在进行的生图任务，请稍候...")
             return
 
@@ -145,7 +138,7 @@ class GiteeAIImage(Star):
             ratio = prompt_parts[1]
             prompt = prompt_parts[0]
 
-        debug_log(f"[命令] 解析参数: ratio={ratio}, prompt={prompt[:50]}...")
+        self.debug_log(f"[命令] 解析参数: ratio={ratio}, prompt={prompt[:50]}...")
 
         # 确定目标尺寸
         target_size = self.api_client.default_size
@@ -154,17 +147,17 @@ class GiteeAIImage(Star):
         ):
             target_size = SUPPORTED_RATIOS[ratio][0]
 
-        debug_log(f"[命令] 目标尺寸: size={target_size}")
+        self.debug_log(f"[命令] 目标尺寸: size={target_size}")
 
         try:
-            debug_log(f"[命令] 开始生成图片: user_id={user_id}")
+            self.debug_log(f"[命令] 开始生成图片: user_id={user_id}")
             # 先发送提示消息
             yield event.plain_result("正在生成图片，请稍候...")
             start_time = time.time()
             image_path = await self.api_client.generate_image(prompt, size=target_size)
             end_time = time.time()
             elapsed_time = end_time - start_time
-            debug_log(
+            self.debug_log(
                 f"[命令] 图片生成成功: path={image_path},"
                 f"耗时={elapsed_time:.2f}秒"
             )
@@ -175,45 +168,45 @@ class GiteeAIImage(Star):
             ])
 
         except Exception as e:
-            logger.error(f"生图失败: {e}")
-            debug_log(f"[命令] 图片生成失败: error={str(e)}")
+            logger.error(f"生图失败: {e}", exc_info=True)
+            self.debug_log(f"[命令] 图片生成失败: error={str(e)}")
             yield event.plain_result(f"生成图片失败: {str(e)}")
         finally:
             self.rate_limiter.remove_processing(request_id)
-            debug_log(f"[命令] 处理完成: user_id={user_id}")
+            self.debug_log(f"[命令] 处理完成: user_id={user_id}")
 
     @filter_cmd.llm_tool(name="draw_image")
     async def draw(self, event: "AstrMessageEvent", prompt: str):
         """根据提示词生成图片。
 
         Args:
-            prompt(string): 图片提示词，需要包含主体、场景、风格等描述
+            prompt(str): 图片提示词，需要包含主体、场景、风格等描述
         """
         user_id = event.get_sender_id()
         request_id = user_id
 
-        debug_log(f"[LLM工具] 收到生图请求: user_id={user_id}, prompt={prompt[:50]}...")
+        self.debug_log(f"[LLM工具] 收到生图请求: user_id={user_id}, prompt={prompt[:50]}...")
 
         # 防抖检查
         if self.rate_limiter.check_debounce(request_id):
-            debug_log(f"[LLM工具] 请求被防抖拦截: user_id={user_id}")
+            self.debug_log(f"[LLM工具] 请求被防抖拦截: user_id={user_id}")
             return "操作太快了，请稍后再试。"
 
         if self.rate_limiter.is_processing(request_id):
-            debug_log(f"[LLM工具] 用户正在处理中: user_id={user_id}")
+            self.debug_log(f"[LLM工具] 用户正在处理中: user_id={user_id}")
             return "您有正在进行的生图任务，请稍候..."
 
         self.rate_limiter.add_processing(request_id)
 
         try:
-            debug_log(f"[LLM工具] 开始生成图片: user_id={user_id}")
+            self.debug_log(f"[LLM工具] 开始生成图片: user_id={user_id}")
             # 先发送提示消息
             await event.send(event.plain_result("正在生成图片，请稍候..."))
             start_time = time.time()
             image_path = await self.api_client.generate_image(prompt)
             end_time = time.time()
             elapsed_time = end_time - start_time
-            debug_log(
+            self.debug_log(
                 f"[LLM工具] 图片生成成功: path={image_path},"
                 f"耗时={elapsed_time:.2f}秒"
             )
@@ -225,18 +218,18 @@ class GiteeAIImage(Star):
             return f"图片已生成并发送。耗时：{elapsed_time:.2f}秒。Prompt: {prompt}"
 
         except Exception as e:
-            logger.error(f"生图失败: {e}")
-            debug_log(f"[LLM工具] 图片生成失败: error={str(e)}")
+            logger.error(f"生图失败: {e}", exc_info=True)
+            self.debug_log(f"[LLM工具] 图片生成失败: error={str(e)}")
             return f"生成图片时遇到问题: {str(e)}"
         finally:
             self.rate_limiter.remove_processing(request_id)
-            debug_log(f"[LLM工具] 处理完成: user_id={user_id}")
+            self.debug_log(f"[LLM工具] 处理完成: user_id={user_id}")
 
     async def close(self) -> None:
         """清理插件资源
 
         在插件卸载时调用，关闭所有客户端连接和释放资源。
         """
-        debug_log("开始清理插件资源")
+        self.debug_log("开始清理插件资源")
         await self.api_client.close()
-        debug_log("插件资源清理完成")
+        self.debug_log("插件资源清理完成")
