@@ -22,11 +22,11 @@ jobs:
 
       # 检出代码仓库
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       # 运行 tag-ur-it Action
       - name: Tag-ur-it
-        uses: damccorm/tag-ur-it@master
+        uses: damccorm/tag-ur-it@4689c0ef99e78276b2ff4851db5deec57bb3f615 # master
         with:
           # GitHub Token，用于添加标签和分配人员
           repo-token: "${{ secrets.GITHUB_TOKEN }}"

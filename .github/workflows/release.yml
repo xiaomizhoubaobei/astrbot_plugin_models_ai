@@ -7,6 +7,9 @@ on:
       - main
   workflow_dispatch:  # 允许手动触发
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build Release
@@ -24,13 +27,13 @@ jobs:
 
       # 1. 检出代码
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0  # 获取完整的 git 历史
 
       # 2. 设置 Python 环境
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.11'
 
@@ -96,13 +99,13 @@ jobs:
       # 9. 生成证据包
       - name: Generate Evidence Bundle
         if: always()  # Run even if build fails
-        uses: OrygnsCode/ci-evidence-pack@main
+        uses: OrygnsCode/ci-evidence-pack@8222d7b3b015ce2f72222215bdf9966773036ab1 # main
         with:
           sign: 'true'
 
       # 10. 创建 GitHub Release
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
           tag_name: ${{ steps.get_version.outputs.tag_name }}
           name: Release ${{ steps.get_version.outputs.version }}

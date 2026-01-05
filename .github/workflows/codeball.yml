@@ -22,7 +22,7 @@ jobs:
       # Codeball 步骤
       - name: Codeball
         # 使用 Codeball Action v2 版本
-        uses: sturdy-dev/codeball-action@v2
+        uses: sturdy-dev/codeball-action@b9dc4e06cac09555e0e71bebe1594928eecdb28f # v2
         with:
           # 不自动批准 PR，保持人工审核的最终决定权
           approvePullRequests: "false"
