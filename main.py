@@ -21,6 +21,7 @@ from .config import (
     SUPPORTED_RATIOS,
     parse_api_keys,
 )
+from .model_manager import ModelLister
 from .rate_limiter import RateLimiter
 
 
@@ -67,6 +68,11 @@ class GiteeAIImage(Star):
             debug_mode=self.debug_mode,
         )
         self.rate_limiter = RateLimiter(debug_mode=self.debug_mode)
+        self.model_lister = ModelLister(
+            api_client=self.api_client,
+            rate_limiter=self.rate_limiter,
+            debug_mode=self.debug_mode,
+        )
 
         self.debug_log("插件初始化完成")
 
@@ -257,6 +263,76 @@ class GiteeAIImage(Star):
         finally:
             self.rate_limiter.remove_processing(request_id)
             self.debug_log(f"[LLM工具] 处理完成: user_id={user_id}")
+
+    @filter_cmd.command("ai-gitee-text2image")
+    async def list_models_command(
+        self, event: "AstrMessageEvent", type_param: str = ""
+    ) -> AsyncGenerator[Any, None]:
+        """获取模型列表命令
+
+        支持按类型筛选模型列表。默认返回 text2image 类型模型。
+
+        用法: /ai-gitee-text2image [--type=<类型>]
+        示例: /ai-gitee-text2image              # 返回 text2image 类型模型（默认）
+              /ai-gitee-text2image --type=all    # 返回所有类型模型
+              /ai-gitee-text2image --type=text2text
+
+        支持类型:
+        - all: 所有类型
+        - text2image: 文本生成图像（默认）
+        - text2text: 文本生成文本
+        - embeddings: 向量嵌入生成
+        - image2text: 图像转文本
+        - speech2text: 语音转文本
+        - text2speech: 文本转语音
+        - completions: 补全任务
+        - image2image: 图像生成图像
+        - voice_feature_extraction: 语音特征提取
+        - sentence_similarity: 句子相似度计算
+        - rerank: 重排序
+        - image_matting: 图像抠图
+        - text2video: 文本生成视频
+        - image2video: 图像生成视频
+        - doc2md: 文档转 Markdown
+        - text23d: 文本生成 3D 模型
+        - image23d: 图像生成 3D 模型
+        - rerank_multimodal: 多模态重排序
+        - text2music: 文本生成音乐
+        - image_video2video: 图像/视频生成视频
+        - audio_video2video: 音频/视频生成视频
+
+        Args:
+            event: 消息事件对象
+            type_param: 模型类型参数（可选），格式：--type=<类型>
+
+        Yields:
+            模型列表或错误消息
+        """
+        user_id = event.get_sender_id()
+        request_id = user_id
+
+        self.debug_log(f"[模型列表] 收到请求: user_id={user_id}, type_param={type_param}")
+
+        # 防抖检查
+        if self.rate_limiter.check_debounce(request_id):
+            self.debug_log(f"[模型列表] 请求被防抖拦截: user_id={user_id}")
+            yield event.plain_result("操作太快了，请稍后再试。")
+            return
+
+        if self.rate_limiter.is_processing(request_id):
+            self.debug_log(f"[模型列表] 用户正在处理中: user_id={user_id}")
+            yield event.plain_result("您有正在进行的请求，请稍候...")
+            return
+
+        self.rate_limiter.add_processing(request_id)
+
+        try:
+            # 使用 ModelLister 获取模型列表
+            success, result = await self.model_lister.list_models(type_param)
+            yield event.plain_result(result)
+        finally:
+            self.rate_limiter.remove_processing(request_id)
+            self.debug_log(f"[模型列表] 处理完成: user_id={user_id}")
 
     async def close(self) -> None:
         """清理插件资源

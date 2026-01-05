@@ -170,6 +170,70 @@ class GiteeAIClient:
 
         return filepath
 
+    async def get_models(self, vendor: str = "", type: str = "") -> list[dict[str, Any]]:
+        """获取模型列表
+
+        Args:
+            vendor: 算力厂商筛选（可选）
+            type: 模型类型筛选（可选），支持：text2image, text2text, embeddings, etc.
+
+        Returns:
+            模型列表数据，每个元素包含 id, created, owned_by 等字段
+
+        Raises:
+            RuntimeError: API 调用失败时抛出异常
+        """
+        self.debug_log(f"开始获取模型列表: vendor={vendor}, type={type}")
+
+        api_key = self._get_next_api_key()
+        session = await self.client_manager.get_http_session()
+
+        # 构建查询参数
+        params: list[tuple[str, str]] = []
+        if vendor:
+            params.append(("vendor", vendor))
+        if type:
+            params.append(("type", type))
+
+        self.debug_log(f"发送模型列表请求: params={params}")
+
+        try:
+            # 使用原始 HTTP 请求调用 Gitee AI 的 models API
+            url = f"{self.base_url}/models"
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+            }
+
+            response = await session.get(url, params=params, headers=headers)
+            response.raise_for_status()
+
+            data = await response.json()
+            self.debug_log(f"模型列表获取成功: response_type={data.get('object')}, count={len(data.get('data', []))}")
+
+            # 转换为字典列表
+            models_data = []
+            for model in data.get("data", []):
+                models_data.append({
+                    "id": model.get("id", ""),
+                    "created": model.get("created", 0),
+                    "owned_by": model.get("owned_by", ""),
+                })
+
+            return models_data
+
+        except Exception as e:
+            self.debug_log(f"API 调用失败: {e}")
+            # 根据错误类型返回友好的错误信息
+            error_msg = str(e)
+            if "401" in error_msg or "403" in error_msg:
+                raise RuntimeError("API Key 无效或已过期，请检查配置。") from e
+            elif "429" in error_msg:
+                raise RuntimeError("API 调用次数超限或并发过高，请稍后再试。") from e
+            elif "500" in error_msg:
+                raise RuntimeError("Gitee AI 服务器内部错误，请稍后再试。") from e
+            else:
+                raise RuntimeError(f"API调用失败: {error_msg}") from e
+
     async def close(self) -> None:
         """清理资源"""
         self.debug_log("开始清理 API 客户端资源")

@@ -25,6 +25,12 @@ $:
                 script:
                     - npm install -g @qwen-code/qwen-code@latest
                     - echo "qwen CLI安装完成"
+              - name: 安装CodeBuddy CLI
+                    - npm install -g @tencent-ai/codebuddy-code
+                    - echo "CodeBuddy CLI安装完成"
+              - name: 安装Qoder CLI
+                  - curl -fsSL https://qoder.com/install | bash
+                  - echo "Qoder CLI安装完成"
               - name: 安装sudo更新APT源
                 script:
                     - sudo apt-get update
@@ -44,6 +50,12 @@ $:
                 script:
                     - chmod +x /workspace/install_agents.sh
                     - /workspace/install_agents.sh
+              - name: 克隆Astrbot并重新克隆
+                script:
+                  - git clone https://github.com/AstrBotDevs/AstrBot.git /tmp/astrbot-tmp
+                  - cp -r /tmp/astrbot-tmp/astrbot /workspace
+                  - rm -rf /tmp/astrbot-tmp
+                  - git clone https://github.com/AstrBotDevs/AstrBot.git /AstrBot
 
 main:
       push:

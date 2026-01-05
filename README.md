@@ -1,11 +1,16 @@
 # AstrBot AI 图像生成插件 （有免费额度）
 
-[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Bxiaomizhoubaobei%2Bastrbot_plugin_models_ai.svg?type=shield&issueType=security)](https://app.fossa.com/projects/git%2Bgithub.com%2Bxiaomizhoubaobei%2Bastrbot_plugin_models_ai?ref=badge_shield&issueType=security)
-[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Bxiaomizhoubaobei%2Bastrbot_plugin_models_ai.svg?type=large&issueType=license)](https://app.fossa.com/projects/git%2Bgithub.com%2Bxiaomizhoubaobei%2Bastrbot_plugin_models_ai?ref=badge_large&issueType=license)
 [![Language](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
 [![License](https://img.shields.io/github/license/xiaomizhoubaobei/astrbot_plugin_models_ai)](LICENSE)
 [![GitHub Release](https://img.shields.io/github/v/release/xiaomizhoubaobei/astrbot_plugin_models_ai)](https://github.com/xiaomizhoubaobei/astrbot_plugin_models_ai/releases)
 [![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)](https://github.com/xiaomizhoubaobei/astrbot_plugin_models_ai/graphs/commit-activity)
+[![GitHub Stars](https://img.shields.io/github/stars/xiaomizhoubaobei/astrbot_plugin_models_ai?style=social)](https://github.com/xiaomizhoubaobei/astrbot_plugin_models_ai/stargazers)
+[![GitHub Forks](https://img.shields.io/github/forks/xiaomizhoubaobei/astrbot_plugin_models_ai?style=social)](https://github.com/xiaomizhoubaobei/astrbot_plugin_models_ai/network/members)
+[![GitHub Watchers](https://img.shields.io/github/watchers/xiaomizhoubaobei/astrbot_plugin_models_ai?style=social)](https://github.com/xiaomizhoubaobei/astrbot_plugin_models_ai/watchers)
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fxiaomizhoubaobei%2Fastrbot_plugin_models_ai.svg?type=shield&issueType=license)](https://app.fossa.com/projects/git%2Bgithub.com%2Fxiaomizhoubaobei%2Fastrbot_plugin_models_ai?ref=badge_shield&issueType=license)
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fxiaomizhoubaobei%2Fastrbot_plugin_models_ai.svg?type=shield&issueType=security)](https://app.fossa.com/projects/git%2Bgithub.com%2Fxiaomizhoubaobei%2Fastrbot_plugin_models_ai?ref=badge_shield&issueType=security)
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fxiaomizhoubaobei%2Fastrbot_plugin_models_ai.svg?type=small)](https://app.fossa.com/projects/git%2Bgithub.com%2Fxiaomizhoubaobei%2Fastrbot_plugin_models_ai?ref=badge_small)
+
 
 > **当前版本**: v0.0.1
 
@@ -102,6 +107,3 @@
 
 ---
 
-[![GitHub Stars](https://img.shields.io/github/stars/xiaomizhoubaobei/astrbot_plugin_models_ai?style=social)](https://github.com/xiaomizhoubaobei/astrbot_plugin_models_ai/stargazers)
-[![GitHub Forks](https://img.shields.io/github/forks/xiaomizhoubaobei/astrbot_plugin_models_ai?style=social)](https://github.com/xiaomizhoubaobei/astrbot_plugin_models_ai/network/members)
-[![GitHub Watchers](https://img.shields.io/github/watchers/xiaomizhoubaobei/astrbot_plugin_models_ai?style=social)](https://github.com/xiaomizhoubaobei/astrbot_plugin_models_ai/watchers)

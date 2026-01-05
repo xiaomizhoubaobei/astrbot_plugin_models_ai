@@ -112,14 +112,14 @@ jobs:
             本 Release 包含以下文件：
 
             - **astrbot_plugin_models_ai-*.zip**: 插件安装包
-            - **evidence-bundle-*.tar.gz**: CI 证据包（包含源代码、Git 元数据、依赖项、SBOM 等）
-            - **evidence-bundle-*.tar.gz.sig**: 证据包的 Sigstore 签名
-            - **evidence-bundle-*.tar.gz.crt**: 证据包的签名证书
+            - **evidence-bundle.tar.gz**: CI 证据包（包含源代码、Git 元数据、依赖项、SBOM 等）
+            - **evidence-bundle.tar.gz.sig**: 证据包的 Sigstore 签名
+            - **evidence-bundle.tar.gz.crt**: 证据包的签名证书
 
             证据包用于合规性审计和构建验证，可以使用以下命令验证：
 
             ```bash
-            ci-evidence-pack verify evidence-bundle-*.tar.gz
+            ci-evidence-pack verify evidence-bundle.tar.gz
             ```
           draft: false
           prerelease: false
