@@ -3,36 +3,34 @@
 支持 /ai 命令调用，支持多种图片比例和多 Key 轮询。
 """
 
-import time
 from typing import Any, AsyncGenerator
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter as filter_cmd
-from astrbot.api.message_components import Image, Plain
 from astrbot.api.star import Context, Star
-
-from .api_client import GiteeAIClient
-from .config import (
+from .commands import generate_image_command, list_models_command, help_command, switch_model_command
+from .core import (
     DEFAULT_BASE_URL,
     DEFAULT_INFERENCE_STEPS,
     DEFAULT_MODEL,
     DEFAULT_NEGATIVE_PROMPT,
     DEFAULT_SIZE,
     SUPPORTED_RATIOS,
+    RateLimiter,
     parse_api_keys,
 )
-from .model_manager import ModelLister
-from .rate_limiter import RateLimiter
+from .gitee import GiteeAIClient, ModelLister
+from .llm_tools import draw_image_tool
 
 
-class GiteeAIImage(Star):
-    """Gitee AI 图像生成插件
+class AIImage(Star):
+    """AI 图像生成插件
 
     提供命令行方式生成图片，支持多种图片比例和 API Key 轮询。
     """
 
     def __init__(self, context: Context, config: dict) -> None:
-        """初始化 Gitee AI 图像生成插件
+        """初始化  AI 图像生成插件
 
         Args:
             context: AstrBot 上下文对象
@@ -70,7 +68,6 @@ class GiteeAIImage(Star):
         self.rate_limiter = RateLimiter(debug_mode=self.debug_mode)
         self.model_lister = ModelLister(
             api_client=self.api_client,
-            rate_limiter=self.rate_limiter,
             debug_mode=self.debug_mode,
         )
 
@@ -126,16 +123,36 @@ class GiteeAIImage(Star):
         if self.debug_mode:
             logger.debug(f"[AstrBot-GiteeAI] {message}")
 
-    @filter_cmd.command("ai-gitee")
-    async def generate_image_command(
+    @filter_cmd.command_group("ai-gitee")
+    async def ai_gitee_group(self):
+        """ai-gitee 指令组，提供 AI 图像生成和模型查询功能"""
+        pass
+
+    @ai_gitee_group.command("help")
+    async def help_command_wrapper(self, event: "AstrMessageEvent"):
+        """显示帮助信息
+
+        用法: /ai-gitee help
+
+        Args:
+            event: 消息事件对象
+
+        Yields:
+            帮助信息
+        """
+        async for result in help_command(self, event):
+            yield result
+
+    @ai_gitee_group.command("generate")
+    async def generate_image_command_wrapper(
         self, event: "AstrMessageEvent", prompt: str
     ) -> AsyncGenerator[Any, None]:
         """生成图片指令（命令行调用）
 
         通过命令行调用，支持指定图片比例。
 
-        用法: /ai-gitee <提示词> [比例]
-        示例: /ai-gitee 一个女孩 9:16
+        用法: /ai-gitee generate <提示词> [比例]
+        示例: /ai-gitee generate 一个女孩 9:16
         支持比例: 1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16
 
         Args:
@@ -148,64 +165,30 @@ class GiteeAIImage(Star):
         Raises:
             Exception: 图片生成失败时抛出异常
         """
-        if not prompt:
-            self.debug_log("[命令] 收到空提示词")
-            yield event.plain_result("请提供提示词！使用方法：/ai-gitee <提示词> [比例]")
-            return
+        async for result in generate_image_command(self, event, prompt):
+            yield result
 
-        user_id = event.get_sender_id()
-        request_id = user_id
+    @ai_gitee_group.command("switch-model")
+    async def switch_model_command_wrapper(
+        self, event: "AstrMessageEvent", model_name: str
+    ) -> AsyncGenerator[Any, None]:
+        """切换模型命令
 
-        self.debug_log(f"[命令] 收到生图请求: user_id={user_id}, prompt={prompt[:50]}...")
+        切换当前使用的 AI 模型。
 
-        # 防抖检查
-        if self.rate_limiter.check_debounce(request_id):
-            self.debug_log(f"[命令] 请求被防抖拦截: user_id={user_id}")
-            yield event.plain_result("操作太快了，请稍后再试。")
-            return
+        用法: /ai-gitee switch-model <模型名称>
+        示例: /ai-gitee switch-model z-image-turbo
+              /ai-gitee switch-model flux-schnell
 
-        if self.rate_limiter.is_processing(request_id):
-            self.debug_log(f"[命令] 用户正在处理中: user_id={user_id}")
-            yield event.plain_result("您有正在进行的生图任务，请稍候...")
-            return
+        Args:
+            event: 消息事件对象
+            model_name: 要切换到的模型名称
 
-        self.rate_limiter.add_processing(request_id)
-
-        # 解析提示词和目标尺寸
-        try:
-            prompt, target_size = self._parse_prompt_and_size(prompt)
-        except ValueError as e:
-            self.debug_log(f"[命令] 参数解析失败: {e}")
-            yield event.plain_result(f"{e}。使用方法：/ai-gitee <提示词> [比例]")
-            return
-
-        self.debug_log(f"[命令] 解析参数: prompt={prompt[:50]}..., size={target_size}")
-
-        try:
-            self.debug_log(f"[命令] 开始生成图片: user_id={user_id}")
-            # 先发送提示消息
-            yield event.plain_result("正在生成图片，请稍候...")
-            start_time = time.time()
-            image_path = await self.api_client.generate_image(prompt, size=target_size)
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-            self.debug_log(
-                f"[命令] 图片生成成功: path={image_path},"
-                f"耗时={elapsed_time:.2f}秒"
-            )
-            # 将图片和耗时信息合并到一个消息中发送
-            yield event.chain_result([
-                Image.fromFileSystem(image_path),  # type: ignore
-                Plain(f"图片生成完成，耗时：{elapsed_time:.2f}秒")
-            ])
-
-        except Exception as e:
-            logger.error(f"生图失败: {e}", exc_info=True)
-            self.debug_log(f"[命令] 图片生成失败: error={str(e)}")
-            yield event.plain_result(f"生成图片失败: {str(e)}")
-        finally:
-            self.rate_limiter.remove_processing(request_id)
-            self.debug_log(f"[命令] 处理完成: user_id={user_id}")
+        Yields:
+            操作结果或错误消息
+        """
+        async for result in switch_model_command(self, event, model_name):
+            yield result
 
     @filter_cmd.llm_tool(name="draw_image")
     async def draw(self, event: "AstrMessageEvent", prompt: str):
@@ -214,68 +197,20 @@ class GiteeAIImage(Star):
         Args:
             prompt(str): 图片提示词，需要包含主体、场景、风格等描述
         """
-        user_id = event.get_sender_id()
-        request_id = user_id
+        return await draw_image_tool(self, event, prompt)
 
-        self.debug_log(f"[LLM工具] 收到生图请求: user_id={user_id}, prompt={prompt[:50]}...")
-
-        # 防抖检查
-        if self.rate_limiter.check_debounce(request_id):
-            self.debug_log(f"[LLM工具] 请求被防抖拦截: user_id={user_id}")
-            return "操作太快了，请稍后再试。"
-
-        if self.rate_limiter.is_processing(request_id):
-            self.debug_log(f"[LLM工具] 用户正在处理中: user_id={user_id}")
-            return "您有正在进行的生图任务，请稍候..."
-
-        self.rate_limiter.add_processing(request_id)
-
-        # 解析提示词和目标尺寸
-        try:
-            prompt, target_size = self._parse_prompt_and_size(prompt)
-        except ValueError as e:
-            self.debug_log(f"[LLM工具] 参数解析失败: {e}")
-            return f"{e}。请提供完整的提示词和可选的比例参数。"
-
-        try:
-            self.debug_log(f"[LLM工具] 开始生成图片: user_id={user_id}, size={target_size}")
-            # 先发送提示消息
-            await event.send(event.plain_result("正在生成图片，请稍候..."))
-            start_time = time.time()
-            image_path = await self.api_client.generate_image(prompt, size=target_size)
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-            self.debug_log(
-                f"[LLM工具] 图片生成成功: path={image_path},"
-                f"耗时={elapsed_time:.2f}秒"
-            )
-            # 将图片和耗时信息合并到一个消息中发送
-            await event.send(event.chain_result([
-                Image.fromFileSystem(image_path),  # type: ignore
-                Plain(f"图片生成完成，耗时：{elapsed_time:.2f}秒")
-            ]))
-            return f"图片已生成并发送。耗时：{elapsed_time:.2f}秒。Prompt: {prompt}"
-
-        except Exception as e:
-            logger.error(f"生图失败: {e}", exc_info=True)
-            self.debug_log(f"[LLM工具] 图片生成失败: error={str(e)}")
-            return f"生成图片时遇到问题: {str(e)}"
-        finally:
-            self.rate_limiter.remove_processing(request_id)
-            self.debug_log(f"[LLM工具] 处理完成: user_id={user_id}")
-
-    @filter_cmd.command("ai-gitee-text2image")
-    async def list_models_command(
+    @ai_gitee_group.command("text2image")
+    async def list_models_command_wrapper(
         self, event: "AstrMessageEvent", type_param: str = ""
     ) -> AsyncGenerator[Any, None]:
         """获取模型列表命令
 
         支持按类型筛选模型列表。默认返回 text2image 类型模型。
 
-        用法: /ai-gitee-text2image [--type=<类型>]
-        示例: /ai-gitee-text2image              # 返回 text2image 类型模型（默认）
-              /ai-gitee-text2image --type=all    # 返回所有类型模型
-              /ai-gitee-text2image --type=text2text
+        用法: /ai-gitee text2image [--type=<类型>]
+        示例: /ai-gitee text2image              # 返回 text2image 类型模型（默认）
+              /ai-gitee text2image --type=all    # 返回所有类型模型
+              /ai-gitee text2image --type=text2text
 
         支持类型:
         - all: 所有类型
@@ -308,31 +243,8 @@ class GiteeAIImage(Star):
         Yields:
             模型列表或错误消息
         """
-        user_id = event.get_sender_id()
-        request_id = user_id
-
-        self.debug_log(f"[模型列表] 收到请求: user_id={user_id}, type_param={type_param}")
-
-        # 防抖检查
-        if self.rate_limiter.check_debounce(request_id):
-            self.debug_log(f"[模型列表] 请求被防抖拦截: user_id={user_id}")
-            yield event.plain_result("操作太快了，请稍后再试。")
-            return
-
-        if self.rate_limiter.is_processing(request_id):
-            self.debug_log(f"[模型列表] 用户正在处理中: user_id={user_id}")
-            yield event.plain_result("您有正在进行的请求，请稍候...")
-            return
-
-        self.rate_limiter.add_processing(request_id)
-
-        try:
-            # 使用 ModelLister 获取模型列表
-            success, result = await self.model_lister.list_models(type_param)
-            yield event.plain_result(result)
-        finally:
-            self.rate_limiter.remove_processing(request_id)
-            self.debug_log(f"[模型列表] 处理完成: user_id={user_id}")
+        async for result in list_models_command(self, event, type_param):
+            yield result
 
     async def close(self) -> None:
         """清理插件资源
