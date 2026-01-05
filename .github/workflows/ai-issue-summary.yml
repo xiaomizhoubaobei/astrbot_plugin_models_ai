@@ -25,12 +25,12 @@ jobs:
 
       # 2. 检出代码
       - name: Checkout repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
       # 3. 运行 AI 推理
       - name: Run AI inference
         id: inference
-        uses: actions/ai-inference@b81b2afb8390ee6839b494a404766bef6493c7d9 # v1.2.8
+        uses: actions/ai-inference@334892bb203895caaed82ec52d23c1ed9385151e # v2.0.4
         with:
           prompt: |
             Summarize the following GitHub issue in one paragraph:

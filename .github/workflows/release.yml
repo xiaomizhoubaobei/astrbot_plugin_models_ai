@@ -24,7 +24,7 @@ jobs:
 
       # 1. 检出代码
       - name: Checkout code
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           fetch-depth: 0  # 获取完整的 git 历史
 
@@ -79,8 +79,7 @@ jobs:
           if [ -z "$PREVIOUS_TAG" ]; then
             NOTES="## 🎉 首次发布这是 AstrBot AI 图像生成插件的首次正式发布。"
           else
-            NOTES="## 📝 更新日志
-### 本次更新了$(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"- %s" --no-merges | sed 's/^[a-z-]*: //')"
+            NOTES="## 📝 更新日志\n### 本次更新了\n### $(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"- %s" --no-merges | sed 's/^[a-z-]*: //')"
           fi
 
           # 保存到文件
@@ -102,7 +101,7 @@ jobs:
 
       # 10. 创建 GitHub Release
       - name: Create Release
-        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
           tag_name: ${{ steps.get_version.outputs.tag_name }}
           name: Release ${{ steps.get_version.outputs.version }}
