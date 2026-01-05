@@ -111,7 +111,7 @@ async def ai_edit_image_command(
             prompt=prompt,
             image_paths=image_paths,
             task_types=task_types,
-            model=plugin.edit_model,
+            model="Qwen-Image-Edit-2511",
             num_inference_steps=4,
             guidance_scale=1.0,
             download_urls=plugin.download_image_urls,

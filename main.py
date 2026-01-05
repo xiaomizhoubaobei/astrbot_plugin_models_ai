@@ -40,7 +40,6 @@ class AIImage(Star):
         self.config = config
         self.debug_mode = config.get("debug_mode", False)
         self.download_image_urls = config.get("download_image_urls", False)
-        self.edit_model = config.get("edit_model", "Qwen-Image-Edit-2511")
 
         self.debug_log("开始初始化插件")
 
@@ -55,7 +54,7 @@ class AIImage(Star):
         self.debug_log(
             f"配置解析完成: model={model}, size={default_size}, "
             f"api_keys_count={len(api_keys)}, debug_mode={self.debug_mode}, "
-            f"download_image_urls={self.download_image_urls}, edit_model={self.edit_model}"
+            f"download_image_urls={self.download_image_urls}"
         )
 
         # 初始化组件
