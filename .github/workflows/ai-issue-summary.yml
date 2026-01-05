@@ -30,7 +30,7 @@ jobs:
       # 3. 运行 AI 推理
       - name: Run AI inference
         id: inference
-        uses: actions/ai-inference@b81b2afb8390ee6839b494a404766bef6493c7d9 # v1.2.8
+        uses: actions/ai-inference@334892bb203895caaed82ec52d23c1ed9385151e # v2.0.4
         with:
           prompt: |
             Summarize the following GitHub issue in one paragraph:
