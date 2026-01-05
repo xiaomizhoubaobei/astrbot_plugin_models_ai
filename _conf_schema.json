@@ -35,5 +35,17 @@
         "type": "bool",
         "default": false,
         "hint": "开启后输出详细的 Debug 日志，便于调试和问题诊断"
+    },
+    "download_image_urls": {
+        "description": "下载图片 URL",
+        "type": "bool",
+        "default": false,
+        "hint": "为 false 时直接将图片 URL 传递给 API（推荐）；为 true 时先下载图片再上传"
+    },
+    "edit_model": {
+        "description": "图片编辑模型名称",
+        "type": "string",
+        "default": "Qwen-Image-Edit-2511",
+        "hint": "用于 AI 图片编辑的模型，例如: Qwen-Image-Edit-2511"
     }
 }

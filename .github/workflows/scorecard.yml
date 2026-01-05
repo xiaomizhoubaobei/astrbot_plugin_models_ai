@@ -43,13 +43,13 @@ jobs:
 
       # 2. 检出代码
       - name: "Checkout code"
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
 
       # 3. 运行分析
       - name: "Run analysis"
-        uses: ossf/scorecard-action@v2.4.1
+        uses: ossf/scorecard-action@f49aabe0b5af0936a0987cfb85d86b75731b0186 # v2.4.1
         with:
           results_file: results.sarif
           results_format: sarif
@@ -72,7 +72,7 @@ jobs:
 
       # 4. 将结果上传为工件（可选）。注释掉将禁用 SARIF 格式的运行结果上传到仓库 Actions 标签页
       - name: "Upload artifact"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: SARIF file
           path: results.sarif
@@ -81,6 +81,6 @@ jobs:
       # 5. 将结果上传到 GitHub 的代码扫描仪表板（可选）
       # 注释掉将禁用结果上传到仓库的代码扫描仪表板
       - name: "Upload to code-scanning"
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@45c373516f557556c15d420e3f5e0aa3d64366bc # v3.31.9
         with:
           sarif_file: results.sarif

@@ -16,6 +16,6 @@ jobs:
           egress-policy: audit
 
       - name: Check PR sign off
-        uses: live627/check-pr-signoff-action@v1
+        uses: live627/check-pr-signoff-action@990e5cc2aa4058b4012f989c9c9e689734e52c54 # v1.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

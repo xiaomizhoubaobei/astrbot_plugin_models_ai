@@ -8,7 +8,7 @@ from typing import Any, AsyncGenerator
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter as filter_cmd
 from astrbot.api.star import Context, Star
-from .commands import generate_image_command, list_models_command, help_command, switch_model_command
+from .commands import generate_image_command, list_models_command, help_command, switch_model_command, ai_edit_image_command
 from .core import (
     DEFAULT_BASE_URL,
     DEFAULT_INFERENCE_STEPS,
@@ -39,6 +39,8 @@ class AIImage(Star):
         super().__init__(context)
         self.config = config
         self.debug_mode = config.get("debug_mode", False)
+        self.download_image_urls = config.get("download_image_urls", False)
+        self.edit_model = config.get("edit_model", "Qwen-Image-Edit-2511")
 
         self.debug_log("开始初始化插件")
 
@@ -52,7 +54,8 @@ class AIImage(Star):
 
         self.debug_log(
             f"配置解析完成: model={model}, size={default_size}, "
-            f"api_keys_count={len(api_keys)}, debug_mode={self.debug_mode}"
+            f"api_keys_count={len(api_keys)}, debug_mode={self.debug_mode}, "
+            f"download_image_urls={self.download_image_urls}, edit_model={self.edit_model}"
         )
 
         # 初始化组件
@@ -198,6 +201,41 @@ class AIImage(Star):
             prompt(str): 图片提示词，需要包含主体、场景、风格等描述
         """
         return await draw_image_tool(self, event, prompt)
+
+    @ai_gitee_group.command("ai-edit")
+    async def ai_edit_image_command_wrapper(
+        self, event: "AstrMessageEvent", prompt: str = "", task_type: str = ""
+    ) -> AsyncGenerator[Any, None]:
+        """AI 图片编辑命令
+
+        使用 Gitee AI 的图片编辑功能对图片进行智能编辑。
+
+        用法: /ai-gitee ai-edit <提示词> [任务类型]
+
+        参数:
+        - 提示词: 描述你想要的编辑效果
+        - 任务类型（可选）:
+          * id: 身份编辑（保持人物身份）
+          * style: 风格编辑（改变图片风格）
+          * 默认: style
+
+        示例:
+          /ai-gitee ai-edit 将这张照片转换成油画风格
+          /ai-gitee ai-edit 让这张照片更有电影感 style
+          /ai-gitee ai-edit 保持人物特征，改变背景为海滩 id
+
+        注意: 发送命令时请同时附上要编辑的图片（支持多张图片）
+
+        Args:
+            event: 消息事件对象
+            prompt: 编辑提示词
+            task_type: 任务类型（id 或 style）
+
+        Yields:
+            编辑后的图片或错误消息
+        """
+        async for result in ai_edit_image_command(self, event, prompt, task_type):
+            yield result
 
     @ai_gitee_group.command("text2image")
     async def list_models_command_wrapper(

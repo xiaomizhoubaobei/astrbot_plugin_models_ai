@@ -243,6 +243,207 @@ class GiteeAIClient:
             else:
                 raise RuntimeError(f"API调用失败: {error_msg}") from e
 
+    async def edit_image(
+        self,
+        prompt: str,
+        image_paths: list[str],
+        task_types: list[str] | None = None,
+        model: str = "Qwen-Image-Edit-2511",
+        num_inference_steps: int = 4,
+        guidance_scale: float = 1.0,
+        download_urls: bool = False,
+    ) -> str:
+        """调用 Gitee AI API 编辑图片，返回本地文件路径
+
+        Args:
+            prompt: 编辑提示词
+            image_paths: 图片路径列表（支持本地路径或 URL）
+            task_types: 任务类型列表（可选），支持：id, style 等
+            model: 编辑模型名称
+            num_inference_steps: 推理步数
+            guidance_scale: 引导系数
+            download_urls: 是否下载 URL 图片后再上传（默认 False，直接传 URL）
+
+        Returns:
+            编辑后的图片本地文件路径
+
+        Raises:
+            Exception: API 调用失败时抛出异常
+        """
+        self.debug_log(
+            f"开始编辑图片: prompt={prompt[:50]}..., "
+            f"images={len(image_paths)}, task_types={task_types}, download_urls={download_urls}"
+        )
+
+        api_key = self._get_next_api_key()
+        session = await self.client_manager.get_http_session()
+
+        # 构建请求参数
+        if task_types is None:
+            task_types = ["style"]
+
+        # 构建表单字段
+        fields = [
+            ("prompt", prompt),
+            ("model", model),
+            ("num_inference_steps", str(num_inference_steps)),
+            ("guidance_scale", str(guidance_scale)),
+        ]
+
+        # 添加任务类型
+        for item in task_types:
+            if isinstance(item, str):
+                fields.append(("task_types", item))
+            else:
+                import json
+                fields.append(("task_types", json.dumps(item)))
+
+        # 添加图片
+        import mimetypes
+        import os
+
+        for filepath in image_paths:
+            name = os.path.basename(filepath)
+            if filepath.startswith(("http://", "https://")):
+                if download_urls:
+                    # 下载远程图片后再上传
+                    response = await session.get(filepath, timeout=10)
+                    response.raise_for_status()
+                    content = await response.read()
+                    mime_type = response.headers.get("Content-Type", "application/octet-stream")
+                    fields.append(("image", (name, content, mime_type)))
+                else:
+                    # 直接传递 URL
+                    fields.append(("image_url", filepath))
+            else:
+                # 读取本地图片
+                mime_type, _ = mimetypes.guess_type(filepath)
+                with open(filepath, "rb") as f:
+                    content = f.read()
+                fields.append(("image", (name, content, mime_type or "application/octet-stream")))
+
+        # 构建请求头
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "X-Failover-Enabled": "true",
+        }
+
+        # 发送请求
+        import aiohttp
+
+        data = aiohttp.FormData()
+        for field in fields:
+            if isinstance(field[1], tuple):
+                # 文件字段
+                name, value, content_type = field[1]
+                data.add_field(field[0], value, filename=name, content_type=content_type)
+            else:
+                # 普通字段
+                data.add_field(field[0], field[1])
+
+        self.debug_log("发送图片编辑请求")
+
+        try:
+            async with session.post(
+                f"{self.base_url}/async/images/edits",
+                headers=headers,
+                data=data
+            ) as response:
+                response.raise_for_status()
+                result = await response.json()
+
+            task_id = result.get("task_id")
+            if not task_id:
+                raise RuntimeError("未返回任务 ID")
+
+            self.debug_log(f"任务创建成功: task_id={task_id}")
+
+            # 轮询任务状态
+            filepath = await self._poll_edit_task(task_id, session, api_key)
+            self.debug_log(f"图片编辑完成: {filepath}")
+
+            return filepath
+
+        except Exception as e:
+            self.debug_log(f"图片编辑失败: {e}")
+            raise RuntimeError(f"图片编辑失败: {str(e)}") from e
+
+    async def _poll_edit_task(
+        self,
+        task_id: str,
+        session,
+        api_key: str,
+        timeout: int = 30 * 60,
+        retry_interval: int = 10,
+    ) -> str:
+        """轮询图片编辑任务状态
+
+        Args:
+            task_id: 任务 ID
+            session: HTTP 会话
+            api_key: API Key
+            timeout: 超时时间（秒）
+            retry_interval: 重试间隔（秒）
+
+        Returns:
+            编辑后的图片本地文件路径
+
+        Raises:
+            RuntimeError: 任务失败或超时时抛出异常
+        """
+        max_attempts = int(timeout / retry_interval)
+        attempts = 0
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+        }
+
+        while attempts < max_attempts:
+            attempts += 1
+            self.debug_log(f"轮询任务状态 [{attempts}/{max_attempts}]...")
+
+            try:
+                async with session.get(
+                    f"{self.base_url}/task/{task_id}",
+                    headers=headers,
+                    timeout=10
+                ) as response:
+                    response.raise_for_status()
+                    result = await response.json()
+
+                if result.get("error"):
+                    error_msg = result.get("message", "未知错误")
+                    raise RuntimeError(f"任务错误: {error_msg}")
+
+                status = result.get("status", "unknown")
+                self.debug_log(f"任务状态: {status}")
+
+                if status == "success":
+                    if "output" in result and "file_url" in result["output"]:
+                        file_url = result["output"]["file_url"]
+                        completed_at = result.get('completed_at', 0)
+                        started_at = result.get('started_at', 0)
+                        duration = (completed_at - started_at) / 1000 if completed_at and started_at else 0
+                        self.debug_log(f"任务完成，耗时: {duration:.2f}秒")
+                        # 下载图片
+                        return await self.image_manager.download_image(file_url, session)
+                    else:
+                        raise RuntimeError("任务成功但未返回图片 URL")
+                elif status in ["failed", "cancelled"]:
+                    raise RuntimeError(f"任务失败: {status}")
+                else:
+                    # 任务仍在进行中，等待重试
+                    await asyncio.sleep(retry_interval)
+                    continue
+
+            except Exception as e:
+                if attempts >= max_attempts:
+                    raise RuntimeError(f"任务轮询失败: {str(e)}") from e
+                self.debug_log(f"轮询失败，等待重试: {e}")
+                await asyncio.sleep(retry_interval)
+
+        raise RuntimeError(f"任务超时（已等待 {timeout} 秒）")
+
     async def close(self) -> None:
         """清理资源"""
         self.debug_log("开始清理 API 客户端资源")
