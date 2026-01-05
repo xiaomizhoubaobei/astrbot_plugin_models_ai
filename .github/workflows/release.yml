@@ -80,7 +80,7 @@ jobs:
             NOTES="## 🎉 首次发布这是 AstrBot AI 图像生成插件的首次正式发布。"
           else
             NOTES="## 📝 更新日志
-          ### 本次更新了$(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"- %s" --no-merges)"
+### 本次更新了$(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"- %s" --no-merges | sed 's/^[a-z-]*: //')"
           fi
 
           # 保存到文件
