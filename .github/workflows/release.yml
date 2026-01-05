@@ -56,13 +56,17 @@ jobs:
       # 6. 复制插件文件到构建目录
       - name: Copy plugin files
         run: |
-          # 复制所有必要的插件文件
-          cp *.py *.json *.yaml *.txt LICENSE logo.png astrbot_plugin_models_ai/
+          # 复制主程序文件
+          cp main.py astrbot_plugin_models_ai/
+          # 复制配置文件、依赖文件、LICENSE、logo.png 和 README.md
+          cp *.json *.yaml *.txt LICENSE logo.png README.md astrbot_plugin_models_ai/
+          # 复制子目录
+          cp -r commands core gitee llm_tools astrbot_plugin_models_ai/
 
       # 7. 打包为 zip 文件
       - name: Create zip package
         run: |
-          zip -r astrbot_plugin_models_ai-${{ steps.get_version.outputs.version }}.zip astrbot_plugin_models_ai/
+          zip -r astrbot_plugin_models_ai.zip astrbot_plugin_models_ai/
 
       # 8. 生成 Release Notes
       - name: Generate Release Notes
@@ -124,7 +128,7 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            astrbot_plugin_models_ai-${{ steps.get_version.outputs.version }}.zip
+            astrbot_plugin_models_ai.zip
             _evidence_dist/*.tar.gz
             _evidence_dist/*.sig
             _evidence_dist/*.crt
