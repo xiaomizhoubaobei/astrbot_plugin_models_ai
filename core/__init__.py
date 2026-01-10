@@ -4,6 +4,7 @@
 """
 
 from .client_manager import ClientManager
+from .command_utils import check_rate_limit, parse_prompt_and_size
 from .config import (
     CLEANUP_INTERVAL,
     DEFAULT_BASE_URL,
@@ -37,4 +38,6 @@ __all__ = [
     "ClientManager",
     "ImageManager",
     "RateLimiter",
+    "check_rate_limit",
+    "parse_prompt_and_size",
 ]

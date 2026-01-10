@@ -8,7 +8,7 @@ from typing import Any, AsyncGenerator
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter as filter_cmd
 from astrbot.api.star import Context, Star
-from .commands import generate_image_command, list_models_command, help_command, switch_model_command, ai_edit_image_command
+from .commands import generate_image_command, list_models_command, help_command, switch_model_command, ai_edit_image_command, style_command
 from .core import (
     DEFAULT_BASE_URL,
     DEFAULT_INFERENCE_STEPS,
@@ -18,6 +18,7 @@ from .core import (
     SUPPORTED_RATIOS,
     RateLimiter,
     parse_api_keys,
+    parse_prompt_and_size,
 )
 from .gitee import GiteeAIClient, ModelLister
 from .llm_tools import draw_image_tool
@@ -74,47 +75,6 @@ class AIImage(Star):
         )
 
         self.debug_log("插件初始化完成")
-
-    def _parse_prompt_and_size(self, prompt: str) -> tuple[str, str]:
-        """解析提示词和目标尺寸
-
-        从提示词中提取比例参数，并计算目标尺寸。
-
-        Args:
-            prompt: 原始提示词，可能包含比例参数（格式：<提示词> [比例]）
-
-        Returns:
-            tuple[str, str]: (解析后的提示词, 目标尺寸)
-
-        Raises:
-            ValueError: 当提示词为空或仅包含比例时抛出异常
-        """
-        # 去除首尾空白字符
-        prompt = prompt.strip()
-
-        # 检查是否为空
-        if not prompt:
-            raise ValueError("提示词不能为空")
-
-        # 解析比例参数
-        ratio = "1:1"
-        prompt_parts = prompt.rsplit(" ", 1)
-        if len(prompt_parts) > 1 and prompt_parts[1] in SUPPORTED_RATIOS:
-            ratio = prompt_parts[1]
-            prompt = prompt_parts[0].strip()
-
-        # 分割后再次检查提示词是否为空
-        if not prompt:
-            raise ValueError("请提供提示词，不能仅指定比例")
-
-        # 确定目标尺寸
-        target_size = self.api_client.default_size
-        if ratio != "1:1" or (
-            ratio == "1:1" and self.api_client.default_size not in SUPPORTED_RATIOS["1:1"]
-        ):
-            target_size = SUPPORTED_RATIOS[ratio][0]
-
-        return prompt, target_size
 
     def debug_log(self, message: str) -> None:
         """输出 Debug 日志
@@ -281,6 +241,44 @@ class AIImage(Star):
             模型列表或错误消息
         """
         async for result in list_models_command(self, event, type_param):
+            yield result
+
+    @ai_gitee_group.command("style")
+    async def style_command_wrapper(
+        self, event: "AstrMessageEvent", style_name: str = "", prompt: str = ""
+    ) -> AsyncGenerator[Any, None]:
+        """风格转换命令
+
+        根据指定的风格名称转换图片风格，可附加自定义描述。
+
+        用法: /ai-gitee style <风格名称> [自定义描述] [比例]
+        示例: /ai-gitee style 手办化                       # 手办风格
+              /ai-gitee style Q版化 一个可爱的女孩        # Q版风格 + 自定义描述
+              /ai-gitee style cos化 猫娘 9:16              # cos风格 + 自定义描述 + 比例
+
+        支持的风格：
+        - 手办化, 手办化2, 手办化3, 手办化4, 手办化5, 手办化6
+        - Q版化, cos化, cos自拍
+        - 痛屋化, 痛屋化2, 痛车化
+        - 孤独的我, 第一视角, 第三视角, 鬼图
+        - 贴纸化, 玉足, 玩偶化, cos相遇
+        - 三视图, 穿搭拆解, 拆解图, 角色界面, 角色设定
+        - 3D打印, 微型化, 挂件化, 姿势表, 高清修复, 人物转身
+        - 绘画四宫格, 发型九宫格, 头像九宫格, 表情九宫格
+        - 多机位, 电影分镜, 动漫分镜
+        - 真人化, 真人化2, 半真人, 半融合
+
+        支持比例: 1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16
+
+        Args:
+            event: 消息事件对象
+            style_name: 风格名称
+            prompt: 自定义描述，可包含比例参数（格式：[描述] [比例]）
+
+        Yields:
+            生成的风格转换图片或错误消息
+        """
+        async for result in style_command(self, event, style_name, prompt):
             yield result
 
     async def close(self) -> None:

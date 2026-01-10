@@ -8,6 +8,7 @@ from .switch_model import switch_model_command
 from .text2image import list_models_command
 from .help import help_command
 from .ai_edit import ai_edit_image_command
+from .style import style_command
 
 __all__ = [
     "generate_image_command",
@@ -15,4 +16,5 @@ __all__ = [
     "list_models_command",
     "help_command",
     "ai_edit_image_command",
+    "style_command",
 ]

@@ -9,6 +9,8 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.message_components import Image, Plain
 
+from ..core import parse_prompt_and_size
+
 
 async def draw_image_tool(
     plugin,
@@ -43,7 +45,7 @@ async def draw_image_tool(
 
     # 解析提示词和目标尺寸
     try:
-        prompt, target_size = plugin._parse_prompt_and_size(prompt)
+        prompt, target_size = parse_prompt_and_size(plugin, prompt)
     except ValueError as e:
         plugin.debug_log(f"[LLM工具] 参数解析失败: {e}")
         return f"{e}。请提供完整的提示词和可选的比例参数。"

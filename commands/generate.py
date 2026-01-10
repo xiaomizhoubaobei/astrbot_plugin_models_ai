@@ -9,6 +9,7 @@ from typing import Any, AsyncGenerator
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.message_components import Image, Plain
+from ..core import check_rate_limit, parse_prompt_and_size
 
 
 async def generate_image_command(
@@ -45,22 +46,14 @@ async def generate_image_command(
 
     plugin.debug_log(f"[命令] 收到生图请求: user_id={user_id}, prompt={prompt[:50]}...")
 
-    # 防抖检查
-    if plugin.rate_limiter.check_debounce(request_id):
-        plugin.debug_log(f"[命令] 请求被防抖拦截: user_id={user_id}")
-        yield event.plain_result("操作太快了，请稍后再试。")
+    # 检查速率限制和防抖
+    async for result in check_rate_limit(plugin, event, "命令", request_id):
+        yield result
         return
-
-    if plugin.rate_limiter.is_processing(request_id):
-        plugin.debug_log(f"[命令] 用户正在处理中: user_id={user_id}")
-        yield event.plain_result("您有正在进行的生图任务，请稍候...")
-        return
-
-    plugin.rate_limiter.add_processing(request_id)
 
     # 解析提示词和目标尺寸
     try:
-        prompt, target_size = plugin._parse_prompt_and_size(prompt)
+        prompt, target_size = parse_prompt_and_size(plugin, prompt)
     except ValueError as e:
         plugin.debug_log(f"[命令] 参数解析失败: {e}")
         yield event.plain_result(f"{e}。使用方法：/ai-gitee generate <提示词> [比例]")

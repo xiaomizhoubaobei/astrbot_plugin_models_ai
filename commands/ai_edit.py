@@ -8,7 +8,10 @@ from typing import Any, AsyncGenerator
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
-from astrbot.api.message_components import Image, Plain
+from astrbot.api.message_components import Plain, Image
+
+from ..core import check_rate_limit
+from ..core.command_utils import extract_images_from_message
 
 
 async def ai_edit_image_command(
@@ -51,18 +54,10 @@ async def ai_edit_image_command(
 
     plugin.debug_log(f"[AI编辑命令] 收到编辑请求: user_id={user_id}, prompt={prompt[:50] if prompt else ''}..., task_type={task_type}")
 
-    # 防抖检查
-    if plugin.rate_limiter.check_debounce(request_id):
-        plugin.debug_log(f"[AI编辑命令] 请求被防抖拦截: user_id={user_id}")
-        yield event.plain_result("操作太快了，请稍后再试。")
+    # 检查速率限制和防抖
+    async for result in check_rate_limit(plugin, event, "AI编辑命令", request_id):
+        yield result
         return
-
-    if plugin.rate_limiter.is_processing(request_id):
-        plugin.debug_log(f"[AI编辑命令] 用户正在处理中: user_id={user_id}")
-        yield event.plain_result("您有正在进行的任务，请稍候...")
-        return
-
-    plugin.rate_limiter.add_processing(request_id)
 
     try:
         # 检查提示词
@@ -82,7 +77,7 @@ async def ai_edit_image_command(
             return
 
         # 获取消息中的图片
-        image_paths = await _extract_images_from_message(event)
+        image_paths = await extract_images_from_message(event)
         if not image_paths:
             plugin.debug_log("[AI编辑命令] 未找到图片")
             yield event.plain_result(
@@ -138,63 +133,3 @@ async def ai_edit_image_command(
     finally:
         plugin.rate_limiter.remove_processing(request_id)
         plugin.debug_log(f"[AI编辑命令] 处理完成: user_id={user_id}")
-
-
-async def _extract_images_from_message(event: AstrMessageEvent) -> list[str]:
-    """从消息中提取所有图片的路径
-
-    Args:
-        event: 消息事件对象
-
-    Returns:
-        图片路径列表
-    """
-    message_obj = event.message_obj
-    image_paths = []
-
-    if not message_obj or not message_obj.message:
-        return image_paths
-
-    for component in message_obj.message:
-        if isinstance(component, Image):
-            # 从 Image 组件中获取图片路径
-            if hasattr(component, 'url') and component.url:
-                # 如果是 URL，需要下载
-                path = await _download_image(component.url)
-                if path:
-                    image_paths.append(path)
-            elif hasattr(component, 'file') and component.file:
-                image_paths.append(component.file)
-            elif hasattr(component, 'path') and component.path:
-                image_paths.append(component.path)
-
-    return image_paths
-
-
-async def _download_image(url: str) -> str | None:
-    """下载图片到本地
-
-    Args:
-        url: 图片 URL
-
-    Returns:
-        本地文件路径
-    """
-    import aiohttp
-    import uuid
-    from pathlib import Path
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as response:
-                if response.status == 200:
-                    data = await response.read()
-                    # 保存到临时目录
-                    temp_dir = Path("data/plugins/astrbot_plugin_models_ai/temp")
-                    temp_dir.mkdir(parents=True, exist_ok=True)
-                    temp_path = temp_dir / f"{uuid.uuid4()}.png"
-                    temp_path.write_bytes(data)
-                    return str(temp_path)
-    except Exception as e:
-        logger.error(f"下载图片失败: {e}")
-        return None
