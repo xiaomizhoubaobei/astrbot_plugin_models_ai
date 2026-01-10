@@ -1,6 +1,6 @@
 name: astrbot_plugin_models_ai
 desc: 可以使用来自多家模型服务提供商的模型生成图片或通过自然语言让 LLM 生成，让bot自拍给你看。
-version: v0.0.5
+version: v0.0.6
 author: 祁筱欣
 repo: https://github.com/xiaomizhoubaobei/astrbot_plugin_models_ai
 
