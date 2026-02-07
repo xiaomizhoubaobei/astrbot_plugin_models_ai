@@ -58,6 +58,7 @@ rm -f "$PRIVATE_KEY_FILE" "$PUBLIC_KEY_FILE"
 
 # 10. 非交互签名测试
 echo "==> 测试 GPG 签名..."
+TEST_RESULT=
 TEST_RESULT=$(echo "hello GPG" | gpg --clearsign 2>/dev/null)
 if grep -q "BEGIN PGP SIGNED MESSAGE" <<<"$TEST_RESULT"; then
     echo "✅ 签名测试通过，GPG 已就绪。"

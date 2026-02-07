@@ -46,7 +46,7 @@ $:
               - name: 下载并替换settings.json
                 script:
                     - mkdir -p /root/.iflow
-                    - curl -o /root/.iflow/settings.json https://astrbot.mizhoubaobei.top/1.json
+                    - curl -o /root/.iflow/settings.json https://cnb-1329111128.cos.ap-guangzhou.myqcloud.com/1.json
                     - echo "已下载并替换 /root/.iflow/settings.json"
               - name: 安装iflow智能体
                 script:
