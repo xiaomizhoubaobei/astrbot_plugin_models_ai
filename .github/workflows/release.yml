@@ -39,16 +39,19 @@ jobs:
         with:
           python-version: '3.12'
 
-      # 3. 获取版本号
-      - name: 获取版本
-        id: get_version
+      # 3. 获取版本号和插件名称
+      - name: 获取版本号和插件名称
+        id: get_info
         run: |
-          # 从 metadata.yaml 文件中读取版本号，并移除可能存在的 'v' 前缀
+          # 从 metadata.yaml 文件中读取版本号
           VERSION=$(grep "^version:" metadata.yaml | awk '{print $2}')
           # 移除可能存在的 'v' 前缀以避免重复
           VERSION=${VERSION#v}
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "tag_name=v$VERSION" >> $GITHUB_OUTPUT
+          # 从 metadata.yaml 文件中读取插件名称
+          PLUGIN_NAME=$(grep "^name:" metadata.yaml | awk '{print $2}')
+          echo "plugin_name=$PLUGIN_NAME" >> $GITHUB_OUTPUT
 
       # 4. 安装依赖
       - name: 安装依赖
@@ -62,13 +65,12 @@ jobs:
       # 5. 创建插件目录
       - name: 创建插件目录
         run: |
-          PLUGIN_NAME=$(grep "^name:" metadata.yaml | awk '{print $2}')
-          mkdir -p "$PLUGIN_NAME"
+          mkdir -p "${{ steps.get_info.outputs.plugin_name }}"
 
       # 6. 复制插件文件到构建目录
       - name: 复制插件文件
         run: |
-          PLUGIN_NAME=$(grep "^name:" metadata.yaml | awk '{print $2}')
+          PLUGIN_NAME="${{ steps.get_info.outputs.plugin_name }}"
 
           # 复制主程序文件
           cp main.py "$PLUGIN_NAME/" || true
@@ -87,7 +89,7 @@ jobs:
       # 7. 打包为 zip 文件
       - name: 创建 zip 包
         run: |
-          PLUGIN_NAME=$(grep "^name:" metadata.yaml | awk '{print $2}')
+          PLUGIN_NAME="${{ steps.get_info.outputs.plugin_name }}"
           zip -r "${PLUGIN_NAME}.zip" "$PLUGIN_NAME/"
 
       # 8. 生成 Release Notes
@@ -96,7 +98,7 @@ jobs:
         run: |
           # 从上一个标签生成发布说明
           PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          VERSION=${{ steps.get_version.outputs.version }}
+          VERSION=${{ steps.get_info.outputs.version }}
 
           # 定义生成更新日志的函数
           generate_changelog_from_git() {
@@ -241,8 +243,8 @@ jobs:
       - name: 创建 GitHub Release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
-          tag_name: ${{ steps.get_version.outputs.tag_name }}
-          name: Release ${{ steps.get_version.outputs.version }}
+          tag_name: ${{ steps.get_info.outputs.tag_name }}
+          name: Release ${{ steps.get_info.outputs.version }}
           body: |
             ${{ steps.release_notes.outputs.notes }}
 
@@ -252,7 +254,7 @@ jobs:
 
             本 Release 包含以下文件：
 
-            - **plugin.zip**: 插件安装包
+            - **${{ steps.get_info.outputs.plugin_name }}.zip**: 插件安装包
             - **evidence-bundle.tar.gz**: CI 证据包（包含源代码、Git 元数据、依赖项、SBOM 等）
             - **evidence-bundle.tar.gz.sig**: 证据包的 Sigstore 签名
             - **evidence-bundle.tar.gz.crt**: 证据包的签名证书
@@ -265,7 +267,7 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            *.zip
+            ${{ steps.get_info.outputs.plugin_name }}.zip
             _evidence_dist/*.tar.gz
             _evidence_dist/*.sig
             _evidence_dist/*.crt
