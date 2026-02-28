@@ -57,7 +57,7 @@ $:
                   - git clone https://github.com/AstrBotDevs/AstrBot.git /tmp/astrbot-tmp
                   - cp -r /tmp/astrbot-tmp/astrbot /workspace
                   - rm -rf /tmp/astrbot-tmp
-                  - git clone https://github.com/AstrBotDevs/AstrBot.git /AstrBot
+                  - git clone https://github.com/AstrBotDevs/AstrBot.git
 
 main:
       push:
