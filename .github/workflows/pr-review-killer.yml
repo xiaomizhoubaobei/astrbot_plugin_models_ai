@@ -57,7 +57,7 @@ jobs:
           echo "instructions=$INSTRUCTIONS" >> $GITHUB_OUTPUT
 
       - name: '运行 iFlow CLI 实现'
-        uses: iflow-ai/iflow-cli-action@v2.0.0
+        uses: iflow-ai/iflow-cli-action@v2.2.1
         id: 'iflow_cli_implementation'
         with:
           api_key: ${{ secrets.IFLOW_API_KEY }}
