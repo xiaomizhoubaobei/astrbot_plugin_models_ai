@@ -161,7 +161,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: '运行 iFLOW CLI PR 审查'
-        uses: iflow-ai/iflow-cli-action@v2.0.0
+        uses: iflow-ai/iflow-cli-action@v2.2.1
         id: 'iflow_cli_pr_review'
         env:
           GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
