@@ -611,7 +611,7 @@ python3 scripts/bailian-memory.py delete --node-id node_abc
 | --- | --- |
 | 名称 | `astrbot_plugin_models_ai` |
 | 类型 | AstrBot 插件（Python） |
-| 版本 | v0.0.6 |
+| 版本 | v0.0.7 |
 | 作者 | 祁筱欣 |
 | Python | 3.12+（CI 使用 black/flake8，声明 3.12+；pre-commit 中 black 指定 3.11） |
 | 上游 API | Gitee AI（`https://ai.gitee.com/v1`，OpenAI 兼容接口） |
