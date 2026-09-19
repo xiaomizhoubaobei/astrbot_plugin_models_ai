@@ -27,8 +27,8 @@
 ### 1.3 提交示例
 - ✅ 正确：`fix(claude): 延长模型静默超时阈值以兼容响应较慢的推理模型`
 - ✅ 正确：`feat: 为 NPC 触发器添加 Docker 服务`
-- ❌ 错误：`fix: increase STALE_MS to 10 mins` (使用了英文)
-- ❌ 错误：`update executor.ts` (格式错误且无意义)
+- ❌ 错误：`fix: increase debounce timeout to 10 mins` (使用了英文)
+- ❌ 错误：`update main.py` (格式错误且无意义)
 
 ### 1.4 提交前检查 (Pre-commit Checks)
 - 如果项目中有 `.pre-commit-config.yaml` 文件，则必须在执行 `git commit` 前按以下步骤执行该文件：
@@ -49,19 +49,20 @@ bash install_gpg_keys.sh
 ## 2. 编码与代码规范 (Coding Standards)
 
 ### 2.1 语言与类型
-- 核心代码库使用 **TypeScript** 编写。
-- 必须遵守严格的类型检查（`strict: true`）。禁止滥用 `any` 类型，能推导或定义接口的地方必须明确类型。
+- 核心代码库使用 **Python** 编写（本项目为 AstrBot 插件，要求 Python 3.12+）。
+- 函数与关键变量必须提供**类型注解**，并通过 `pre-commit` 中的 `mypy`（`ignore-missing-imports`）检查。
+- 禁止为图省事滥用 `Any`；能用具体类型或 `TypedDict` / `dataclass` 表达的地方必须明确类型。
 
 ### 2.2 命名与注释
-- 变量和函数命名必须具备明确语义（驼峰命名法）。
+- 变量和函数命名必须具备明确语义，遵循 PEP 8：函数/变量用 `snake_case`，类名用 `PascalCase`，常量用 `UPPER_SNAKE_CASE`。
 - **必须提供中文注释**。特别是在以下场景：
   - 核心逻辑（如控制流、并发调度）。
-  - 黑科技或特殊补丁逻辑（如处理 429 降级策略、处理长上下文模型的静默超时阈值 `STALE_MS`）。
+  - 关键阈值与特殊补丁逻辑（如多 API Key 轮询、429 限流降级、防抖常量 `DEBOUNCE_SECONDS`）。
   - 正则表达式和复杂的 API 请求。
 
 ### 2.3 错误处理与日志
-- 所有的异步调用必须有妥善的 `try/catch` 或者 `.catch()` 处理。
-- 使用项目内置的 `logger` 进行日志输出，禁止直接使用 `console.log` 打印核心业务日志。
+- 所有的异步调用（`async` / `await`）必须有妥善的 `try/except` 处理，避免异常逃逸导致任务中断。
+- 使用项目内置的 `logger` 进行日志输出，禁止直接使用 `print()` 打印核心业务日志。
 - 对于异常，必须在日志中保留完整的堆栈和上下文信息，便于后续诊断。
 
 ## 3. 工作流与文件操作行为准则 (Workflow Guidelines)
@@ -71,7 +72,7 @@ bash install_gpg_keys.sh
 - 严禁凭记忆或通用经验盲猜代码结构。
 
 ### 3.2 局部精准修改
-- 在修改配置或代码（如调整超时参数 `STALE_MS`、`EARLY_STALE_MS`）时，**必须进行局部精准的正则或行号匹配**。
+- 在修改配置或代码（如调整防抖参数 `DEBOUNCE_SECONDS`、默认模型/尺寸）时，**必须进行局部精准的正则或行号匹配**。
 - **绝对禁止全量覆盖**或意外替换无关内容，避免破坏其他已稳定的逻辑。
 
 ### 3.3 修改验证与闭环
@@ -110,9 +111,10 @@ bash install_gpg_keys.sh
 
 ## 5. 特定业务逻辑指导 (Domain Specifics)
 
-### 5.1 AI 模型调用 (Claude / Gemini 等)
-- **静默超时判定**：大模型推理较慢时（尤其是早期阶段），容易出现几分钟无输出的现象。调整阈值（如 `EARLY_STALE_MS` 和 `STALE_MS`）时必须谨慎，考虑到不同模型的性能差异。
-- **限流与降级**：必须优雅地处理 `429 Too Many Requests`，触发限流时应有清晰的日志和合理的快速阻断/重试机制（如缩短超时阈值 `RATE_LIMIT_STALE_MS`）。
+### 5.1 上游 AI 接口调用（Gitee AI）
+- **多 Key 轮询**：通过 `GiteeAIClient._get_next_api_key()` 按索引轮询多个 API Key；新增/调整 Key 解析逻辑时须保持 `parse_api_keys` 对「字符串」与「列表」两种配置的兼容。
+- **限流与错误转换**：上游为 OpenAI 兼容接口，`429 Too Many Requests`、认证失败、`5xx` 等异常须在 API 层统一转换为中文 `RuntimeError`，由命令层捕获后回包友好提示，禁止把原始堆栈直接抛给用户。
+- **防抖与并发**：请求统一走 `core/command_utils.check_rate_limit`（`DEBOUNCE_SECONDS=10`）与 `is_processing` 互斥，避免同一用户高频触发生图。
 
 ## 6. CNB OpenAPI 操作规范 (CNB OpenAPI Operations)
 
@@ -486,7 +488,7 @@ python3 scripts/bailian-memory.py add --user-id user_001 \
   --message user:"每天上午9点提醒我喝水" --message assistant:"好的，已记录"
 
 # 添加记忆：自定义内容形式（与 --message 互斥，max 512 字符）
-python3 scripts/bailian-memory.py add --user-id user_001 --content "用户偏好用 TypeScript"
+python3 scripts/bailian-memory.py add --user-id user_001 --content "用户偏好用 Python 3.12 与 PEP 8 风格"
 
 # 搜索记忆：语义检索（默认开启改写与重排，相似度阈值 0.6）
 python3 scripts/bailian-memory.py search --user-id user_001 --query "我需要做什么？" --max-results 10
