@@ -30,7 +30,9 @@ async def draw_image_tool(
     user_id = event.get_sender_id()
     request_id = user_id
 
-    plugin.debug_log(f"[LLM工具] 收到生图请求: user_id={user_id}, prompt={prompt[:50]}...")
+    plugin.debug_log(
+        f"[LLM工具] 收到生图请求: user_id={user_id}, prompt={prompt[:50]}..."
+    )
 
     # 防抖检查
     if plugin.rate_limiter.check_debounce(request_id):
@@ -51,7 +53,9 @@ async def draw_image_tool(
         return f"{e}。请提供完整的提示词和可选的比例参数。"
 
     try:
-        plugin.debug_log(f"[LLM工具] 开始生成图片: user_id={user_id}, size={target_size}")
+        plugin.debug_log(
+            f"[LLM工具] 开始生成图片: user_id={user_id}, size={target_size}"
+        )
         # 先发送提示消息
         await event.send(event.plain_result("正在生成图片，请稍候..."))
         start_time = time.time()
