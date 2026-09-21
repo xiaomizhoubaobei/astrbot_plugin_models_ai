@@ -7,6 +7,15 @@ set -euo pipefail
 # 设计目标：一条命令跑完即完成「密钥导入 + 信任 + 签名接管」全链路，
 #          任何环境（有/无 TTY、变量有/无、重复执行）都不需要人工干预。
 #
+# 用法：
+#   bash install_gpg_keys.sh
+#
+# 说明：
+#   - 本脚本自包含（仅依赖系统 gnupg / curl / jq，缺失时自动安装），
+#     不依赖仓库内其它脚本，任何环境可直接运行。
+#   - CNB 平台默认已提供签名器 cnb-gpgsign；本脚本用于需要「触发者本人 GPG
+#     密钥」亲自签名的场景（保证签名主体落在本人指纹上，而非平台章）。
+#
 # 环境变量：
 #   GPG_API / PLUGIN_GPG_API   密钥分发 API 地址（缺失时回落到内置默认地址）
 #   GPG_KEY / PLUGIN_GPG_KEY   私钥解锁短语 passphrase
@@ -32,6 +41,43 @@ CURL_RETRY_SLEEP=2
 log()  { echo "==> $*"; }
 ok()   { echo "✅ $*"; }
 warn() { echo "⚠️  $*"; }
+
+# ------------------------------------------------------------------------------
+# 从 `git log --show-signature` 输出中提取实际签名指纹（十六进制）。
+# 自包含实现（不依赖仓库内其它脚本）；输出空字符串表示未提取到（裸签/平台章）。
+# ------------------------------------------------------------------------------
+extract_gpg_fingerprint() {
+    grep -oE "using [A-Z0-9]+ key [0-9A-F]{16,40}" \
+      | grep -oE "[0-9A-F]{16,40}" \
+      | head -1
+}
+
+# 判断实际指纹是否命中期望指纹集合（空格分隔多把；忽略大小写与短/长差异）。
+# 任一命中即判定接管（git 签名常落在子密钥上，故比对主+子完整集合）。
+check_gpg_fingerprint() {
+    local actual="$1" expected="$2" cand=""
+    [ -n "$actual" ] || return 1
+    for cand in $expected; do
+        echo "$actual" | grep -qiE "$cand" && return 0
+    done
+    return 1
+}
+
+# 在隔离密钥环中导入私钥并提取其主+子指纹（空格分隔，首个为主指纹）。
+# 隔离导入可避免误取密钥环中历史遗留密钥，确保指纹属于本次下载的这把。
+extract_private_key_fingerprints() {
+    local keyfile="$1" passphrase="$2" iso_home="" fps=""
+    [ -s "$keyfile" ] || return 1
+    iso_home=$(mktemp -d 2>/dev/null) || return 1
+    chmod 700 "$iso_home" 2>/dev/null || true
+    GNUPGHOME="$iso_home" gpg --batch --yes --pinentry-mode loopback \
+        --passphrase "$passphrase" --import "$keyfile" >/dev/null 2>&1
+    fps=$(GNUPGHOME="$iso_home" gpg --batch --list-secret-keys \
+        --with-colons 2>/dev/null | awk -F: '$1=="fpr"{print substr($10,25)}' | paste -sd' ' -)
+    rm -rf "$iso_home"
+    [ -n "$fps" ] || return 1
+    echo "$fps"
+}
 
 # ------------------------------------------------------------------------------
 # 带指数退避的重试执行器（仅用于网络类操作）
@@ -98,12 +144,12 @@ API_RESPONSE="$(retry_run "拉取分发 API" curl -fsSL --connect-timeout 10 --m
 
 PRIVATE_KEY_URL="$(echo "$API_RESPONSE" | jq -r '.private_key_url // empty')"
 PUBLIC_KEY_URL="$(echo "$API_RESPONSE"  | jq -r '.public_key_url // empty')"
-PLATFORM="$(echo "$API_RESPONSE" | jq -r '.platform // "unknown"')"
+PLATFORM="$(echo "$API_RESPONSE" | jq -r '.platform // empty' 2>/dev/null || true)"
 if [ -z "$PRIVATE_KEY_URL" ] || [ "$PRIVATE_KEY_URL" = "null" ]; then
     echo "❌ 无法从 API 响应解析 private_key_url"
     exit 1
 fi
-log "平台标识：${PLATFORM}"
+log "平台标识：${PLATFORM:-未知}"
 
 # ------------------------------------------------------------------------------
 # 4. 下载公私钥到安全临时目录（自动清理，无论成功失败）
@@ -135,14 +181,19 @@ if [ -s "$PUBLIC_KEY_FILE" ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 6. 提取主指纹（主密钥 ID）
+# 6. 提取本次导入私钥的精确指纹集合（主密钥 + 各子密钥），供选键与验签比对
 # ------------------------------------------------------------------------------
-KEY_ID="$(gpg --list-secret-keys --with-colons 2>/dev/null | awk -F: '/^sec:/{print $5; exit}')"
+FINGERPRINTS="$(extract_private_key_fingerprints "$PRIVATE_KEY_FILE" "$GPG_KEY_VALUE" || true)"
+KEY_ID="$(echo "$FINGERPRINTS" | awk '{print $1}')"
+if [ -z "$KEY_ID" ]; then
+    # 退化：直接从主密钥环取主密钥指纹
+    KEY_ID="$(gpg --list-secret-keys --with-colons 2>/dev/null | awk -F: '/^sec:/{print $5; exit}')"
+fi
 if [ -z "$KEY_ID" ]; then
     echo "❌ 导入后未在密钥环中找到私钥（sec）"
     exit 1
 fi
-log "私钥指纹：${KEY_ID}"
+log "私钥指纹：${KEY_ID}（完整集合：${FINGERPRINTS:-$KEY_ID}）"
 
 # ------------------------------------------------------------------------------
 # 7. 设置终极信任（关键修复：全程无 TTY，用 --with-colons 判定结果）
@@ -192,11 +243,11 @@ export GPG_TTY="$CURRENT_TTY"
 
 # ------------------------------------------------------------------------------
 # 11. 闭环自检：真实 git commit -S + 验签，失败即报错（不假装成功）
+#     比对主+子完整指纹集合，避免主/子指纹不同导致误报。
 # ------------------------------------------------------------------------------
 log "执行签名闭环自检..."
 VERIFY_DIR="$TMP_DIR/verify"
 mkdir -p "$VERIFY_DIR"
-# 注意：自检在子 shell 中执行，失败必须显式探测退出码（不能用管道，避免 exit 被吞）
 SELFCHECK_LOG="$TMP_DIR/selfcheck.log"
 selfcheck_ok=0
 if (
@@ -208,16 +259,17 @@ if (
     git add selfcheck.txt
     git commit -q -S -m "chore(gpg): 签名环境自检" || exit 1
     git log --show-signature -1 >"$SELFCHECK_LOG" 2>&1
-    # 必须出现 Good signature，且指纹落在本次导入的密钥上
+    # 必须出现 Good signature，且指纹落在本次导入的密钥（主+子）上
     grep -q "Good signature" "$SELFCHECK_LOG" || exit 1
-    grep -q "$KEY_ID" "$SELFCHECK_LOG" || exit 1
+    sig_fp="$(extract_gpg_fingerprint <"$SELFCHECK_LOG" || true)"
+    check_gpg_fingerprint "$sig_fp" "${FINGERPRINTS:-$KEY_ID}" || exit 1
     exit 0
 ); then
     selfcheck_ok=1
 fi
 
 if [ "$selfcheck_ok" -ne 1 ]; then
-    echo "❌ 签名闭环自检失败：git commit -S 未产生落在本人密钥（${KEY_ID}）上的 Good signature"
+    echo "❌ 签名闭环自检失败：git commit -S 未产生落在本人密钥（${FINGERPRINTS:-$KEY_ID}）上的 Good signature"
     [ -f "$SELFCHECK_LOG" ] && { echo "----- 自检日志 -----"; cat "$SELFCHECK_LOG"; }
     exit 1
 fi
