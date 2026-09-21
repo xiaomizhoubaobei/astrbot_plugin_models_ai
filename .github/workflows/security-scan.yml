@@ -39,7 +39,7 @@ jobs:
         bandit -r . -f json -o bandit-report.json || true
 
     - name: 上传 Bandit 结果
-      uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: bandit-报告
         path: bandit-report.json
