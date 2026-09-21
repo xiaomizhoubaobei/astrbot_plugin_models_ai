@@ -1,13 +1,13 @@
-"""命令处理工具模块
+"""命令处理工具模块.
 
 提供命令处理中的公共辅助函数。
 """
 
-import aiohttp
 import uuid
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
+import aiohttp
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.message_components import Image
@@ -21,7 +21,7 @@ async def check_rate_limit(
     command_name: str,
     request_id: str,
 ) -> AsyncGenerator[Any, None]:
-    """检查速率限制和防抖
+    """检查速率限制和防抖.
 
     Args:
         plugin: 插件实例
@@ -49,7 +49,7 @@ async def check_rate_limit(
 
 
 def parse_prompt_and_size(plugin, prompt: str) -> tuple[str, str]:
-    """解析提示词和目标尺寸
+    """解析提示词和目标尺寸.
 
     从提示词中提取比例参数，并计算目标尺寸。
 
@@ -92,7 +92,7 @@ def parse_prompt_and_size(plugin, prompt: str) -> tuple[str, str]:
 
 
 async def extract_images_from_message(event: AstrMessageEvent) -> list[str]:
-    """从消息中提取所有图片的路径
+    """从消息中提取所有图片的路径.
 
     Args:
         event: 消息事件对象
@@ -101,7 +101,8 @@ async def extract_images_from_message(event: AstrMessageEvent) -> list[str]:
         图片路径列表
     """
     message_obj = event.message_obj
-    image_paths = []
+    # 显式标注元素类型，避免 mypy 推断失败
+    image_paths: list[str] = []
 
     if not message_obj or not message_obj.message:
         return image_paths
@@ -109,21 +110,21 @@ async def extract_images_from_message(event: AstrMessageEvent) -> list[str]:
     for component in message_obj.message:
         if isinstance(component, Image):
             # 从 Image 组件中获取图片路径
-            if hasattr(component, 'url') and component.url:
+            if hasattr(component, "url") and component.url:
                 # 如果是 URL，需要下载
                 path = await download_image(component.url)
                 if path:
                     image_paths.append(path)
-            elif hasattr(component, 'file') and component.file:
+            elif hasattr(component, "file") and component.file:
                 image_paths.append(component.file)
-            elif hasattr(component, 'path') and component.path:
+            elif hasattr(component, "path") and component.path:
                 image_paths.append(component.path)
 
     return image_paths
 
 
 async def download_image(url: str) -> str | None:
-    """下载图片到本地
+    """下载图片到本地.
 
     Args:
         url: 图片 URL
@@ -132,8 +133,10 @@ async def download_image(url: str) -> str | None:
         本地文件路径
     """
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as response:
+        # 使用 aiohttp 的 ClientTimeout 对象，避免 mypy 报 int 类型不兼容
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url) as response:
                 if response.status == 200:
                     data = await response.read()
                     # 保存到临时目录
@@ -144,4 +147,6 @@ async def download_image(url: str) -> str | None:
                     return str(temp_path)
     except Exception as e:
         logger.error(f"下载图片失败: {e}")
-        return None
+
+    # 下载失败或响应异常时统一返回 None
+    return None

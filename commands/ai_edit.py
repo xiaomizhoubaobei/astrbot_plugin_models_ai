@@ -1,4 +1,4 @@
-"""AI 图片编辑命令处理模块
+"""AI 图片编辑命令处理模块.
 
 处理 /ai-gitee ai-edit 命令，使用 Gitee AI 编辑图片。
 """
@@ -8,7 +8,7 @@ from typing import Any, AsyncGenerator
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
-from astrbot.api.message_components import Plain, Image
+from astrbot.api.message_components import Image, Plain
 
 from ..core import check_rate_limit
 from ..core.command_utils import extract_images_from_message
@@ -20,7 +20,7 @@ async def ai_edit_image_command(
     prompt: str = "",
     task_type: str = "",
 ) -> AsyncGenerator[Any, None]:
-    """AI 图片编辑指令
+    """AI 图片编辑指令.
 
     使用 Gitee AI 的图片编辑功能对图片进行智能编辑。
 
@@ -52,7 +52,10 @@ async def ai_edit_image_command(
     user_id = event.get_sender_id()
     request_id = user_id
 
-    plugin.debug_log(f"[AI编辑命令] 收到编辑请求: user_id={user_id}, prompt={prompt[:50] if prompt else ''}..., task_type={task_type}")
+    plugin.debug_log(
+        f"[AI编辑命令] 收到编辑请求: user_id={user_id}, "
+        f"prompt={prompt[:50] if prompt else ''}..., task_type={task_type}"
+    )
 
     # 检查速率限制和防抖
     async for result in check_rate_limit(plugin, event, "AI编辑命令", request_id):
@@ -116,15 +119,16 @@ async def ai_edit_image_command(
         elapsed_time = end_time - start_time
 
         plugin.debug_log(
-            f"[AI编辑命令] 图片编辑成功: path={image_path}, "
-            f"耗时={elapsed_time:.2f}秒"
+            f"[AI编辑命令] 图片编辑成功: path={image_path}, " f"耗时={elapsed_time:.2f}秒"
         )
 
         # 发送结果
-        yield event.chain_result([
-            Image.fromFileSystem(image_path),  # type: ignore
-            Plain(f"AI 图片编辑完成，耗时：{elapsed_time:.2f}秒")
-        ])
+        yield event.chain_result(
+            [
+                Image.fromFileSystem(image_path),  # type: ignore
+                Plain(f"AI 图片编辑完成，耗时：{elapsed_time:.2f}秒"),
+            ]
+        )
 
     except Exception as e:
         logger.error(f"AI 图片编辑失败: {e}", exc_info=True)

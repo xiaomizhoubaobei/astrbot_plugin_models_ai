@@ -1,4 +1,4 @@
-"""帮助命令处理模块
+"""帮助命令处理模块.
 
 处理 /ai-gitee help 命令，显示帮助信息。
 """
@@ -12,7 +12,7 @@ async def help_command(
     plugin,
     event: "AstrMessageEvent",
 ) -> AsyncGenerator[Any, None]:
-    """显示帮助信息
+    """显示帮助信息.
 
     用法: /ai-gitee help
 

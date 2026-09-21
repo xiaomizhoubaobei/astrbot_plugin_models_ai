@@ -1,19 +1,23 @@
-"""API 调用模块
+"""API 调用模块.
 
 负责 Gitee AI API 的调用和错误处理。
 """
 
 import asyncio
+import json
+import mimetypes
+import os
 from typing import Any
 
+import aiohttp
 from astrbot.api import logger
-from openai import AuthenticationError, RateLimitError, APIError
+from openai import APIError, AuthenticationError, RateLimitError
 
 from ..core import ClientManager, ImageManager
 
 
 class GiteeAIClient:
-    """Gitee AI API 客户端，负责调用图像生成 API"""
+    """Gitee AI API 客户端，负责调用图像生成 API."""
 
     def __init__(
         self,
@@ -25,7 +29,7 @@ class GiteeAIClient:
         base_url: str,
         debug_mode: bool = False,
     ) -> None:
-        """初始化 Gitee AI 客户端
+        """初始化 Gitee AI 客户端.
 
         Args:
             api_keys: API Keys 列表
@@ -47,15 +51,7 @@ class GiteeAIClient:
         self.client_manager = ClientManager(base_url, debug_mode=debug_mode)
         self.image_manager = ImageManager(debug_mode=debug_mode)
 
-        self.current_key_index = 0
-        self._generation_count = 0
-        self._background_tasks: set[asyncio.Task[Any]] = set()
-
-        self.debug_log(
-            f"初始化 Gitee AI 客户端: model={model}, size={default_size}, "
-            f"api_keys={len(api_keys)}, debug_mode={debug_mode}"
-        )
-
+        # 记录已创建的 Background Task，避免任务被 GC 提前回收
         self.current_key_index = 0
         self._generation_count = 0
         self._background_tasks: set[asyncio.Task[Any]] = set()
@@ -66,7 +62,7 @@ class GiteeAIClient:
         )
 
     def debug_log(self, message: str) -> None:
-        """输出 Debug 日志
+        """输出 Debug 日志.
 
         Args:
             message: 日志消息
@@ -75,7 +71,7 @@ class GiteeAIClient:
             logger.debug(f"[GiteeAIClient] {message}")
 
     def _get_next_api_key(self) -> str:
-        """轮询获取下一个 API Key
+        """轮询获取下一个 API Key.
 
         Returns:
             API Key
@@ -88,11 +84,13 @@ class GiteeAIClient:
 
         api_key = self.api_keys[self.current_key_index]
         self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
-        self.debug_log(f"轮询 API Key: index={self.current_key_index - 1}, api_key={api_key[:10]}...")
+        self.debug_log(
+            f"轮询 API Key: index={self.current_key_index - 1}, api_key={api_key[:10]}..."
+        )
         return api_key
 
     async def generate_image(self, prompt: str, size: str = "") -> str:
-        """调用 Gitee AI API 生成图片，返回本地文件路径
+        """调用 Gitee AI API 生成图片，返回本地文件路径.
 
         Args:
             prompt: 图片提示词
@@ -104,7 +102,9 @@ class GiteeAIClient:
         Raises:
             Exception: API 调用失败时抛出异常
         """
-        self.debug_log(f"开始生成图片: prompt={prompt[:50]}..., size={size or self.default_size}")
+        self.debug_log(
+            f"开始生成图片: prompt={prompt[:50]}..., size={size or self.default_size}"
+        )
 
         api_key = self._get_next_api_key()
         client = self.client_manager.get_openai_client(api_key)
@@ -167,7 +167,7 @@ class GiteeAIClient:
 
         # 每 N 次生成执行一次清理
         from ..core import CLEANUP_INTERVAL
-        
+
         self._generation_count += 1
         if self._generation_count >= CLEANUP_INTERVAL:
             self._generation_count = 0
@@ -179,8 +179,10 @@ class GiteeAIClient:
 
         return filepath
 
-    async def get_models(self, vendor: str = "", type: str = "") -> list[dict[str, Any]]:
-        """获取模型列表
+    async def get_models(
+        self, vendor: str = "", type: str = ""
+    ) -> list[dict[str, Any]]:
+        """获取模型列表.
 
         Args:
             vendor: 算力厂商筛选（可选）
@@ -217,16 +219,21 @@ class GiteeAIClient:
             response.raise_for_status()
 
             data = await response.json()
-            self.debug_log(f"模型列表获取成功: response_type={data.get('object')}, count={len(data.get('data', []))}")
+            self.debug_log(
+                f"模型列表获取成功: response_type={data.get('object')}, "
+                f"count={len(data.get('data', []))}"
+            )
 
             # 转换为字典列表
             models_data = []
             for model in data.get("data", []):
-                models_data.append({
-                    "id": model.get("id", ""),
-                    "created": model.get("created", 0),
-                    "owned_by": model.get("owned_by", ""),
-                })
+                models_data.append(
+                    {
+                        "id": model.get("id", ""),
+                        "created": model.get("created", 0),
+                        "owned_by": model.get("owned_by", ""),
+                    }
+                )
 
             return models_data
 
@@ -253,7 +260,7 @@ class GiteeAIClient:
         guidance_scale: float = 1.0,
         download_urls: bool = False,
     ) -> str:
-        """调用 Gitee AI API 编辑图片，返回本地文件路径
+        """调用 Gitee AI API 编辑图片，返回本地文件路径.
 
         Args:
             prompt: 编辑提示词
@@ -282,8 +289,9 @@ class GiteeAIClient:
         if task_types is None:
             task_types = ["style"]
 
-        # 构建表单字段
-        fields = [
+        # 构建表单字段：值既可能是普通字符串，也可能是
+        # (文件名, 内容, MIME 类型) 三元组，故显式声明为 Any
+        fields: list[tuple[str, Any]] = [
             ("prompt", prompt),
             ("model", model),
             ("num_inference_steps", str(num_inference_steps)),
@@ -295,23 +303,22 @@ class GiteeAIClient:
             if isinstance(item, str):
                 fields.append(("task_types", item))
             else:
-                import json
                 fields.append(("task_types", json.dumps(item)))
 
         # 添加图片
-        import mimetypes
-        import os
-
         for filepath in image_paths:
             name = os.path.basename(filepath)
             if filepath.startswith(("http://", "https://")):
                 if download_urls:
                     # 下载远程图片后再上传
-                    response = await session.get(filepath, timeout=10)
+                    file_timeout = aiohttp.ClientTimeout(total=10)
+                    response = await session.get(filepath, timeout=file_timeout)
                     response.raise_for_status()
                     content = await response.read()
-                    mime_type = response.headers.get("Content-Type", "application/octet-stream")
-                    fields.append(("image", (name, content, mime_type)))
+                    remote_mime = response.headers.get(
+                        "Content-Type", "application/octet-stream"
+                    )
+                    fields.append(("image", (name, content, remote_mime)))
                 else:
                     # 直接传递 URL
                     fields.append(("image_url", filepath))
@@ -320,7 +327,9 @@ class GiteeAIClient:
                 mime_type, _ = mimetypes.guess_type(filepath)
                 with open(filepath, "rb") as f:
                     content = f.read()
-                fields.append(("image", (name, content, mime_type or "application/octet-stream")))
+                fields.append(
+                    ("image", (name, content, mime_type or "application/octet-stream"))
+                )
 
         # 构建请求头
         headers = {
@@ -329,14 +338,14 @@ class GiteeAIClient:
         }
 
         # 发送请求
-        import aiohttp
-
         data = aiohttp.FormData()
         for field in fields:
             if isinstance(field[1], tuple):
                 # 文件字段
                 name, value, content_type = field[1]
-                data.add_field(field[0], value, filename=name, content_type=content_type)
+                data.add_field(
+                    field[0], value, filename=name, content_type=content_type
+                )
             else:
                 # 普通字段
                 data.add_field(field[0], field[1])
@@ -345,9 +354,7 @@ class GiteeAIClient:
 
         try:
             async with session.post(
-                f"{self.base_url}/async/images/edits",
-                headers=headers,
-                data=data
+                f"{self.base_url}/async/images/edits", headers=headers, data=data
             ) as response:
                 response.raise_for_status()
                 result = await response.json()
@@ -376,7 +383,7 @@ class GiteeAIClient:
         timeout: int = 30 * 60,
         retry_interval: int = 10,
     ) -> str:
-        """轮询图片编辑任务状态
+        """轮询图片编辑任务状态.
 
         Args:
             task_id: 任务 ID
@@ -404,9 +411,7 @@ class GiteeAIClient:
 
             try:
                 async with session.get(
-                    f"{self.base_url}/task/{task_id}",
-                    headers=headers,
-                    timeout=10
+                    f"{self.base_url}/task/{task_id}", headers=headers, timeout=10
                 ) as response:
                     response.raise_for_status()
                     result = await response.json()
@@ -421,12 +426,18 @@ class GiteeAIClient:
                 if status == "success":
                     if "output" in result and "file_url" in result["output"]:
                         file_url = result["output"]["file_url"]
-                        completed_at = result.get('completed_at', 0)
-                        started_at = result.get('started_at', 0)
-                        duration = (completed_at - started_at) / 1000 if completed_at and started_at else 0
+                        completed_at = result.get("completed_at", 0)
+                        started_at = result.get("started_at", 0)
+                        duration = (
+                            (completed_at - started_at) / 1000
+                            if completed_at and started_at
+                            else 0
+                        )
                         self.debug_log(f"任务完成，耗时: {duration:.2f}秒")
                         # 下载图片
-                        return await self.image_manager.download_image(file_url, session)
+                        return await self.image_manager.download_image(
+                            file_url, session
+                        )
                     else:
                         raise RuntimeError("任务成功但未返回图片 URL")
                 elif status in ["failed", "cancelled"]:
@@ -445,7 +456,7 @@ class GiteeAIClient:
         raise RuntimeError(f"任务超时（已等待 {timeout} 秒）")
 
     async def close(self) -> None:
-        """清理资源"""
+        """清理资源."""
         self.debug_log("开始清理 API 客户端资源")
         await self.client_manager.close()
         self.debug_log("API 客户端资源清理完成")

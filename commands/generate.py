@@ -1,4 +1,4 @@
-"""生图命令处理模块
+"""生图命令处理模块.
 
 处理 /ai-gitee generate 命令，生成图片。
 """
@@ -9,6 +9,7 @@ from typing import Any, AsyncGenerator
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.message_components import Image, Plain
+
 from ..core import check_rate_limit, parse_prompt_and_size
 
 
@@ -17,7 +18,7 @@ async def generate_image_command(
     event: "AstrMessageEvent",
     prompt: str,
 ) -> AsyncGenerator[Any, None]:
-    """生成图片指令（命令行调用）
+    """生成图片指令（命令行调用）.
 
     通过命令行调用，支持指定图片比例。
 
@@ -69,15 +70,14 @@ async def generate_image_command(
         image_path = await plugin.api_client.generate_image(prompt, size=target_size)
         end_time = time.time()
         elapsed_time = end_time - start_time
-        plugin.debug_log(
-            f"[命令] 图片生成成功: path={image_path},"
-            f"耗时={elapsed_time:.2f}秒"
-        )
+        plugin.debug_log(f"[命令] 图片生成成功: path={image_path}," f"耗时={elapsed_time:.2f}秒")
         # 将图片和耗时信息合并到一个消息中发送
-        yield event.chain_result([
-            Image.fromFileSystem(image_path),  # type: ignore
-            Plain(f"图片生成完成，耗时：{elapsed_time:.2f}秒")
-        ])
+        yield event.chain_result(
+            [
+                Image.fromFileSystem(image_path),  # type: ignore
+                Plain(f"图片生成完成，耗时：{elapsed_time:.2f}秒"),
+            ]
+        )
 
     except Exception as e:
         logger.error(f"生图失败: {e}", exc_info=True)

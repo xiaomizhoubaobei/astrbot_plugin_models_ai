@@ -1,10 +1,9 @@
-"""配置管理模块
+"""配置管理模块.
 
 负责配置常量定义、配置解析和验证。
 """
 
 from typing import Any
-
 
 # 插件配置
 PLUGIN_NAME = "astrbot_plugin_models_ai"
@@ -39,7 +38,7 @@ SUPPORTED_RATIOS: dict[str, list[str]] = {
 
 
 def parse_api_keys(api_keys: Any) -> list[str]:
-    """解析 API Keys 配置，支持字符串和列表格式
+    """解析 API Keys 配置，支持字符串和列表格式.
 
     Args:
         api_keys: API Keys 配置，可以是字符串或列表

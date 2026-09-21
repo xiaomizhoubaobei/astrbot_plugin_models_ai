@@ -1,4 +1,4 @@
-"""模型列表命令处理模块
+"""模型列表命令处理模块.
 
 处理 /ai-gitee text2image 命令，获取模型列表。
 """
@@ -13,7 +13,7 @@ async def list_models_command(
     event: "AstrMessageEvent",
     type_param: str = "",
 ) -> AsyncGenerator[Any, None]:
-    """获取模型列表命令
+    """获取模型列表命令.
 
     支持按类型筛选模型列表。默认返回 text2image 类型模型。
 
