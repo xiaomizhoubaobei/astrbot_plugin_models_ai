@@ -1,4 +1,4 @@
-"""切换模型命令处理模块
+"""切换模型命令处理模块.
 
 处理 /ai-gitee switch-model 命令，切换 AI 模型。
 """
@@ -13,7 +13,7 @@ async def switch_model_command(
     event: "AstrMessageEvent",
     model_name: str,
 ) -> AsyncGenerator[Any, None]:
-    """切换模型命令
+    """切换模型命令.
 
     切换当前使用的 AI 模型。
 

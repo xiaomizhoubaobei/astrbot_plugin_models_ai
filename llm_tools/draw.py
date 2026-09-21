@@ -1,4 +1,4 @@
-"""LLM 生图工具模块
+"""LLM 生图工具模块.
 
 提供 LLM 工具调用生成图片的功能。
 """
@@ -17,7 +17,7 @@ async def draw_image_tool(
     event: "AstrMessageEvent",
     prompt: str,
 ) -> str:
-    """根据提示词生成图片。
+    """根据提示词生成图片.
 
     Args:
         plugin: 插件实例，提供 api_client, rate_limiter, debug_log 等方法
@@ -59,14 +59,17 @@ async def draw_image_tool(
         end_time = time.time()
         elapsed_time = end_time - start_time
         plugin.debug_log(
-            f"[LLM工具] 图片生成成功: path={image_path},"
-            f"耗时={elapsed_time:.2f}秒"
+            f"[LLM工具] 图片生成成功: path={image_path}," f"耗时={elapsed_time:.2f}秒"
         )
         # 将图片和耗时信息合并到一个消息中发送
-        await event.send(event.chain_result([
-            Image.fromFileSystem(image_path),  # type: ignore
-            Plain(f"图片生成完成，耗时：{elapsed_time:.2f}秒")
-        ]))
+        await event.send(
+            event.chain_result(
+                [
+                    Image.fromFileSystem(image_path),  # type: ignore
+                    Plain(f"图片生成完成，耗时：{elapsed_time:.2f}秒"),
+                ]
+            )
+        )
         return f"图片已生成并发送。耗时：{elapsed_time:.2f}秒。Prompt: {prompt}"
 
     except Exception as e:

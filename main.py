@@ -1,4 +1,4 @@
-"""AstrBot AI 图像生成插件
+"""AstrBot AI 图像生成插件.
 
 支持 /ai 命令调用，支持多种图片比例和多 Key 轮询。
 """
@@ -6,32 +6,39 @@
 from typing import Any, AsyncGenerator
 
 from astrbot.api import logger
-from astrbot.api.event import AstrMessageEvent, filter as filter_cmd
+from astrbot.api.event import AstrMessageEvent
+from astrbot.api.event import filter as filter_cmd
 from astrbot.api.star import Context, Star
-from .commands import generate_image_command, list_models_command, help_command, switch_model_command, ai_edit_image_command, style_command
+
+from .commands import (
+    ai_edit_image_command,
+    generate_image_command,
+    help_command,
+    list_models_command,
+    style_command,
+    switch_model_command,
+)
 from .core import (
     DEFAULT_BASE_URL,
     DEFAULT_INFERENCE_STEPS,
     DEFAULT_MODEL,
     DEFAULT_NEGATIVE_PROMPT,
     DEFAULT_SIZE,
-    SUPPORTED_RATIOS,
     RateLimiter,
     parse_api_keys,
-    parse_prompt_and_size,
 )
 from .gitee import GiteeAIClient, ModelLister
 from .llm_tools import draw_image_tool
 
 
 class AIImage(Star):
-    """AI 图像生成插件
+    """AI 图像生成插件.
 
     提供命令行方式生成图片，支持多种图片比例和 API Key 轮询。
     """
 
     def __init__(self, context: Context, config: dict) -> None:
-        """初始化  AI 图像生成插件
+        """初始化  AI 图像生成插件.
 
         Args:
             context: AstrBot 上下文对象
@@ -77,7 +84,7 @@ class AIImage(Star):
         self.debug_log("插件初始化完成")
 
     def debug_log(self, message: str) -> None:
-        """输出 Debug 日志
+        """输出 Debug 日志.
 
         Args:
             message: 日志消息
@@ -87,12 +94,12 @@ class AIImage(Star):
 
     @filter_cmd.command_group("ai-gitee")
     async def ai_gitee_group(self):
-        """ai-gitee 指令组，提供 AI 图像生成和模型查询功能"""
+        """ai-gitee 指令组，提供 AI 图像生成和模型查询功能."""
         pass
 
     @ai_gitee_group.command("help")
     async def help_command_wrapper(self, event: "AstrMessageEvent"):
-        """显示帮助信息
+        """显示帮助信息.
 
         用法: /ai-gitee help
 
@@ -109,7 +116,7 @@ class AIImage(Star):
     async def generate_image_command_wrapper(
         self, event: "AstrMessageEvent", prompt: str
     ) -> AsyncGenerator[Any, None]:
-        """生成图片指令（命令行调用）
+        """生成图片指令（命令行调用）.
 
         通过命令行调用，支持指定图片比例。
 
@@ -134,7 +141,7 @@ class AIImage(Star):
     async def switch_model_command_wrapper(
         self, event: "AstrMessageEvent", model_name: str
     ) -> AsyncGenerator[Any, None]:
-        """切换模型命令
+        """切换模型命令.
 
         切换当前使用的 AI 模型。
 
@@ -154,10 +161,11 @@ class AIImage(Star):
 
     @filter_cmd.llm_tool(name="draw_image")
     async def draw(self, event: "AstrMessageEvent", prompt: str):
-        """根据提示词生成图片。
+        """根据提示词生成图片.
 
         Args:
-            prompt(str): 图片提示词，需要包含主体、场景、风格等描述
+            event (AstrMessageEvent): 消息事件对象。
+            prompt (str): 图片提示词，需要包含主体、场景、风格等描述。
         """
         return await draw_image_tool(self, event, prompt)
 
@@ -165,7 +173,7 @@ class AIImage(Star):
     async def ai_edit_image_command_wrapper(
         self, event: "AstrMessageEvent", prompt: str = "", task_type: str = ""
     ) -> AsyncGenerator[Any, None]:
-        """AI 图片编辑命令
+        """AI 图片编辑命令.
 
         使用 Gitee AI 的图片编辑功能对图片进行智能编辑。
 
@@ -200,7 +208,7 @@ class AIImage(Star):
     async def list_models_command_wrapper(
         self, event: "AstrMessageEvent", type_param: str = ""
     ) -> AsyncGenerator[Any, None]:
-        """获取模型列表命令
+        """获取模型列表命令.
 
         支持按类型筛选模型列表。默认返回 text2image 类型模型。
 
@@ -247,7 +255,7 @@ class AIImage(Star):
     async def style_command_wrapper(
         self, event: "AstrMessageEvent", style_name: str = "", prompt: str = ""
     ) -> AsyncGenerator[Any, None]:
-        """风格转换命令
+        """风格转换命令.
 
         根据指定的风格名称转换图片风格，可附加自定义描述。
 
@@ -282,7 +290,7 @@ class AIImage(Star):
             yield result
 
     async def close(self) -> None:
-        """清理插件资源
+        """清理插件资源.
 
         在插件卸载时调用，关闭所有客户端连接和释放资源。
         """

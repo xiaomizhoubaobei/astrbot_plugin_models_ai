@@ -1,4 +1,4 @@
-"""图片管理模块
+"""图片管理模块.
 
 负责图片的保存、下载和清理。
 """
@@ -12,7 +12,6 @@ from typing import Optional
 
 import aiofiles
 import aiohttp
-
 from astrbot.api import logger
 from astrbot.api.star import StarTools
 
@@ -20,13 +19,13 @@ from .config import MAX_CACHED_IMAGES, PLUGIN_NAME
 
 
 class ImageManager:
-    """图片管理器，负责图片的保存、下载和清理
+    """图片管理器，负责图片的保存、下载和清理.
 
     提供图片下载、保存和自动清理功能，支持多种图片格式。
     """
 
     def __init__(self, debug_mode: bool = False) -> None:
-        """初始化图片管理器
+        """初始化图片管理器.
 
         Args:
             debug_mode: 是否启用 Debug 日志
@@ -36,7 +35,7 @@ class ImageManager:
         self.debug_log(f"初始化图片管理器: debug_mode={debug_mode}")
 
     def debug_log(self, message: str) -> None:
-        """输出 Debug 日志
+        """输出 Debug 日志.
 
         Args:
             message: 日志消息
@@ -45,7 +44,7 @@ class ImageManager:
             logger.debug(f"[ImageManager] {message}")
 
     def _get_image_dir(self) -> Path:
-        """获取图片保存目录（延迟初始化）
+        """获取图片保存目录（延迟初始化）.
 
         Returns:
             图片保存目录路径
@@ -61,7 +60,7 @@ class ImageManager:
         return self._image_dir
 
     def get_save_path(self, extension: str = ".jpg") -> str:
-        """生成唯一的图片保存路径
+        """生成唯一的图片保存路径.
 
         使用时间戳和随机字符串生成唯一文件名，避免文件名冲突。
 
@@ -79,7 +78,7 @@ class ImageManager:
     def _get_extension_from_url_or_content_type(
         url: str, content_type: Optional[str] = None
     ) -> str:
-        """从 URL 或 Content-Type 获取图片文件扩展名
+        """从 URL 或 Content-Type 获取图片文件扩展名.
 
         Args:
             url: 图片 URL
@@ -119,7 +118,7 @@ class ImageManager:
         return ".jpg"
 
     async def download_image(self, url: str, session: aiohttp.ClientSession) -> str:
-        """下载图片并异步保存到文件
+        """下载图片并异步保存到文件.
 
         通过 HTTP 下载图片并保存到本地，使用异步 I/O 提高性能。
 
@@ -155,7 +154,7 @@ class ImageManager:
         return filepath
 
     async def save_base64_image(self, b64_data: str) -> str:
-        """异步保存 base64 图片到文件
+        """异步保存 base64 图片到文件.
 
         将 Base64 编码的图片数据解码并保存到本地文件。
 
@@ -180,7 +179,10 @@ class ImageManager:
                 if header_end != -1:
                     mime_type = b64_data[5:header_end]  # 提取 "image/png"
                     mime_type_lower = mime_type.lower()
-                    if mime_type_lower == "image/jpeg" or mime_type_lower == "image/jpg":
+                    if (
+                        mime_type_lower == "image/jpeg"
+                        or mime_type_lower == "image/jpg"
+                    ):
                         extension = ".jpg"
                     elif mime_type_lower == "image/png":
                         extension = ".png"
@@ -209,7 +211,7 @@ class ImageManager:
         return filepath
 
     def _sync_cleanup_old_images(self) -> None:
-        """同步清理旧图片（在线程池中执行）
+        """同步清理旧图片（在线程池中执行）.
 
         删除超过最大缓存数量的旧图片，按修改时间排序，保留最新的图片。
 
@@ -226,16 +228,22 @@ class ImageManager:
             images_with_mtime: list[tuple[str, float]] = []
             with os.scandir(image_dir) as entries:
                 for entry in entries:
-                    if entry.is_file() and entry.name.lower().endswith(tuple(supported_exts)):
+                    if entry.is_file() and entry.name.lower().endswith(
+                        tuple(supported_exts)
+                    ):
                         images_with_mtime.append((entry.path, entry.stat().st_mtime))
 
-            self.debug_log(f"清理旧图片: total={len(images_with_mtime)}, max={MAX_CACHED_IMAGES}")
+            self.debug_log(
+                f"清理旧图片: total={len(images_with_mtime)}, max={MAX_CACHED_IMAGES}"
+            )
 
             # 按修改时间排序（已预先获取 mtime，无需再次调用 stat）
             images_with_mtime.sort(key=lambda x: x[1])
 
             if len(images_with_mtime) > MAX_CACHED_IMAGES:
-                to_delete = images_with_mtime[: len(images_with_mtime) - MAX_CACHED_IMAGES]
+                to_delete = images_with_mtime[
+                    : len(images_with_mtime) - MAX_CACHED_IMAGES
+                ]
                 deleted_count = 0
                 for img_path, _ in to_delete:
                     try:
@@ -244,13 +252,16 @@ class ImageManager:
                     except OSError as e:
                         # 记录删除失败的文件，可能是已被其他进程删除
                         self.debug_log(f"删除文件失败: {img_path}, 错误: {e}")
-                self.debug_log(f"清理完成: deleted={deleted_count}, kept={len(images_with_mtime) - deleted_count}")
+                self.debug_log(
+                    f"清理完成: deleted={deleted_count}, "
+                    f"kept={len(images_with_mtime) - deleted_count}"
+                )
         except OSError as e:
             logger.warning(f"清理旧图片时出错: {e}")
             self.debug_log(f"清理旧图片失败: {e}")
 
     async def cleanup_old_images(self) -> None:
-        """异步清理旧图片，使用线程池执行阻塞操作
+        """异步清理旧图片，使用线程池执行阻塞操作.
 
         在线程池中执行清理操作，避免阻塞事件循环。
         当图片数量超过 MAX_CACHED_IMAGES 时，自动删除最旧的图片。

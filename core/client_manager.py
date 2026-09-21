@@ -1,4 +1,4 @@
-"""客户端管理模块
+"""客户端管理模块.
 
 负责 AsyncOpenAI 客户端和 aiohttp Session 的管理和复用。
 """
@@ -7,16 +7,15 @@ from typing import Optional
 
 import aiohttp
 import httpx
-from openai import AsyncOpenAI
-
 from astrbot.api import logger
+from openai import AsyncOpenAI
 
 
 class ClientManager:
-    """客户端管理器，负责管理 OpenAI 客户端和 HTTP Session"""
+    """客户端管理器，负责管理 OpenAI 客户端和 HTTP Session."""
 
     def __init__(self, base_url: str, debug_mode: bool = False) -> None:
-        """初始化客户端管理器
+        """初始化客户端管理器.
 
         Args:
             base_url: API 基础 URL
@@ -31,7 +30,7 @@ class ClientManager:
         self.debug_log(f"初始化客户端管理器: base_url={base_url}, debug_mode={debug_mode}")
 
     def debug_log(self, message: str) -> None:
-        """输出 Debug 日志
+        """输出 Debug 日志.
 
         Args:
             message: 日志消息
@@ -40,7 +39,7 @@ class ClientManager:
             logger.debug(f"[ClientManager] {message}")
 
     def get_openai_client(self, api_key: str) -> AsyncOpenAI:
-        """获取或创建 AsyncOpenAI 客户端
+        """获取或创建 AsyncOpenAI 客户端.
 
         使用 API Key 作为缓存键，如果已存在则复用，否则创建新实例。
         所有 AsyncOpenAI 实例共享同一个 httpx.AsyncClient 以减少资源占用。
@@ -78,7 +77,7 @@ class ClientManager:
         return self._openai_clients[api_key]
 
     async def get_http_session(self) -> aiohttp.ClientSession:
-        """获取或创建 aiohttp Session
+        """获取或创建 aiohttp Session.
 
         如果当前 Session 已关闭或不存在，则创建新实例。
 
@@ -93,7 +92,7 @@ class ClientManager:
         return self._http_session
 
     async def close(self) -> None:
-        """清理所有客户端资源
+        """清理所有客户端资源.
 
         关闭 HTTP Session、共享的 httpx.AsyncClient 和所有 OpenAI 客户端连接，释放资源。
         应在插件卸载时调用。

@@ -1,4 +1,4 @@
-"""模型列表管理模块
+"""模型列表管理模块.
 
 负责获取和展示 Gitee AI 模型列表。
 """
@@ -37,7 +37,7 @@ MODEL_TYPES = [
 
 
 class ModelLister:
-    """模型列表管理器
+    """模型列表管理器.
 
     负责获取和格式化 Gitee AI 模型列表。
     """
@@ -47,7 +47,7 @@ class ModelLister:
         api_client: GiteeAIClient,
         debug_mode: bool = False,
     ) -> None:
-        """初始化模型列表管理器
+        """初始化模型列表管理器.
 
         Args:
             api_client: Gitee AI API 客户端
@@ -59,7 +59,7 @@ class ModelLister:
         self.debug_log("模型列表管理器初始化完成")
 
     def debug_log(self, message: str) -> None:
-        """输出 Debug 日志
+        """输出 Debug 日志.
 
         Args:
             message: 日志消息
@@ -69,7 +69,7 @@ class ModelLister:
 
     @staticmethod
     def _parse_type_param(type_param: str) -> str:
-        """解析类型参数
+        """解析类型参数.
 
         Args:
             type_param: 类型参数字符串
@@ -89,7 +89,7 @@ class ModelLister:
 
     @staticmethod
     def _validate_model_type(model_type: str) -> bool:
-        """验证模型类型是否有效
+        """验证模型类型是否有效.
 
         Args:
             model_type: 模型类型
@@ -101,7 +101,7 @@ class ModelLister:
 
     @staticmethod
     def _format_models_output(models: list[dict[str, Any]]) -> str:
-        """格式化模型列表输出
+        """格式化模型列表输出.
 
         Args:
             models: 模型列表
@@ -113,16 +113,13 @@ class ModelLister:
         model_names = [model["id"] for model in models]
 
         # 输出带编号的模型列表
-        output = "\n".join(
-            f"{i + 1}. {name}"
-            for i, name in enumerate(model_names)
-        )
+        output = "\n".join(f"{i + 1}. {name}" for i, name in enumerate(model_names))
         output += f"\n共 {len(model_names)} 个模型"
 
         return output
 
     async def list_models(self, type_param: str = "") -> tuple[bool, str]:
-        """获取模型列表
+        """获取模型列表.
 
         Args:
             type_param: 模型类型参数（可选），格式：--type=<类型>

@@ -1,4 +1,4 @@
-"""风格转换命令处理模块
+"""风格转换命令处理模块.
 
 处理 /ai-gitee style 命令，支持多种风格转换。
 """
@@ -10,13 +10,14 @@ from typing import Any, AsyncGenerator
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
-from astrbot.api.message_components import Plain, Image
+from astrbot.api.message_components import Image, Plain
+
 from ..core import check_rate_limit, parse_prompt_and_size
 from ..core.command_utils import extract_images_from_message
 
 
 def _load_style_prompts() -> dict:
-    """从 JSON 文件加载风格提示词"""
+    """从 JSON 文件加载风格提示词."""
     # 获取当前文件所在目录
     current_dir = os.path.dirname(os.path.abspath(__file__))
     prompts_file = os.path.join(current_dir, "style_prompts.json")
@@ -42,7 +43,7 @@ async def style_command(
     style_name: str = "",
     prompt: str = "",
 ) -> AsyncGenerator[Any, None]:
-    """风格转换指令
+    """风格转换指令.
 
     根据指定的风格名称转换图片风格，可附加自定义描述。
 
@@ -81,7 +82,10 @@ async def style_command(
     user_id = event.get_sender_id()
     request_id = user_id
 
-    plugin.debug_log(f"[风格转换命令] 收到请求: user_id={user_id}, style_name={style_name}, prompt={prompt[:50] if prompt else ''}...")
+    plugin.debug_log(
+        f"[风格转换命令] 收到请求: user_id={user_id}, style_name={style_name}, "
+        f"prompt={prompt[:50] if prompt else ''}..."
+    )
 
     # 检查速率限制和防抖
     async for result in check_rate_limit(plugin, event, "风格转换命令", request_id):
@@ -133,7 +137,9 @@ async def style_command(
                 final_prompt = f"{prompt}, {style_prompt}"
             except ValueError as e:
                 plugin.debug_log(f"[风格转换命令] 参数解析失败: {e}")
-                yield event.plain_result(f"{e}。使用方法：/ai-gitee style <风格名称> [自定义描述] [比例]")
+                yield event.plain_result(
+                    f"{e}。使用方法：/ai-gitee style <风格名称> [自定义描述] [比例]"
+                )
                 return
         else:
             # 如果用户没有提供自定义描述，直接使用风格提示词
@@ -141,12 +147,15 @@ async def style_command(
 
         plugin.debug_log(
             f"[风格转换命令] 开始生成风格转换图片: user_id={user_id}, "
-            f"style={style_name}, prompt={final_prompt[:80]}..., has_image={bool(image_paths)}, size={target_size}"
+            f"style={style_name}, prompt={final_prompt[:80]}..., "
+            f"has_image={bool(image_paths)}, size={target_size}"
         )
 
         # 先发送提示消息
         if image_paths:
-            yield event.plain_result(f"正在使用 {style_name} 风格转换图片（{len(image_paths)}张），请稍候...")
+            yield event.plain_result(
+                f"正在使用 {style_name} 风格转换图片（{len(image_paths)}张），请稍候..."
+            )
         else:
             yield event.plain_result(f"正在使用 {style_name} 风格生成图片，请稍候...")
 
@@ -166,21 +175,24 @@ async def style_command(
             )
         else:
             # 文生图：使用 generate_image API
-            image_path = await plugin.api_client.generate_image(final_prompt, size=target_size)
+            image_path = await plugin.api_client.generate_image(
+                final_prompt, size=target_size
+            )
 
         end_time = time.time()
         elapsed_time = end_time - start_time
 
         plugin.debug_log(
-            f"[风格转换命令] 图片生成成功: path={image_path}, "
-            f"耗时={elapsed_time:.2f}秒"
+            f"[风格转换命令] 图片生成成功: path={image_path}, " f"耗时={elapsed_time:.2f}秒"
         )
 
         # 将图片和耗时信息合并到一个消息中发送
-        yield event.chain_result([
-            Image.fromFileSystem(image_path),  # type: ignore
-            Plain(f"{style_name} 风格图片生成完成，耗时：{elapsed_time:.2f}秒")
-        ])
+        yield event.chain_result(
+            [
+                Image.fromFileSystem(image_path),  # type: ignore
+                Plain(f"{style_name} 风格图片生成完成，耗时：{elapsed_time:.2f}秒"),
+            ]
+        )
 
     except Exception as e:
         logger.error(f"风格转换图片生成失败: {e}", exc_info=True)

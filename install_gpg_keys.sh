@@ -38,7 +38,8 @@ warn() { echo "⚠️  $*"; }
 # ------------------------------------------------------------------------------
 retry_run() {
     local desc="$1"; shift
-    local attempt=1 delay=1
+    # 初始退避时长取 CURL_RETRY_SLEEP，此后每次指数翻倍
+    local attempt=1 delay="$CURL_RETRY_SLEEP"
     while true; do
         if "$@"; then
             return 0
