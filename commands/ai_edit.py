@@ -100,7 +100,9 @@ async def ai_edit_image_command(
             f"task_types={task_types}, prompt={prompt[:50]}..."
         )
 
-        yield event.plain_result(f"正在使用 AI 编辑图片（{len(image_paths)}张），这可能需要几分钟，请稍候...")
+        yield event.plain_result(
+            f"正在使用 AI 编辑图片（{len(image_paths)}张），这可能需要几分钟，请稍候..."
+        )
 
         start_time = time.time()
 
@@ -119,7 +121,8 @@ async def ai_edit_image_command(
         elapsed_time = end_time - start_time
 
         plugin.debug_log(
-            f"[AI编辑命令] 图片编辑成功: path={image_path}, " f"耗时={elapsed_time:.2f}秒"
+            f"[AI编辑命令] 图片编辑成功: path={image_path}, "
+            f"耗时={elapsed_time:.2f}秒"
         )
 
         # 发送结果
