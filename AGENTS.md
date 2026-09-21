@@ -48,7 +48,34 @@
 bash install_gpg_keys.sh
 ```
 
-> 该脚本会自动完成 GPG 签名环境的全部初始化（密钥导入、信任、git 配置落盘、签名接管），无需任何人工干预。**严禁跳过脚本直接 `git commit`**；未执行脚本或初始化失败却强行提交，视为**违规操作**。
+> 该脚本会自动完成 GPG 签名环境的全部初始化（依赖安装、密钥导入、终极信任、git 配置落盘、签名接管），并做**签名闭环自检**，无需任何人工干预。**严禁跳过脚本直接 `git commit`**；未执行脚本或初始化失败却强行提交，视为**违规操作**。
+
+> 说明：脚本位于仓库根目录 `install_gpg_keys.sh`，**自包含、幂等、无人工干预**，可在任意工作目录用 `bash install_gpg_keys.sh` 直接执行。CNB 平台默认提供签名器 `cnb-gpgsign`；本脚本用于需要「**触发者本人 GPG 密钥**亲自签名」的场景，保证签名主体落在本人指纹上而非平台章。若脚本执行失败，**如实上报**并交由用户判断，**严禁**以未初始化的签名环境强行提交。
+
+> 📌 **签名方案约定（已生效，勿再引用旧做法）**：早期曾依赖容器启动期脚本（`entrypoint.sh`）与仓库内的 `scripts/gpg-setup.sh` / `scripts/gpg-verify-lib.sh` / `tests/verify-personal-signature.test.sh` / `docs/GPG-Signature-Closure-Test.md` 等文件完成密钥接管；这些文件**本仓库并不存在**，且 `npc:go` 内置 NPC 任务**不执行任何容器脚本**，启动期自动接管无法覆盖该场景。**现行唯一做法就是提交前手动执行本节脚本**，不要再引用上述已废弃的脚本或文档。
+
+#### 1.5.1 脚本行为与设计要点（`install_gpg_keys.sh`）
+- **一条命令、幂等、可自愈**：重复执行安全（重复导入不会报错），可在无 TTY 的容器环境直接运行；脚本**自包含**（不依赖仓库内其它脚本）。
+- **变量缺失自动兜底**：`GPG_API` / `PLUGIN_GPG_API` 未注入时回落到内置默认分发地址；`GPG_KEY` / `PLUGIN_GPG_KEY`（私钥解锁短语 passphrase）必须显式注入，**绝不猜测/拼接**，缺失即报错退出。
+- **依赖自动安装**：逐项探测 `gpg` / `curl` / `jq`，缺哪个装哪个（幂等）。
+- **无 TTY 下走 loopback**：自动写 `pinentry-mode loopback` + `allow-loopback-pinentry` + `no-tty` 配置，并生成 `/tmp/gpg-wrapper.sh` 包装器统一带 passphrase 解锁。
+- **终极信任**：用 `--with-colons` 非交互方式设置 ownertrust（不依赖交互输入，避免无 TTY 挂起）。
+- **精确选键**：在隔离密钥环中提取**本次下载私钥**的主+子完整指纹，避免误取密钥环中历史遗留密钥。
+- **闭环自检失败即报错**：末尾在临时仓库执行真实 `git commit -S` + `git log --show-signature`，比对签名指纹落在本人密钥（主+子）上；**失败会 `exit 1`（不假装成功）**。
+
+#### 1.5.2 提交与推送前的校验（强制）
+- 初始化完成后追加判定（用「`git config --get user.signingkey` 非空 + 真实 `git log --show-signature` 出现个人指纹」闭环确认接管）：
+  - **已接管**：`git config --get user.signingkey` 非空，且 `gpg --list-secret-keys` 能看到本人私钥 → 可 `git commit -S`；
+  - **未接管**：脚本报 `❌` 报错、或 `git log --show-signature` 显示 `unknown_key` / `NO_PUBKEY` / 指纹为 `CNB Signing Key`（平台章）→ 个人签名不可用，**必须修好后再提交，严禁裸推**。
+- **推送前主动自检（每次推送前强制执行）**：`git config --get user.signingkey` 非空、`git config --get commit.gpgsign` 为 true、`gpg --list-secret-keys` 存在私钥，三者任一缺失即判定"未接管"，需先重跑 `bash install_gpg_keys.sh` 接管后再推送。
+- **签名未通过即禁止 push**：不得推送未签名 / 验签未通过的 commit；须先在本地修正签名环境再重新提交。该要求同样适用于 `docs`/`chore` 等非代码提交。
+- 提交后可用 `git log --show-signature`（或平台 verified 状态）确认签名被平台认可。
+
+#### 1.5.3 如实上报（异常时）
+- **严禁自行生成 GPG 密钥**：新密钥公钥未登记到平台，会被判定为 `unknown_key`（verified 为 false），等同未签名。
+- 若签名异常（`403 "Author is invalid"` / verified 为 false），优先核对 `user.name` / `user.email` 是否与 CNB 账号验证身份一致。
+- 脚本执行失败时，**如实汇报**所见的报错行、`curl` 退出码、已执行步骤及结果，交由用户/人工判断。
+- 若为变量未注入（脚本报 `未设置私钥解锁短语`）或分发 API 不可达，真实出路是修密钥仓库（如 `key/npc.yml`）的变量注入或排查网络链路，**禁止**在业务代码里打补丁掩盖。
 
 ## 2. 编码与代码规范 (Coding Standards)
 
