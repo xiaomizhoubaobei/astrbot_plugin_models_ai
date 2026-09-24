@@ -167,6 +167,7 @@ class AIImage(Star):
         调用成功后图片会直接发送给用户，无需再自己描述图片内容。
 
         Args:
+            event (AstrMessageEvent): 消息事件对象，用于发送生成的图片。
             prompt (str): 图片提示词，需包含主体、场景、风格等描述；可在末尾追加比例参数（如 9:16、16:9、1:1）。
         """
         return await draw_image_tool(self, event, prompt)
