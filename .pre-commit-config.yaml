@@ -1,8 +1,4 @@
 repos:
-- repo: https://github.com/gitleaks/gitleaks
-  rev: v8.16.3
-  hooks:
-  - id: gitleaks
 - repo: https://github.com/jumanjihouse/pre-commit-hooks
   rev: 3.0.0
   hooks:
@@ -27,7 +23,7 @@ repos:
   rev: 23.12.1
   hooks:
   - id: black
-    language_version: python3.11
+    language_version: python3.12
 - repo: https://github.com/pycqa/flake8
   rev: 6.1.0
   hooks:
