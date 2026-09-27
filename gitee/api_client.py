@@ -14,7 +14,7 @@ from openai import APIError, AuthenticationError, RateLimitError
 
 from astrbot.api import logger
 
-from ..core import ClientManager, ImageManager
+from ..core import SUPPORTED_RATIOS, ClientManager, ImageManager
 
 
 class GiteeAIClient:
@@ -48,6 +48,9 @@ class GiteeAIClient:
         self.num_inference_steps = num_inference_steps
         self.negative_prompt = negative_prompt
         self.base_url = base_url
+
+        # 供 parse_prompt_and_size 读取，使比例映射随服务商切换
+        self.supported_ratios = SUPPORTED_RATIOS
 
         self.client_manager = ClientManager(base_url, debug_mode=debug_mode)
         self.image_manager = ImageManager(debug_mode=debug_mode)
