@@ -160,17 +160,20 @@ class AIImage(Star):
             yield result
 
     @filter_cmd.llm_tool(name="draw_image")
-    async def draw(self, event: "AstrMessageEvent", prompt: str):
+    async def draw(self, event: "AstrMessageEvent", prompt: str):  # noqa: D417
         """根据提示词生成图片.
 
         在用户表达想要生成、绘制图片，或需要配图时调用本工具。
         调用成功后图片会直接发送给用户，无需再自己描述图片内容。
 
+        注意: AstrBot 依据本函数的 docstring 生成工具参数 schema，
+        event 由框架注入，不可写入 Args（其类型不在 JSON Schema 支持的类型内）。
+
         Args:
-            event (AstrMessageEvent): 消息事件对象，用于发送生成的图片。
-            prompt (str): 图片提示词，需包含主体、场景、风格等描述；可在末尾追加比例参数（如 9:16、16:9、1:1）。
+            prompt (string): 图片提示词，需包含主体、场景、风格等描述；可在末尾追加比例参数（如 9:16、16:9、1:1）。
         """
-        return await draw_image_tool(self, event, prompt)
+        async for result in draw_image_tool(self, event, prompt):
+            yield result
 
     @ai_gitee_group.command("ai-edit")
     async def ai_edit_image_command_wrapper(
