@@ -10,9 +10,8 @@ import os
 from typing import Any
 
 import aiohttp
-from openai import APIError, AuthenticationError, RateLimitError
-
 from astrbot.api import logger
+from openai import APIError, AuthenticationError, RateLimitError
 
 from ..core import ClientManager, ImageManager
 
