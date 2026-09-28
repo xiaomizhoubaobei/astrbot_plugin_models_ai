@@ -43,6 +43,7 @@ jobs:
       with:
         name: bandit-报告
         path: bandit-report.json
+        retention-days: 5
 
     - name: 运行代码扫描
       run: |
