@@ -105,13 +105,13 @@ def generate_image(
 ) -> Optional[bytes]:
     """
     生成图像
-    
+
     Args:
         prompt: 图像生成提示词
         model: 使用的模型名称
         width: 图像宽度
         height: 图像高度
-    
+
     Returns:
         图像的二进制数据，失败时返回 None
     """

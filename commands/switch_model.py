@@ -31,7 +31,9 @@ async def switch_model_command(
     """
     if not model_name:
         plugin.debug_log("[切换模型] 收到空模型名称")
-        yield event.plain_result("请提供模型名称！使用方法：/ai-gitee switch-model <模型名称>")
+        yield event.plain_result(
+            "请提供模型名称！使用方法：/ai-gitee switch-model <模型名称>"
+        )
         return
 
     user_id = event.get_sender_id()

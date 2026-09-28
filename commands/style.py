@@ -183,7 +183,8 @@ async def style_command(
         elapsed_time = end_time - start_time
 
         plugin.debug_log(
-            f"[风格转换命令] 图片生成成功: path={image_path}, " f"耗时={elapsed_time:.2f}秒"
+            f"[风格转换命令] 图片生成成功: path={image_path}, "
+            f"耗时={elapsed_time:.2f}秒"
         )
 
         # 将图片和耗时信息合并到一个消息中发送
