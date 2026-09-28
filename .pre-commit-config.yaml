@@ -19,6 +19,7 @@ repos:
   rev: 26.5.1
   hooks:
   - id: black
+    # 不绑定 language_version：仅要求本机具备任意受支持的 Python，跨版本可跑通
     args: ['--target-version', 'py312']
 - repo: https://github.com/pycqa/flake8
   rev: 7.4.1
