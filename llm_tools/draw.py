@@ -37,9 +37,7 @@ async def draw_image_tool(
     user_id = event.get_sender_id()
     request_id = user_id
 
-    plugin.debug_log(
-        f"[LLM工具] 收到生图请求: user_id={user_id}, prompt={prompt[:50]}..."
-    )
+    plugin.debug_log(f"[LLM工具] 收到生图请求: user_id={user_id}, prompt={prompt[:50]}...")
 
     # 防抖检查：命中时直接告知用户，并结束本轮 Agent 循环
     if plugin.rate_limiter.check_debounce(request_id):
@@ -62,9 +60,7 @@ async def draw_image_tool(
 
     plugin.rate_limiter.add_processing(request_id)
     try:
-        plugin.debug_log(
-            f"[LLM工具] 开始生成图片: user_id={user_id}, size={target_size}"
-        )
+        plugin.debug_log(f"[LLM工具] 开始生成图片: user_id={user_id}, size={target_size}")
         # 生图耗时较长，先直发一条提示消息安抚用户
         await event.send(event.plain_result("正在生成图片，请稍候..."))
 

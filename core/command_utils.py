@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, AsyncGenerator
 
 import aiohttp
-
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.message_components import Image

@@ -7,9 +7,8 @@ from typing import Optional
 
 import aiohttp
 import httpx
-from openai import AsyncOpenAI
-
 from astrbot.api import logger
+from openai import AsyncOpenAI
 
 
 class ClientManager:
