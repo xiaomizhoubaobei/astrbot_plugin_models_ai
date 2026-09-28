@@ -16,8 +16,12 @@ from .config import (
     MAX_CACHED_IMAGES,
     OPERATION_CACHE_TTL,
     PLUGIN_NAME,
+    PROVIDER_GITEE,
+    PROVIDER_QIANWEN,
+    SUPPORTED_PROVIDERS,
     SUPPORTED_RATIOS,
     parse_api_keys,
+    resolve_provider,
 )
 from .image_manager import ImageManager
 from .rate_limiter import RateLimiter
@@ -33,8 +37,12 @@ __all__ = [
     "MAX_CACHED_IMAGES",
     "OPERATION_CACHE_TTL",
     "PLUGIN_NAME",
+    "PROVIDER_GITEE",
+    "PROVIDER_QIANWEN",
+    "SUPPORTED_PROVIDERS",
     "SUPPORTED_RATIOS",
     "parse_api_keys",
+    "resolve_provider",
     "ClientManager",
     "ImageManager",
     "RateLimiter",
