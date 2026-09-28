@@ -63,7 +63,9 @@ class RateLimiter:
         if request_id in self.last_operations:
             elapsed = current_time - self.last_operations[request_id]
             if elapsed < DEBOUNCE_SECONDS:
-                self.debug_log(f"防抖拦截: request_id={request_id}, elapsed={elapsed:.2f}s")
+                self.debug_log(
+                    f"防抖拦截: request_id={request_id}, elapsed={elapsed:.2f}s"
+                )
                 return True
 
         self.last_operations[request_id] = current_time

@@ -141,7 +141,9 @@ class ImageManager:
             data = await resp.read()
             content_type = resp.headers.get("Content-Type")
 
-        self.debug_log(f"图片下载完成: size={len(data)} bytes, content_type={content_type}")
+        self.debug_log(
+            f"图片下载完成: size={len(data)} bytes, content_type={content_type}"
+        )
 
         # 根据内容类型或 URL 确定文件扩展名
         extension = self._get_extension_from_url_or_content_type(url, content_type)
@@ -207,7 +209,9 @@ class ImageManager:
         async with aiofiles.open(filepath, "wb") as f:
             await f.write(image_bytes)
 
-        self.debug_log(f"Base64 图片保存成功: {filepath}, size={len(image_bytes)} bytes")
+        self.debug_log(
+            f"Base64 图片保存成功: {filepath}, size={len(image_bytes)} bytes"
+        )
         return filepath
 
     def _sync_cleanup_old_images(self) -> None:

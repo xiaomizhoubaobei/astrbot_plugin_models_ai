@@ -39,7 +39,9 @@ async def generate_image_command(
     """
     if not prompt:
         plugin.debug_log("[命令] 收到空提示词")
-        yield event.plain_result("请提供提示词！使用方法：/ai-gitee generate <提示词> [比例]")
+        yield event.plain_result(
+            "请提供提示词！使用方法：/ai-gitee generate <提示词> [比例]"
+        )
         return
 
     user_id = event.get_sender_id()
@@ -60,10 +62,14 @@ async def generate_image_command(
             prompt, target_size = parse_prompt_and_size(plugin, prompt)
         except ValueError as e:
             plugin.debug_log(f"[命令] 参数解析失败: {e}")
-            yield event.plain_result(f"{e}。使用方法：/ai-gitee generate <提示词> [比例]")
+            yield event.plain_result(
+                f"{e}。使用方法：/ai-gitee generate <提示词> [比例]"
+            )
             return
 
-        plugin.debug_log(f"[命令] 解析参数: prompt={prompt[:50]}..., size={target_size}")
+        plugin.debug_log(
+            f"[命令] 解析参数: prompt={prompt[:50]}..., size={target_size}"
+        )
         plugin.debug_log(f"[命令] 开始生成图片: user_id={user_id}")
         # 先发送提示消息
         yield event.plain_result("正在生成图片，请稍候...")
@@ -71,7 +77,9 @@ async def generate_image_command(
         image_path = await plugin.api_client.generate_image(prompt, size=target_size)
         end_time = time.time()
         elapsed_time = end_time - start_time
-        plugin.debug_log(f"[命令] 图片生成成功: path={image_path}," f"耗时={elapsed_time:.2f}秒")
+        plugin.debug_log(
+            f"[命令] 图片生成成功: path={image_path}," f"耗时={elapsed_time:.2f}秒"
+        )
         # 将图片和耗时信息合并到一个消息中发送
         yield event.chain_result(
             [

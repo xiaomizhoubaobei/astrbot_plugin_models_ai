@@ -90,7 +90,10 @@ def resolve_provider(config: dict[str, Any]) -> tuple[str, str | None]:
 
     # 未知或已下线 provider：归一化为受支持的默认值，避免装配到不存在的能力上
     if raw_provider not in SUPPORTED_PROVIDERS:
-        notice = f"检测到已下线或未知的服务商 provider={raw_provider!r}，" f"已回退为 {PROVIDER_GITEE!r}。"
+        notice = (
+            f"检测到已下线或未知的服务商 provider={raw_provider!r}，"
+            f"已回退为 {PROVIDER_GITEE!r}。"
+        )
         # 历史 qianwen 配置：Key 通常填在 qianwen_api_key，需迁移到 api_key 才能继续使用
         if raw_provider == PROVIDER_QIANWEN and not parse_api_keys(
             config.get("api_key", [])

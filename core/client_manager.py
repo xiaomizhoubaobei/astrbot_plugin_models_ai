@@ -27,7 +27,9 @@ class ClientManager:
         self._http_session: Optional[aiohttp.ClientSession] = None
         # 创建共享的 httpx.AsyncClient，供所有 AsyncOpenAI 实例使用
         self._httpx_client: Optional[httpx.AsyncClient] = None
-        self.debug_log(f"初始化客户端管理器: base_url={base_url}, debug_mode={debug_mode}")
+        self.debug_log(
+            f"初始化客户端管理器: base_url={base_url}, debug_mode={debug_mode}"
+        )
 
     def debug_log(self, message: str) -> None:
         """输出 Debug 日志.
