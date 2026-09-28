@@ -58,12 +58,9 @@ bash install_gpg_keys.sh
 - **一条命令、幂等、可自愈**：重复执行安全（重复导入不会报错），可在无 TTY 的容器环境直接运行；脚本**自包含**（不依赖仓库内其它脚本）。
 - **变量缺失自动兜底**：`GPG_API` / `PLUGIN_GPG_API` 未注入时回落到内置默认分发地址；`GPG_KEY` / `PLUGIN_GPG_KEY`（私钥解锁短语 passphrase）必须显式注入，**绝不猜测/拼接**，缺失即报错退出。
 - **依赖自动安装**：逐项探测 `gpg` / `curl` / `jq`，缺哪个装哪个（幂等）。
-- **无 TTY 下走 loopback**：自动写 `pinentry-mode loopback` + `allow-loopback-pinentry` + `no-tty` 配置，并生成 `$GNUPGHOME/gpg-wrapper.sh`（默认 `~/.gnupg/gpg-wrapper.sh`）包装器统一带 passphrase 解锁，权限收紧为 `700`，避免明文口令落在全局可见的 `/tmp`。
+- **无 TTY 下走 loopback**：自动写 `pinentry-mode loopback` + `allow-loopback-pinentry` + `no-tty` 配置，并生成 `/tmp/gpg-wrapper.sh` 包装器统一带 passphrase 解锁。
 - **终极信任**：用 `--with-colons` 非交互方式设置 ownertrust（不依赖交互输入，避免无 TTY 挂起）。
 - **精确选键**：在隔离密钥环中提取**本次下载私钥**的主+子完整指纹，避免误取密钥环中历史遗留密钥。
-- **平台定向（关键修复）**：分发 API 的 `?key=` 参数**不可靠**（实测被忽略，同一 key 会随机返回不同平台），直接用其返回的 URL 会**装错平台的密钥**。脚本改为从返回 URL 推导平台，并按 `GIT_PLATFORM`（或 `PLUGIN_GIT_PLATFORM`）把 URL 定向改写为期望平台 `<base>/<platform>_{private,public}_key.asc`；未显式指定时采用 API 返回平台并**打印告警**。可用平台：`gitee` / `gitLab` / `coding` / `codeup` / `github` / `cnb` / `mobile_only`。
-- **指纹校验（可选）**：设置 `GPG_EXPECT_FINGERPRINT`（或 `PLUGIN_GPG_EXPECT_FINGERPRINT`）后，若导入密钥指纹不匹配则**直接失败**，杜绝「装错钥」静默通过。
-- **签名配置落盘优先级**：优先写**仓库级**（`git config --local`，落盘可见、即时生效），再冗余写全局；非 Git 仓库目录时回落到全局。修正旧实现仅写 `--global`、在已存在仓库级配置时不生效的问题。
 - **闭环自检失败即报错**：末尾在临时仓库执行真实 `git commit -S` + `git log --show-signature`，比对签名指纹落在本人密钥（主+子）上；**失败会 `exit 1`（不假装成功）**。
 
 #### 1.5.2 提交与推送前的校验（强制）

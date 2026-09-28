@@ -7,7 +7,7 @@ from typing import Any
 
 from astrbot.api import logger
 
-from ..core import ImageGenerationClient
+from .api_client import GiteeAIClient
 
 # 支持的模型类型列表
 MODEL_TYPES = [
@@ -44,16 +44,16 @@ class ModelLister:
 
     def __init__(
         self,
-        api_client: ImageGenerationClient,
+        api_client: GiteeAIClient,
         debug_mode: bool = False,
     ) -> None:
         """初始化模型列表管理器.
 
         Args:
-            api_client: 服务商 API 客户端，只需满足 ImageGenerationClient 契约
+            api_client: Gitee AI API 客户端
             debug_mode: 是否启用 Debug 日志
         """
-        self.api_client: ImageGenerationClient = api_client
+        self.api_client = api_client
         self.debug_mode = debug_mode
 
         self.debug_log("模型列表管理器初始化完成")

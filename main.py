@@ -23,19 +23,12 @@ from .core import (
     DEFAULT_INFERENCE_STEPS,
     DEFAULT_MODEL,
     DEFAULT_NEGATIVE_PROMPT,
-    DEFAULT_QIANWEN_BASE_URL,
-    DEFAULT_QIANWEN_MODEL,
-    DEFAULT_QIANWEN_SIZE,
     DEFAULT_SIZE,
-    ImageGenerationClient,
     RateLimiter,
-    normalize_size,
     parse_api_keys,
 )
 from .gitee import GiteeAIClient, ModelLister
 from .llm_tools import draw_image_tool
-from .qianwen import QianwenClient
-from .qianwen.model_config import QIANWEN_MODEL_SPECS
 
 
 class AIImage(Star):
@@ -56,13 +49,9 @@ class AIImage(Star):
         self.debug_mode = config.get("debug_mode", False)
         self.download_image_urls = config.get("download_image_urls", False)
 
-        # 按 provider 装配的具体服务商客户端；命令层与工具层只依赖该契约工作
-        self.api_client: ImageGenerationClient
-
         self.debug_log("开始初始化插件")
 
         # 解析配置
-        provider = config.get("provider", "gitee")
         base_url = config.get("base_url", DEFAULT_BASE_URL)
         api_keys = parse_api_keys(config.get("api_key", []))
         model = config.get("model", DEFAULT_MODEL)
@@ -71,29 +60,21 @@ class AIImage(Star):
         negative_prompt = config.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
 
         self.debug_log(
-            f"配置解析完成: provider={provider}, model={model}, size={default_size}, "
+            f"配置解析完成: model={model}, size={default_size}, "
             f"api_keys_count={len(api_keys)}, debug_mode={self.debug_mode}, "
             f"download_image_urls={self.download_image_urls}"
         )
 
-        # 初始化组件：按 provider 装配对应服务商的客户端
-        if provider == "qianwen":
-            self.api_client = self._build_qianwen_client(
-                config=config,
-                model=model,
-                default_size=default_size,
-                negative_prompt=negative_prompt,
-            )
-        else:
-            self.api_client = GiteeAIClient(
-                api_keys=api_keys,
-                model=model,
-                default_size=default_size,
-                num_inference_steps=num_inference_steps,
-                negative_prompt=negative_prompt,
-                base_url=base_url,
-                debug_mode=self.debug_mode,
-            )
+        # 初始化组件
+        self.api_client = GiteeAIClient(
+            api_keys=api_keys,
+            model=model,
+            default_size=default_size,
+            num_inference_steps=num_inference_steps,
+            negative_prompt=negative_prompt,
+            base_url=base_url,
+            debug_mode=self.debug_mode,
+        )
         self.rate_limiter = RateLimiter(debug_mode=self.debug_mode)
         self.model_lister = ModelLister(
             api_client=self.api_client,
@@ -101,58 +82,6 @@ class AIImage(Star):
         )
 
         self.debug_log("插件初始化完成")
-
-    def _build_qianwen_client(
-        self,
-        config: dict,
-        model: str,
-        default_size: str,
-        negative_prompt: str,
-    ) -> QianwenClient:
-        """构建千问云客户端.
-
-        model / size 是跨服务商共用的配置项，这里对千问做必要的收敛：
-        - 若配置的模型不是千问登记的型号（例如沿用 Gitee 的 z-image-turbo），
-          退回千问默认模型，避免用户切换 provider 后首个请求必失败；
-        - size 统一转换为千问要求的「宽*高」星号格式。
-
-        Args:
-            config: 插件配置字典
-            model: 配置的模型名称
-            default_size: 配置的默认尺寸
-            negative_prompt: 配置的负面提示词
-
-        Returns:
-            已初始化的千问云客户端
-        """
-        qianwen_base_url = config.get("qianwen_base_url", DEFAULT_QIANWEN_BASE_URL)
-        qianwen_api_keys = parse_api_keys(config.get("qianwen_api_key", []))
-        prompt_extend = config.get("qianwen_prompt_extend", True)
-
-        # 模型在千问能力表中未登记时，回退到千问默认模型
-        if model not in QIANWEN_MODEL_SPECS:
-            self.debug_log(
-                f"模型 {model} 不属于千问可用型号，回退为 {DEFAULT_QIANWEN_MODEL}"
-            )
-            model = DEFAULT_QIANWEN_MODEL
-
-        # 千问要求尺寸分隔符为星号；配置为空时退回千问默认分辨率
-        qianwen_size = normalize_size(default_size or DEFAULT_QIANWEN_SIZE, "*")
-
-        self.debug_log(
-            f"千问云客户端参数: model={model}, size={qianwen_size}, "
-            f"api_keys={len(qianwen_api_keys)}, prompt_extend={prompt_extend}"
-        )
-
-        return QianwenClient(
-            api_keys=qianwen_api_keys,
-            model=model,
-            default_size=qianwen_size,
-            negative_prompt=negative_prompt,
-            base_url=qianwen_base_url,
-            prompt_extend=prompt_extend,
-            debug_mode=self.debug_mode,
-        )
 
     def debug_log(self, message: str) -> None:
         """输出 Debug 日志.

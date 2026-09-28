@@ -13,6 +13,8 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.message_components import Image
 
+from .config import SUPPORTED_RATIOS
+
 
 async def check_rate_limit(
     plugin,
@@ -69,14 +71,10 @@ def parse_prompt_and_size(plugin, prompt: str) -> tuple[str, str]:
     if not prompt:
         raise ValueError("提示词不能为空")
 
-    # 比例到具体尺寸的映射随服务商变化（Gitee 用 宽x高，千问用 宽*高），
-    # 因此从当前客户端取而不用全局常量
-    supported_ratios = plugin.api_client.supported_ratios
-
     # 解析比例参数
     ratio = "1:1"
     prompt_parts = prompt.rsplit(" ", 1)
-    if len(prompt_parts) > 1 and prompt_parts[1] in supported_ratios:
+    if len(prompt_parts) > 1 and prompt_parts[1] in SUPPORTED_RATIOS:
         ratio = prompt_parts[1]
         prompt = prompt_parts[0].strip()
 
@@ -87,9 +85,9 @@ def parse_prompt_and_size(plugin, prompt: str) -> tuple[str, str]:
     # 确定目标尺寸
     target_size = plugin.api_client.default_size
     if ratio != "1:1" or (
-        ratio == "1:1" and plugin.api_client.default_size not in supported_ratios["1:1"]
+        ratio == "1:1" and plugin.api_client.default_size not in SUPPORTED_RATIOS["1:1"]
     ):
-        target_size = supported_ratios[ratio][0]
+        target_size = SUPPORTED_RATIOS[ratio][0]
 
     return prompt, target_size
 

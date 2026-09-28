@@ -28,26 +28,12 @@
 - ✅ 支持多 API Key 轮询调用
 - ✅ 支持自定义负面提示词
 - ✅ 自动清理旧图片，节省存储空间
-- ✅ 支持多家服务商切换：Gitee AI 与**千问云（Qwen）**
-
-## 支持的图像服务商
-
-通过配置项 `provider` 选择，切换后所有生图入口（含 LLM 生图工具）统一走该服务商。
-
-| provider | 服务商 | 文生图 | 图片编辑 | 说明 |
-|--------|-------|-------|---------|------|
-| `gitee`（默认） | Gitee AI | ✅ | ✅ | 完整能力，含 AI 编辑与图生图风格转换 |
-| `qianwen` | 千问云（Qwen） | ✅ | ❌ | 支持 Qwen-Image 同步系列与 Wan 异步系列 |
-
-> 千问云的「图片编辑」与「图生图风格转换」暂未支持，相关命令会提示切换回 `gitee`。
 
 ## 快速开始
 
 1. 安装插件到 AstrBot
-2. 根据要使用的服务商获取 API Key
-   - Gitee AI：在 [Gitee AI](https://ai.gitee.com) 获取
-   - 千问云：在 [千问 AI 平台](https://platform.qianwenai.com) 获取
-3. 配置插件参数（选择 `provider` 并填写对应密钥）
+2. 获取 Gitee AI API Key
+3. 配置插件参数
 4. 开始生成图片
 
 详细的安装和配置说明请查看[快速开始指南](docs/getting-started.md)。
@@ -93,7 +79,6 @@
 
 - [GitHub 仓库](https://github.com/xiaomizhoubaobei/astrbot_plugin_models_ai)
 - [Gitee AI 平台](https://ai.gitee.com/serverless-api?model=z-image-turbo)
-- [千问 AI 平台](https://platform.qianwenai.com/docs/developer-guides/image-generation/text-to-image)
 - [问题反馈](https://github.com/xiaomizhoubaobei/astrbot_plugin_models_ai/issues)
 - [文档中心](docs/)
 
