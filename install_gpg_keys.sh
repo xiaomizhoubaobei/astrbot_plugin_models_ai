@@ -220,12 +220,28 @@ EOF
 chmod 700 "$WRAPPER"
 
 # ------------------------------------------------------------------------------
-# 9. 配置 Git 全局签名（幂等）
+# 9. 配置 Git 签名：仓库级优先（覆盖已有 local 旧签名器），无仓库时回落全局
+#    关键：仓库级配置优先级高于全局——若运行目录已存在 local 的
+#    user.signingkey / commit.gpgsign / gpg.program，只写 --global 不会生效，
+#    提交仍会走旧签名器；因此必须按「有工作树 -> 写 local + 全局；否则 -> 只写全局」。
+#    gpg.format 一并显式写入，避免沿用仓库级遗留的 ssh/x509 签名格式。
 # ------------------------------------------------------------------------------
-git config --global user.signingkey "$KEY_ID"
-git config --global commit.gpgsign true
-git config --global tag.gpgsign true
-git config --global gpg.program "$WRAPPER"
+configure_git_signing() {
+    local scope="$1"
+    git config "$scope" user.signingkey "$KEY_ID"
+    git config "$scope" commit.gpgsign true
+    git config "$scope" tag.gpgsign true
+    git config "$scope" gpg.program "$WRAPPER"
+    git config "$scope" gpg.format openpgp
+}
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "==> 检测到 Git 工作树，写入仓库级签名配置（优先级高于全局）"
+    configure_git_signing --local
+    configure_git_signing --global
+else
+    echo "==> 非 Git 仓库目录，仅写入全局签名配置"
+    configure_git_signing --global
+fi
 # 回填身份，避免平台校验 403 "Author is invalid"
 [ -n "${CNB_BUILD_USER_NICKNAME:-}" ] && git config --global user.name "$CNB_BUILD_USER_NICKNAME"
 [ -n "${CNB_BUILD_USER_EMAIL:-}" ] && git config --global user.email "$CNB_BUILD_USER_EMAIL"
