@@ -1,4 +1,8 @@
-aiofiles
-aiohttp
-openai
-deprecated
+# 运行依赖（下限约束：确保解析到已修复安全漏洞的版本）
+# 说明：aiohttp>=3.14.3 修复了 PYSEC-2026-2104~3547 系列漏洞；
+#       deprecated>=3.0.0 与 aiohttp>=3.14.3 均要求 Python>=3.10/3.12，
+#       与本插件声明的 Python 3.12+ 保持一致。
+aiofiles>=24.1.0
+aiohttp>=3.14.3
+openai>=1.0.0
+deprecated>=1.2.14

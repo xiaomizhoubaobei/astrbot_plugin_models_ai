@@ -18,7 +18,10 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
+        # 与插件声明的 Python 支持范围（3.12+）保持一致：
+        # aiohttp>=3.14.3 / anyio>=4.14.2 等修复版本要求 Python>=3.10，
+        # 而 deprecated>=3.0.0 要求 Python>=3.12，故审计下限为 3.12。
+        python-version: ['3.12', '3.13']
     runs-on: ${{ matrix.os }}
     name: 审计在 ${{ matrix.os }} 上使用 Python ${{ matrix.python-version }}
     permissions:
