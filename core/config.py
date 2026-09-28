@@ -84,16 +84,17 @@ def resolve_provider(config: dict[str, Any]) -> tuple[str, str | None]:
         - effective_provider: 归一化后实际生效的服务商（当前恒为 ``gitee``）
         - migration_notice: 迁移提示文案；无需迁移时为 ``None``
     """
-    raw_provider = str(config.get("provider", PROVIDER_GITEE) or PROVIDER_GITEE).strip().lower()
+    raw_provider = (
+        str(config.get("provider", PROVIDER_GITEE) or PROVIDER_GITEE).strip().lower()
+    )
 
     # 未知或已下线 provider：归一化为受支持的默认值，避免装配到不存在的能力上
     if raw_provider not in SUPPORTED_PROVIDERS:
-        notice = (
-            f"检测到已下线或未知的服务商 provider={raw_provider!r}，"
-            f"已回退为 {PROVIDER_GITEE!r}。"
-        )
+        notice = f"检测到已下线或未知的服务商 provider={raw_provider!r}，" f"已回退为 {PROVIDER_GITEE!r}。"
         # 历史 qianwen 配置：Key 通常填在 qianwen_api_key，需迁移到 api_key 才能继续使用
-        if raw_provider == PROVIDER_QIANWEN and not parse_api_keys(config.get("api_key", [])):
+        if raw_provider == PROVIDER_QIANWEN and not parse_api_keys(
+            config.get("api_key", [])
+        ):
             legacy_keys = parse_api_keys(config.get("qianwen_api_key", []))
             if legacy_keys:
                 # 直接写回 config，使后续所有读取方（含命令层）都能拿到迁移后的 Key
