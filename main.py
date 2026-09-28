@@ -26,6 +26,7 @@ from .core import (
     DEFAULT_SIZE,
     RateLimiter,
     parse_api_keys,
+    resolve_provider,
 )
 from .gitee import GiteeAIClient, ModelLister
 from .llm_tools import draw_image_tool
@@ -51,6 +52,12 @@ class AIImage(Star):
 
         self.debug_log("开始初始化插件")
 
+        # 解析服务商配置：对已下线的 provider（如 qianwen）做兼容迁移并给出明确告警
+        # 避免历史配置被静默装配到错误的客户端、直到首次生图才以「空 Key」形式失败
+        provider, migration_notice = resolve_provider(config)
+        if migration_notice:
+            logger.warning(f"[AstrBot-GiteeAI] {migration_notice}")
+
         # 解析配置
         base_url = config.get("base_url", DEFAULT_BASE_URL)
         api_keys = parse_api_keys(config.get("api_key", []))
@@ -60,7 +67,7 @@ class AIImage(Star):
         negative_prompt = config.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
 
         self.debug_log(
-            f"配置解析完成: model={model}, size={default_size}, "
+            f"配置解析完成: provider={provider}, model={model}, size={default_size}, "
             f"api_keys_count={len(api_keys)}, debug_mode={self.debug_mode}, "
             f"download_image_urls={self.download_image_urls}"
         )
