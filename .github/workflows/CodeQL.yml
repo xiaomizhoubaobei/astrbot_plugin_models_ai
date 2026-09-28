@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   analyze:
-    name: 分析
+    name: 分析（${{ matrix.language }} @ ${{ matrix.os }} / Python ${{ matrix.python-version }}）
     runs-on: ${{ matrix.os }}
     permissions:
       actions: read
@@ -27,10 +27,23 @@ jobs:
 
     strategy:
       fail-fast: false
+      # 多矩阵：语言 × 操作系统。
+      # CodeQL 的查询结果与语言强相关，与本机 Python 版本弱相关，
+      # 故 Python 版本仅在 Linux（主运行器）上做多版本覆盖，避免矩阵规模翻倍。
       matrix:
         language: [ 'python' ]
-        os: ["ubuntu-latest", "windows-latest", "macos-latest"]
-
+        os: [ 'ubuntu-latest', 'windows-latest', 'macos-latest' ]
+        python-version: [ '3.12', '3.13', '3.14' ]
+        exclude:
+          # 非 Linux 运行器只需最小编译/解析环境，不重复跑多版本
+          - os: 'windows-latest'
+            python-version: '3.12'
+          - os: 'windows-latest'
+            python-version: '3.13'
+          - os: 'macos-latest'
+            python-version: '3.12'
+          - os: 'macos-latest'
+            python-version: '3.13'
 
     steps:
     - name: 加固运行器（审计所有出站调用）
@@ -41,10 +54,10 @@ jobs:
     - name: 检出仓库
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-    - name: 设置 Python 3.14
+    - name: 设置 Python ${{ matrix.python-version }}
       uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
       with:
-        python-version: '3.14'
+        python-version: ${{ matrix.python-version }}
 
     - name: 初始化 CodeQL
       uses: github/codeql-action/init@5d4e8d1aca955e8d8589aabd499c5cae939e33c7 # v4.31.9
@@ -57,4 +70,5 @@ jobs:
     - name: 执行 CodeQL 分析
       uses: github/codeql-action/analyze@5d4e8d1aca955e8d8589aabd499c5cae939e33c7 # v4.31.9
       with:
-        category: "/language:${{matrix.language}}"
+        # 同一语言的不同矩阵组合需用独立 category，避免结果互相覆盖
+        category: "/language:${{ matrix.language }}/os:${{ matrix.os }}/py:${{ matrix.python-version }}"
