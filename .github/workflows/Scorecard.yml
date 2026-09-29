@@ -2,8 +2,16 @@
 
 name: Scorecard 供应链安全
 on:
-  pull_request:
+  # 分支保护规则变更时运行
+  branch_protection_rule:
+  # 默认分支（main）收到推送时运行：只有此场景可发布结果并收敛到安全面板
+  push:
     branches: [ "main" ]
+  # 每周一 00:00 UTC 定时运行（PR 无法携带固定定时，仅默认分支生效）
+  schedule:
+    - cron: '0 0 * * 1'
+  # 支持手动触发，便于排障与补跑
+  workflow_dispatch:
 
 # 声明默认权限为只读。
 permissions: read-all
@@ -12,8 +20,14 @@ jobs:
   analysis:
     name: Scorecard 分析
     runs-on: ubuntu-latest
-    # `publish_results: true` 仅在从默认分支运行时有效。如果禁用，可以删除条件。
-    if: github.event.repository.default_branch == github.ref_name
+    # `publish_results: true` 仅在从默认分支运行时有效。
+    # 按事件与分支粒度判断：push / schedule / workflow_dispatch 只在默认分支运行，
+    # branch_protection_rule 本身即针对默认分支；不再使用与 ref_name 恒不相等的旧写法。
+    if: |
+      github.event_name == 'branch_protection_rule' ||
+      (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) ||
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch'
     permissions:
       # 上传结果到代码扫描仪表板需要。
       security-events: write

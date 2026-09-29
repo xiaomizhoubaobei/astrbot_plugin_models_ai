@@ -45,8 +45,10 @@ jobs:
 
       - name: 从评论中提取说明
         id: extract
+        env:
+          # 通过环境变量传递评论体，避免评论内容被直接内联进脚本导致命令注入/截断
+          COMMENT: ${{ github.event.comment.body }}
         run: |
-          COMMENT="${{ github.event.comment.body }}"
           # Extract everything after "@iflow-cli /review-killer " (case insensitive)
           # First check if the pattern exists, then extract
           if echo "$COMMENT" | grep -qiE '@iflow-cli[[:space:]]+/review-killer'; then
