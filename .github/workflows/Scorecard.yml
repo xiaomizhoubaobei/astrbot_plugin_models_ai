@@ -4,7 +4,11 @@ name: Scorecard 供应链安全
 on:
   # 分支保护规则变更时运行
   branch_protection_rule:
-  # 默认分支（main）收到推送时运行：只有此场景可发布结果并收敛到安全面板
+  # 默认分支收到推送时运行：只有此场景可发布结果并收敛到安全面板。
+  # 保留 branches 过滤（与官方模板一致，官方使用 push.branches: [ $default-branch ]）：
+  # 触发器负责"不产生无谓的 skipped 运行"，作业级守卫负责"即使触发也不在非默认分支发布"，
+  # 两者职责不同、不可互相替代。若将来默认分支重命名，此处需同步改名
+  # （守卫用 default_branch 动态判断，重命名不会导致错误分支发布，但会漏掉 push 触发）。
   push:
     branches: [ "main" ]
   # 每周一 00:00 UTC 定时运行（PR 无法携带固定定时，仅默认分支生效）
@@ -20,14 +24,15 @@ jobs:
   analysis:
     name: Scorecard 分析
     runs-on: ubuntu-latest
-    # `publish_results: true` 仅在从默认分支运行时有效。
-    # 按事件与分支粒度判断：push / schedule / workflow_dispatch 只在默认分支运行，
-    # branch_protection_rule 本身即针对默认分支；不再使用与 ref_name 恒不相等的旧写法。
+    # `publish_results: true` 仅在从默认分支运行时有效，因此除事件类型外还须校验 ref。
+    # schedule：事件本身固定以默认分支为 ref，一并校验以保持写法统一；
+    # workflow_dispatch：可指定任意分支触发，若不校验会在非默认分支空跑（结果无法发布）；
+    # branch_protection_rule：本身即针对默认分支。
     if: |
       github.event_name == 'branch_protection_rule' ||
       (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) ||
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch'
+      (github.event_name == 'schedule' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) ||
+      (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
     permissions:
       # 上传结果到代码扫描仪表板需要。
       security-events: write
