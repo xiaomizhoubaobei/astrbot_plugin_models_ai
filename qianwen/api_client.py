@@ -463,11 +463,15 @@ class QianwenClient:
                     on_retry=self._log_retry("轮询"),
                 )
             except RuntimeError:
+                # 业务失败（Key 失效 / 服务端状态错误）确定性终止，直接上报
                 raise
             except Exception as e:
-                # 单次轮询失败不终止任务，交由下一轮退避重试
-                self.debug_log(f"轮询异常: {mask_text(e)}，等待重试")
-                data = None
+                # 单次查询的网络重试已在 with_retry 内耗尽（含 1s/2s/4s 退避）。
+                # 若此处仅置空 data 并回到下一轮轮询，整条重试阶梯会被反复重跑，
+                # 使实际请求次数与总等待时间成倍超出文档承诺的 3 次 / 7 秒；
+                # 故耗尽后直接以分类错误终止轮询，避免重试嵌套。
+                self.debug_log(f"轮询查询重试耗尽，终止任务轮询: {mask_text(e)}")
+                raise RuntimeError(f"任务轮询失败：{to_user_message(e)}") from e
 
             if data is not None:
                 output = data.get("output", {}) or {}

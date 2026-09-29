@@ -603,12 +603,16 @@ class GiteeAIClient:
                     continue
 
             except RuntimeError:
+                # 业务失败（Key 失效 / 服务端 5xx / 任务失败等）确定性终止，
+                # 不参与轮询重试，直接向命令层抛出友好提示
                 raise
             except Exception as e:
-                if attempts >= max_attempts:
-                    raise RuntimeError(f"任务轮询失败：{to_user_message(e)}") from e
-                self.debug_log(f"轮询失败，等待重试: {mask_text(e)}")
-                await asyncio.sleep(retry_interval)
+                # 单次查询的网络重试已在 with_retry 内耗尽（含 1s/2s/4s 退避），
+                # 此处再回到外层的「下一轮轮询」会把整条重试阶梯重新跑一遍，
+                # 使实际请求次数与总等待时间成倍超出文档承诺的 3 次 / 7 秒。
+                # 故耗尽后直接以分类错误终止轮询，交由调用方上报。
+                self.debug_log(f"轮询查询重试耗尽，终止任务轮询: {mask_text(e)}")
+                raise RuntimeError(f"任务轮询失败：{to_user_message(e)}") from e
 
         raise RuntimeError(f"任务超时（已等待 {timeout} 秒）")
 
