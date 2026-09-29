@@ -17,6 +17,7 @@
 """
 
 import asyncio
+import json
 import time
 from typing import Any
 
@@ -320,7 +321,7 @@ class QianwenClient:
                 headers=self._build_headers(api_key),
                 timeout=timeout,
             ) as response:
-                data: dict[str, Any] = await response.json(content_type=None)
+                data = await self._read_json_safely(response, response.status)
                 if response.status != 200:
                     raise self._build_error(data, response.status)
                 return data
@@ -408,7 +409,7 @@ class QianwenClient:
                     api_key, is_async=True, idempotency_key=idempotency_key
                 ),
             ) as response:
-                data: dict[str, Any] = await response.json(content_type=None)
+                data = await self._read_json_safely(response, response.status)
                 if response.status != 200:
                     raise self._build_error(data, response.status)
                 return data
@@ -468,7 +469,7 @@ class QianwenClient:
             async def _request() -> dict[str, Any]:
                 """查询一次任务状态，非 2xx 抛业务异常（不参与重试）."""
                 async with session.get(url, headers=headers) as response:
-                    payload: dict[str, Any] = await response.json(content_type=None)
+                    payload = await self._read_json_safely(response, response.status)
                     if response.status != 200:
                         raise self._build_error(payload, response.status)
                     return payload
@@ -598,6 +599,45 @@ class QianwenClient:
             )
 
         return _callback
+
+    async def _read_json_safely(self, response: Any, status: int) -> dict[str, Any]:
+        """读取响应体并安全解析为 JSON 字典.
+
+        上游在 5xx / 网关故障时返回的往往是 HTML 错误页而非 JSON，
+        此时先解析再判断状态会抛 ``ContentTypeError`` / ``JSONDecodeError``，
+        导致 ``_build_error`` 的准确中文分类被绕过、最终落入泛化的
+        「网络请求异常」。这里改为：
+
+        - 先读原始文本（一次读取，避免重复消费响应体）；
+        - 文本为空时返回空字典；
+        - JSON 解析成功且顶层为对象时返回该对象；
+        - 解析失败（HTML 等）时返回空字典，交由 ``_build_error`` 按状态码
+          给出中文提示，并把截断后的原始片段带进日志便于排障。
+
+        Args:
+            response: aiohttp 响应对象
+            status: HTTP 状态码（仅用于日志上下文）
+
+        Returns:
+            解析出的字典；无法解析时为空字典
+        """
+        raw = await response.text()
+
+        if not raw:
+            return {}
+
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            # 非 JSON（如 502/503 网关的 HTML 错误页）：返回空字典，
+            # 让状态码分支决定用户可见提示，原始片段只进 debug 日志。
+            self.debug_log(f"响应非 JSON: status={status}, body={mask_text(raw[:200])}")
+            return {}
+
+        if not isinstance(parsed, dict):
+            self.debug_log(f"响应 JSON 顶层非对象: status={status}")
+            return {}
+        return parsed
 
     def _build_error(self, data: dict[str, Any], status: int) -> RuntimeError:
         """把接口错误转换为面向用户的中文异常.

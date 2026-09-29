@@ -316,6 +316,10 @@ RETRYABLE: tuple[type[BaseException], ...] = (
     httpx.ProxyError,
     ConnectionResetError,
     ConnectionAbortedError,
+    # 目标端口关闭时 stdlib 抛 ConnectionRefusedError；aiohttp 会把它包进
+    # ClientConnectorError，而该异常不在 httpx 类型体系内，故此处显式列出，
+    # 避免只依赖 "connection refused" 文本匹配（随 aiohttp / c-ares 版本漂移）。
+    ConnectionRefusedError,
     asyncio.TimeoutError,
     socket.gaierror,
 )
