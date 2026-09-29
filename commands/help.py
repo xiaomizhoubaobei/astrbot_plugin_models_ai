@@ -23,7 +23,26 @@ async def help_command(
     Yields:
         帮助信息
     """
-    help_text = """
+    # 当前生效的服务商（决定生图命令与 LLM 生图工具实际调用哪个平台）
+    provider = "gitee"
+    if hasattr(plugin, "config"):
+        provider = str(plugin.config.get("provider", "gitee")).strip().lower()
+
+    if provider == "qianwen":
+        provider_section = (
+            "🌐 当前服务商: 千问云 (Qwen / 万相)\n"
+            "  可用模型: z-image-turbo / wan2.6-t2i / wan2.5-t2i-preview\n"
+            "            wan2.2-t2i-plus / wan2.2-t2i-flash / wan2.1-t2i-plus\n"
+            "            wan2.1-t2i-turbo / wanx2.0-t2i-turbo\n"
+            "  注意: 图片编辑与图生图风格转换暂不支持，需将 provider 切回 gitee\n"
+        )
+    else:
+        provider_section = (
+            "🌐 当前服务商: Gitee AI\n" "  可用模型可通过 /ai-gitee text2image 查询\n"
+        )
+
+    help_text = f"""
+{provider_section}
 📚 ai-gitee 指令帮助
 
 🎨 生图命令:

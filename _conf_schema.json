@@ -1,4 +1,15 @@
 {
+    "provider": {
+        "description": "服务商",
+        "type": "string",
+        "default": "gitee",
+        "hint": "可选 gitee(Gitee AI) 或 qianwen(千问云，含万相 wan2.x / z-image)。切换到 qianwen 后，生图命令与 LLM 生图工具统一调用千问云接口",
+        "options": [
+            "gitee",
+            "qianwen"
+        ],
+        "obvious_hint": true
+    },
     "api_key": {
         "description": "API 密钥 (支持多 Key 轮询)",
         "type": "list",
@@ -6,17 +17,36 @@
         "default": [],
         "obvious_hint": true
     },
+    "qianwen_api_key": {
+        "description": "千问云 API 密钥 (支持多 Key 轮询)",
+        "type": "list",
+        "hint": "千问云（platform.qianwenai.com）的 API Key，仅在 provider=qianwen 时生效，支持逗号分隔字符串或列表",
+        "default": [],
+        "obvious_hint": true
+    },
+    "qianwen_base_url": {
+        "description": "千问云 API 基础地址",
+        "type": "string",
+        "default": "https://maas.qianwenaiapi.com/api/v1",
+        "hint": "一般无需修改；仅在私有网关或代理场景下调整"
+    },
+    "qianwen_prompt_extend": {
+        "description": "千问云提示词自动改写",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后由千问云自动扩写简短提示词以提升画质，会增加几秒延迟；不支持的模型会自动忽略"
+    },
     "model": {
         "description": "使用的模型名称",
         "type": "string",
         "default": "z-image-turbo",
-        "hint": "例如: z-image-turbo"
+        "hint": "跨服务商共用。Gitee 例如 z-image-turbo；千问云例如 z-image-turbo、wan2.6-t2i、wan2.5-t2i-preview（填未登记的型号会自动回退为默认模型）"
     },
     "size": {
         "description": "图片大小",
         "type": "string",
         "default": "1024x1024",
-        "hint": "例如: 1024x1024"
+        "hint": "跨服务商共用，统一填 宽x高（如 1024x1024）；千问云会自动转换为其要求的 宽*高 格式"
     },
     "num_inference_steps": {
         "description": "推理步数",

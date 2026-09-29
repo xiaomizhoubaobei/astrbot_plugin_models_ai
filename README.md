@@ -25,6 +25,7 @@
 - ✅ 支持通过指令 `/ai-gitee generate` 生成图片
 - ✅ 支持多种图片比例和分辨率
 - ✅ 支持自定义模型
+- ✅ 支持多服务商切换（Gitee AI / 千问云·万相）
 - ✅ 支持多 API Key 轮询调用
 - ✅ 支持自定义负面提示词
 - ✅ 自动清理旧图片，节省存储空间
@@ -32,8 +33,8 @@
 ## 快速开始
 
 1. 安装插件到 AstrBot
-2. 获取 Gitee AI API Key
-3. 配置插件参数
+2. 获取 API Key（Gitee AI 或千问云，按所选服务商）
+3. 配置插件参数（`provider` + 对应服务商的 API Key）
 4. 开始生成图片
 
 详细的安装和配置说明请查看[快速开始指南](docs/getting-started.md)。
@@ -43,6 +44,7 @@
 ### 用户指南
 
 - 📖 [快速开始](docs/getting-started.md) - 安装插件并获取 API Key
+- 🌐 [服务商支持](docs/providers.md) - Gitee AI 与千问云（万相）的切换与模型说明
 - ⚙️ [配置说明](docs/configuration.md) - 详细的配置选项和最佳实践
 - 🎨 [使用指南](docs/user-guide.md) - 指令调用方法
 - 🎭 [AI 图片编辑指南](docs/ai-edit-guide.md) - AI 图片编辑功能详解
