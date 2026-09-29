@@ -401,25 +401,35 @@ class GiteeAIClient:
             "X-Failover-Enabled": "true",
         }
 
-        # 发送请求
-        data = aiohttp.FormData()
-        for field in fields:
-            if isinstance(field[1], tuple):
-                # 文件字段
-                name, value, content_type = field[1]
-                data.add_field(
-                    field[0], value, filename=name, content_type=content_type
-                )
-            else:
-                # 普通字段
-                data.add_field(field[0], field[1])
-
         self.debug_log("发送图片编辑请求")
+
+        def _build_form() -> aiohttp.FormData:
+            """按需重建 multipart 表单，保证每次重试都拿到未消费的新载荷.
+
+            ``aiohttp.FormData`` 装载的 multipart body 是一次性可读的：首次
+            POST 发送后即被消费。若在 ``_submit`` 外只构建一份并闭包复用，
+            重试时会带着已处理的残留载荷再次提交而失败。故这里改为每次调用
+            都依据原始 ``fields`` 重建一份，确保请求可安全重放。
+            """
+            form = aiohttp.FormData()
+            for field in fields:
+                if isinstance(field[1], tuple):
+                    # 文件字段
+                    name, value, content_type = field[1]
+                    form.add_field(
+                        field[0], value, filename=name, content_type=content_type
+                    )
+                else:
+                    # 普通字段
+                    form.add_field(field[0], field[1])
+            return form
 
         async def _submit() -> dict[str, Any]:
             """提交一次编辑任务，非 2xx 转成中文业务异常（不参与重试）."""
             async with session.post(
-                f"{self.base_url}/async/images/edits", headers=headers, data=data
+                f"{self.base_url}/async/images/edits",
+                headers=headers,
+                data=_build_form(),
             ) as response:
                 if response.status != 200:
                     body = mask_text(await response.text())
