@@ -51,12 +51,23 @@ jobs:
         run: |
           # Extract everything after "@iflow-cli /review-killer " (case insensitive)
           # First check if the pattern exists, then extract
-          if echo "$COMMENT" | grep -qiE '@iflow-cli[[:space:]]+/review-killer'; then
-            INSTRUCTIONS=$(echo "$COMMENT" | sed -E 's/.*@[iI][fF][lL][oO][wW]-[cC][lL][iI][[:space:]]+\/[rR][eE][vV][iI][eE][wW]-[kK][iI][lL][lL][eE][rR][[:space:]]*(.*)/\1/' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+          if printf '%s' "$COMMENT" | grep -qiE '@iflow-cli[[:space:]]+/review-killer'; then
+            # 用 perl 整体扫描（-0777 slurp + /s 修饰符）而非逐行的 sed：
+            # sed 默认逐行处理、"." 不跨行，多行评论时只会匹配到指令所在行，
+            # 后续指令行会被整段丢弃。perl 的 .* 配合 /s 可跨行贪婪匹配，
+            # 去掉「最后一条触发指令」之前的所有内容，保留其后剩余文本（含换行）。
+            INSTRUCTIONS=$(printf '%s' "$COMMENT" | perl -0777 -pe 's/.*\@[iI][fF][lL][oO][wW]-[cC][lL][iI]\s+\/[rR][eE][vV][iI][eE][wW]-[kK][iI][lL][lL][eE][rR]\s*//s' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
           else
             INSTRUCTIONS=""
           fi
-          echo "instructions=$INSTRUCTIONS" >> $GITHUB_OUTPUT
+          # 多行内容必须用 heredoc 分隔符形式写入 $GITHUB_OUTPUT：
+          # 若沿用 "echo instructions=$INSTRUCTIONS"，换行会让输出变成多行，
+          # 超出首行的部分缺少 "key=" 前缀，GitHub Actions 会报格式错误并截断取值。
+          {
+            echo "instructions<<__IFLOW_INSTRUCTIONS_EOF__"
+            printf '%s\n' "$INSTRUCTIONS"
+            echo "__IFLOW_INSTRUCTIONS_EOF__"
+          } >> "$GITHUB_OUTPUT"
 
       - name: '运行 iFlow CLI 实现'
         uses: iflow-ai/iflow-cli-action@v2.0.0
