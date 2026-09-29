@@ -1,6 +1,13 @@
 """API 调用模块.
 
 负责 Gitee AI API 的调用和错误处理。
+
+出站请求统一经由 ``core.net_errors`` 做两件事：
+
+- **指数退避重试**：DNS / 连接超时 / 读取超时 / 连接重置等瞬时故障按
+  1s / 2s / 4s 重试；认证、限流、参数类错误属于确定性失败，快速返回中文提示。
+- **错误分类脱敏**：与千问云共用同一套分类器，切换服务商后排障口径一致，
+  且回包文本会抹掉 API Key 与 URL query。
 """
 
 import asyncio
@@ -13,7 +20,16 @@ import aiohttp
 from astrbot.api import logger
 from openai import APIError, AuthenticationError, RateLimitError
 
-from ..core import SUPPORTED_RATIOS, ClientManager, ImageManager
+from ..core import (
+    DEFAULT_MAX_RETRIES,
+    SUPPORTED_RATIOS,
+    ClientManager,
+    ImageManager,
+    build_timeout,
+    mask_text,
+    to_user_message,
+    with_retry,
+)
 
 
 class GiteeAIClient:
@@ -92,6 +108,25 @@ class GiteeAIClient:
         )
         return api_key
 
+    def _log_retry(self, scene: str):
+        """构造一个「记录重试」的回调，交给 ``with_retry`` 使用.
+
+        Args:
+            scene: 场景名（如「生图请求」「模型列表请求」），用于日志区分
+
+        Returns:
+            回调函数，签名为 ``(第几次重试, 退避秒数, 异常)``
+        """
+
+        def _callback(attempt: int, delay: float, exc: BaseException) -> None:
+            """记录一次重试，异常文本已脱敏."""
+            self.debug_log(
+                f"{scene} 失败，第 {attempt}/{DEFAULT_MAX_RETRIES} 次重试"
+                f"（{delay:.0f}s 后）: {type(exc).__name__} - {mask_text(exc)}"
+            )
+
+        return _callback
+
     async def generate_image(self, prompt: str, size: str = "") -> str:
         """调用 Gitee AI API 生成图片，返回本地文件路径.
 
@@ -132,23 +167,34 @@ class GiteeAIClient:
 
         self.debug_log(f"发送 API 请求: model={self.model}, size={target_size}")
 
+        async def _request():
+            """执行一次生图请求，SDK 异常交由外层统一分类."""
+            return await client.images.generate(**kwargs)  # type: ignore
+
         try:
-            response = await client.images.generate(**kwargs)  # type: ignore
+            # OpenAI SDK 已把网络异常包成 APIConnectionError，这里统一按
+            # 瞬时故障重试；认证 / 限流 / 参数错误会被 is_retryable 判为不重试。
+            response = await with_retry(
+                _request,
+                max_retries=DEFAULT_MAX_RETRIES,
+                label="Gitee AI 生图请求",
+                on_retry=self._log_retry("生图请求"),
+            )
             self.debug_log("API 响应接收成功")
         except AuthenticationError as e:
-            self.debug_log(f"API 认证失败: {e}")
+            self.debug_log(f"API 认证失败: {mask_text(e)}")
             raise RuntimeError("API Key 无效或已过期，请检查配置。") from e
         except RateLimitError as e:
-            self.debug_log(f"API 速率限制: {e}")
+            self.debug_log(f"API 速率限制: {mask_text(e)}")
             raise RuntimeError("API 调用次数超限或并发过高，请稍后再试。") from e
         except APIError as e:
-            self.debug_log(f"API 错误: {e}")
+            self.debug_log(f"API 错误: {mask_text(e)}")
             if e.status_code == 500:
                 raise RuntimeError("Gitee AI 服务器内部错误，请稍后再试。") from e
-            raise RuntimeError(f"API调用失败: {e}") from e
+            raise RuntimeError(f"API调用失败：{to_user_message(e)}") from e
         except Exception as e:
-            self.debug_log(f"未知错误: {e}")
-            raise RuntimeError(f"API调用失败: {e}") from e
+            self.debug_log(f"未知错误: {mask_text(e)}")
+            raise RuntimeError(f"API调用失败：{to_user_message(e)}") from e
 
         if not response.data:  # type: ignore
             raise RuntimeError("生成图片失败：未返回数据")
@@ -211,47 +257,62 @@ class GiteeAIClient:
 
         self.debug_log(f"发送模型列表请求: params={params}")
 
+        # 使用原始 HTTP 请求调用 Gitee AI 的 models API
+        url = f"{self.base_url}/models"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+        }
+
+        async def _request() -> dict[str, Any]:
+            """拉取一次模型列表，非 2xx 转成中文业务异常（不参与重试）."""
+            async with session.get(url, params=params, headers=headers) as response:
+                if response.status != 200:
+                    body = mask_text(await response.text())
+                    # 这里必须按真实 status 分支，不能再靠字符串里是否含 "401"
+                    # 去猜——域名/query 里恰好出现该数字会误判。
+                    if response.status in (401, 403):
+                        raise RuntimeError("API Key 无效或已过期，请检查配置。")
+                    if response.status == 429:
+                        raise RuntimeError("API 调用次数超限或并发过高，请稍后再试。")
+                    if response.status >= 500:
+                        raise RuntimeError("Gitee AI 服务器内部错误，请稍后再试。")
+                    raise RuntimeError(
+                        f"获取模型列表失败: HTTP {response.status}"
+                        + (f"（响应：{body}）" if body else "")
+                    )
+                payload: dict[str, Any] = await response.json()
+                return payload
+
         try:
-            # 使用原始 HTTP 请求调用 Gitee AI 的 models API
-            url = f"{self.base_url}/models"
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-            }
+            data = await with_retry(
+                _request,
+                max_retries=DEFAULT_MAX_RETRIES,
+                label="Gitee AI 模型列表请求",
+                on_retry=self._log_retry("模型列表请求"),
+            )
+        except RuntimeError:
+            raise
+        except Exception as e:
+            self.debug_log(f"API 调用失败: {mask_text(e)}")
+            raise RuntimeError(f"API调用失败：{to_user_message(e)}") from e
 
-            response = await session.get(url, params=params, headers=headers)
-            response.raise_for_status()
+        self.debug_log(
+            f"模型列表获取成功: response_type={data.get('object')}, "
+            f"count={len(data.get('data', []))}"
+        )
 
-            data = await response.json()
-            self.debug_log(
-                f"模型列表获取成功: response_type={data.get('object')}, "
-                f"count={len(data.get('data', []))}"
+        # 转换为字典列表
+        models_data = []
+        for model in data.get("data", []):
+            models_data.append(
+                {
+                    "id": model.get("id", ""),
+                    "created": model.get("created", 0),
+                    "owned_by": model.get("owned_by", ""),
+                }
             )
 
-            # 转换为字典列表
-            models_data = []
-            for model in data.get("data", []):
-                models_data.append(
-                    {
-                        "id": model.get("id", ""),
-                        "created": model.get("created", 0),
-                        "owned_by": model.get("owned_by", ""),
-                    }
-                )
-
-            return models_data
-
-        except Exception as e:
-            self.debug_log(f"API 调用失败: {e}")
-            # 根据错误类型返回友好的错误信息
-            error_msg = str(e)
-            if "401" in error_msg or "403" in error_msg:
-                raise RuntimeError("API Key 无效或已过期，请检查配置。") from e
-            elif "429" in error_msg:
-                raise RuntimeError("API 调用次数超限或并发过高，请稍后再试。") from e
-            elif "500" in error_msg:
-                raise RuntimeError("Gitee AI 服务器内部错误，请稍后再试。") from e
-            else:
-                raise RuntimeError(f"API调用失败: {error_msg}") from e
+        return models_data
 
     async def edit_image(
         self,
@@ -313,8 +374,8 @@ class GiteeAIClient:
             name = os.path.basename(filepath)
             if filepath.startswith(("http://", "https://")):
                 if download_urls:
-                    # 下载远程图片后再上传
-                    file_timeout = aiohttp.ClientTimeout(total=10)
+                    # 下载远程图片后再上传（复用统一超时配置，区分连接/读取）
+                    file_timeout = build_timeout()
                     response = await session.get(filepath, timeout=file_timeout)
                     response.raise_for_status()
                     content = await response.read()
@@ -355,12 +416,33 @@ class GiteeAIClient:
 
         self.debug_log("发送图片编辑请求")
 
-        try:
+        async def _submit() -> dict[str, Any]:
+            """提交一次编辑任务，非 2xx 转成中文业务异常（不参与重试）."""
             async with session.post(
                 f"{self.base_url}/async/images/edits", headers=headers, data=data
             ) as response:
-                response.raise_for_status()
-                result = await response.json()
+                if response.status != 200:
+                    body = mask_text(await response.text())
+                    if response.status in (401, 403):
+                        raise RuntimeError("API Key 无效或已过期，请检查配置。")
+                    if response.status == 429:
+                        raise RuntimeError("API 调用次数超限或并发过高，请稍后再试。")
+                    if response.status >= 500:
+                        raise RuntimeError("Gitee AI 服务器内部错误，请稍后再试。")
+                    raise RuntimeError(
+                        f"图片编辑失败: HTTP {response.status}"
+                        + (f"（响应：{body}）" if body else "")
+                    )
+                payload: dict[str, Any] = await response.json()
+                return payload
+
+        try:
+            result = await with_retry(
+                _submit,
+                max_retries=DEFAULT_MAX_RETRIES,
+                label="Gitee AI 图片编辑任务提交",
+                on_retry=self._log_retry("图片编辑提交"),
+            )
 
             task_id = result.get("task_id")
             if not task_id:
@@ -374,9 +456,11 @@ class GiteeAIClient:
 
             return filepath
 
+        except RuntimeError:
+            raise
         except Exception as e:
-            self.debug_log(f"图片编辑失败: {e}")
-            raise RuntimeError(f"图片编辑失败: {str(e)}") from e
+            self.debug_log(f"图片编辑失败: {mask_text(e)}")
+            raise RuntimeError(f"图片编辑失败：{to_user_message(e)}") from e
 
     async def _poll_edit_task(
         self,
@@ -412,16 +496,33 @@ class GiteeAIClient:
             attempts += 1
             self.debug_log(f"轮询任务状态 [{attempts}/{max_attempts}]...")
 
-            try:
+            async def _query() -> dict[str, Any]:
+                """查询一次任务状态，非 2xx 转成中文业务异常（不参与重试）."""
                 async with session.get(
-                    f"{self.base_url}/task/{task_id}", headers=headers, timeout=10
+                    f"{self.base_url}/task/{task_id}",
+                    headers=headers,
+                    timeout=build_timeout(),
                 ) as response:
-                    response.raise_for_status()
-                    result = await response.json()
+                    if response.status != 200:
+                        if response.status in (401, 403):
+                            raise RuntimeError("API Key 无效或已过期，请检查配置。")
+                        if response.status >= 500:
+                            raise RuntimeError("Gitee AI 服务器内部错误，请稍后再试。")
+                        raise RuntimeError(f"任务查询失败: HTTP {response.status}")
+                    payload: dict[str, Any] = await response.json()
+                    return payload
+
+            try:
+                result = await with_retry(
+                    _query,
+                    max_retries=DEFAULT_MAX_RETRIES,
+                    label="Gitee AI 编辑任务状态查询",
+                    on_retry=self._log_retry("编辑任务轮询"),
+                )
 
                 if result.get("error"):
                     error_msg = result.get("message", "未知错误")
-                    raise RuntimeError(f"任务错误: {error_msg}")
+                    raise RuntimeError(f"任务错误: {mask_text(error_msg)}")
 
                 status = result.get("status", "unknown")
                 self.debug_log(f"任务状态: {status}")
@@ -450,10 +551,12 @@ class GiteeAIClient:
                     await asyncio.sleep(retry_interval)
                     continue
 
+            except RuntimeError:
+                raise
             except Exception as e:
                 if attempts >= max_attempts:
-                    raise RuntimeError(f"任务轮询失败: {str(e)}") from e
-                self.debug_log(f"轮询失败，等待重试: {e}")
+                    raise RuntimeError(f"任务轮询失败：{to_user_message(e)}") from e
+                self.debug_log(f"轮询失败，等待重试: {mask_text(e)}")
                 await asyncio.sleep(retry_interval)
 
         raise RuntimeError(f"任务超时（已等待 {timeout} 秒）")

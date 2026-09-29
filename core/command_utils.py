@@ -12,6 +12,8 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.message_components import Image
 
+from .net_errors import build_timeout, mask_text, to_user_message, with_retry
+
 
 async def check_rate_limit(
     plugin,
@@ -126,29 +128,47 @@ async def extract_images_from_message(event: AstrMessageEvent) -> list[str]:
 
 
 async def download_image(url: str) -> str | None:
-    """下载图片到本地.
+    """下载图片到本地（带指数退避重试与分类日志）.
+
+    用于把用户消息里的远程图片取回本地再上传给上游，属于「链路上的辅助请求」，
+    失败不影响主流程，因此这里只记录分类后的日志并返回 ``None``，
+    由调用方决定后续降级策略。
 
     Args:
         url: 图片 URL
 
     Returns:
-        本地文件路径
+        本地文件路径；下载失败时返回 ``None``
     """
-    try:
-        # 使用 aiohttp 的 ClientTimeout 对象，避免 mypy 报 int 类型不兼容
-        timeout = aiohttp.ClientTimeout(total=10)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url) as response:
-                if response.status == 200:
-                    data = await response.read()
-                    # 保存到临时目录
-                    temp_dir = Path("data/plugins/astrbot_plugin_models_ai/temp")
-                    temp_dir.mkdir(parents=True, exist_ok=True)
-                    temp_path = temp_dir / f"{uuid.uuid4()}.png"
-                    temp_path.write_bytes(data)
-                    return str(temp_path)
-    except Exception as e:
-        logger.error(f"下载图片失败: {e}")
+    logger.debug(f"开始下载图片: {mask_text(url, limit=80)}")
 
-    # 下载失败或响应异常时统一返回 None
-    return None
+    async def _fetch() -> bytes | None:
+        """执行一次下载，返回响应体；非 200 视为业务失败（不重试）."""
+        # 使用三段式超时，便于把「连不上」与「等不到响应」区分开
+        async with aiohttp.ClientSession(timeout=build_timeout()) as session:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    logger.warning(f"下载图片失败: HTTP {response.status}")
+                    return None
+                return await response.read()
+
+    try:
+        data = await with_retry(_fetch, label="辅助图片下载")
+    except Exception as e:
+        # 错误分类后再落日志，DNS / 超时 / TLS 一眼可辨，且已脱敏
+        logger.error(f"下载图片失败: {to_user_message(e)}")
+        return None
+
+    if data is None:
+        return None
+
+    try:
+        # 保存到临时目录
+        temp_dir = Path("data/plugins/astrbot_plugin_models_ai/temp")
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_path = temp_dir / f"{uuid.uuid4()}.png"
+        temp_path.write_bytes(data)
+        return str(temp_path)
+    except OSError as e:
+        logger.error(f"保存图片失败: {mask_text(e)}")
+        return None

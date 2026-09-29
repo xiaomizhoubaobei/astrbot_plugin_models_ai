@@ -16,6 +16,7 @@ from astrbot.api import logger
 from astrbot.api.star import StarTools
 
 from .config import MAX_CACHED_IMAGES, PLUGIN_NAME
+from .net_errors import DEFAULT_MAX_RETRIES, mask_text, to_user_message, with_retry
 
 
 class ImageManager:
@@ -58,6 +59,19 @@ class ImageManager:
             self._image_dir.mkdir(exist_ok=True)
             self.debug_log(f"初始化图片目录: {self._image_dir}")
         return self._image_dir
+
+    def _log_retry(self, attempt: int, delay: float, exc: BaseException) -> None:
+        """记录一次下载重试（异常文本已脱敏）.
+
+        Args:
+            attempt: 第几次重试（从 1 开始）
+            delay: 本次退避秒数
+            exc: 触发重试的异常
+        """
+        self.debug_log(
+            f"图片下载失败，第 {attempt}/{DEFAULT_MAX_RETRIES} 次重试"
+            f"（{delay:.0f}s 后）: {type(exc).__name__} - {mask_text(exc)}"
+        )
 
     def get_save_path(self, extension: str = ".jpg") -> str:
         """生成唯一的图片保存路径.
@@ -122,6 +136,10 @@ class ImageManager:
 
         通过 HTTP 下载图片并保存到本地，使用异步 I/O 提高性能。
 
+        下载同样会经过 DNS / 建连 / 读取三个阶段，任一阶段抖动都会让整次生图
+        白费（上游图片 URL 有效期有限），因此这里对瞬时网络故障按指数退避重试，
+        并把失败原因分类成可读中文（DNS  / 超时 / TLS 分开报），便于定位。
+
         Args:
             url: 图片 URL
             session: aiohttp Session 实例
@@ -130,16 +148,31 @@ class ImageManager:
             保存的图片文件路径（绝对路径）
 
         Raises:
-            Exception: 当 HTTP 状态码不是 200 时抛出异常
-            Exception: 当网络请求失败时抛出异常
+            RuntimeError: HTTP 状态异常或网络故障时抛出，文案已分类脱敏
         """
-        self.debug_log(f"开始下载图片: url={url[:50]}...")
+        self.debug_log(f"开始下载图片: url={mask_text(url[:50])}...")
 
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                raise RuntimeError(f"下载图片失败: HTTP {resp.status}")
-            data = await resp.read()
-            content_type = resp.headers.get("Content-Type")
+        async def _fetch() -> tuple[bytes, Optional[str]]:
+            """执行一次下载，非 200 直接抛业务异常（不参与重试）."""
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"下载图片失败: HTTP {resp.status}")
+                body = await resp.read()
+                ctype: Optional[str] = resp.headers.get("Content-Type")
+                return body, ctype
+
+        try:
+            data, content_type = await with_retry(
+                _fetch,
+                max_retries=DEFAULT_MAX_RETRIES,
+                label="图片下载",
+                on_retry=self._log_retry,
+            )
+        except RuntimeError:
+            raise
+        except Exception as e:
+            self.debug_log(f"图片下载异常: {mask_text(e)}")
+            raise RuntimeError(f"下载图片失败：{to_user_message(e)}") from e
 
         self.debug_log(
             f"图片下载完成: size={len(data)} bytes, content_type={content_type}"

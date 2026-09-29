@@ -10,6 +10,13 @@ import httpx
 from astrbot.api import logger
 from openai import AsyncOpenAI
 
+from .net_errors import (
+    CONNECT_TIMEOUT,
+    HTTPX_TRANSPORT_RETRIES,
+    READ_TIMEOUT,
+    build_timeout,
+)
+
 
 class ClientManager:
     """客户端管理器，负责管理 OpenAI 客户端和 HTTP Session."""
@@ -44,7 +51,8 @@ class ClientManager:
         """获取或创建 AsyncOpenAI 客户端.
 
         使用 API Key 作为缓存键，如果已存在则复用，否则创建新实例。
-        所有 AsyncOpenAI 实例共享同一个 httpx.AsyncClient 以减少资源占用。
+        所有 AsyncOpenAI 实例共享同一个 httpx.AsyncClient 以减少资源占用；
+        该 client 的传输层已开启连接类错误重试（见 ``HTTPX_TRANSPORT_RETRIES``）。
 
         Args:
             api_key: API Key
@@ -61,9 +69,22 @@ class ClientManager:
         # 延迟初始化共享的 httpx.AsyncClient
         if self._httpx_client is None:
             self.debug_log("创建共享的 httpx.AsyncClient")
-            self._httpx_client = httpx.AsyncClient(
+            # 传输层自带重试：只对「建连 / 握手」阶段的瞬时空故障生效，
+            # 与上层的指数退避重试互补（此处优先自救，避免上层重复等待）。
+            transport = httpx.AsyncHTTPTransport(
+                retries=HTTPX_TRANSPORT_RETRIES,
                 limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
-                timeout=httpx.Timeout(60.0, connect=10.0),
+            )
+            self._httpx_client = httpx.AsyncClient(
+                transport=transport,
+                # 区分连接超时与读取超时，便于 net_errors 分类出准确的排障提示
+                timeout=httpx.Timeout(
+                    READ_TIMEOUT,
+                    connect=CONNECT_TIMEOUT,
+                    read=READ_TIMEOUT,
+                    write=CONNECT_TIMEOUT,
+                    pool=CONNECT_TIMEOUT,
+                ),
             )
 
         if api_key not in self._openai_clients:
@@ -88,7 +109,9 @@ class ClientManager:
         """
         if self._http_session is None or self._http_session.closed:
             self.debug_log("创建新的 HTTP Session")
-            self._http_session = aiohttp.ClientSession()
+            # 显式配置 total / connect / sock_read 三段超时，使超时异常能落到
+            # 「连接超时」还是「读取超时」上，直接被 net_errors 分类出中文提示。
+            self._http_session = aiohttp.ClientSession(timeout=build_timeout())
         else:
             self.debug_log("复用 HTTP Session")
         return self._http_session

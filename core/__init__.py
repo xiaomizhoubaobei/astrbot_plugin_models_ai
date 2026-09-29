@@ -34,6 +34,18 @@ from .config import (
     resolve_provider,
 )
 from .image_manager import ImageManager
+from .net_errors import (
+    DEFAULT_MAX_RETRIES,
+    RETRY_BACKOFF_BASE,
+    RETRY_BACKOFF_MAX,
+    build_timeout,
+    classify_network_error,
+    http_error,
+    is_retryable,
+    mask_text,
+    to_user_message,
+    with_retry,
+)
 from .protocols import ImageGenerationClient
 from .rate_limiter import RateLimiter
 
@@ -65,9 +77,19 @@ __all__ = [
     "parse_api_keys",
     "resolve_provider",
     "ClientManager",
+    "DEFAULT_MAX_RETRIES",
+    "RETRY_BACKOFF_BASE",
+    "RETRY_BACKOFF_MAX",
     "ImageGenerationClient",
     "ImageManager",
     "RateLimiter",
+    "build_timeout",
+    "classify_network_error",
+    "http_error",
+    "is_retryable",
+    "mask_text",
+    "to_user_message",
+    "with_retry",
     "check_rate_limit",
     "parse_prompt_and_size",
 ]

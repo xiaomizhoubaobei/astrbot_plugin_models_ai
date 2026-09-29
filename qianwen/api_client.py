@@ -6,6 +6,13 @@
 - 同步链路：一次 POST 直接返回图片 URL（z-image-turbo）
 - 异步链路：提交任务后按退避策略轮询 ``/tasks/{task_id}``（万相系列）
 
+所有出站请求统一经由 ``core.net_errors`` 处理两件事：
+
+- **指数退避重试**：DNS / 连接超时 / 读取超时 / 连接重置等瞬时故障按
+  1s / 2s / 4s 重试（``with_retry``）；证书校验失败等确定性错误快速失败。
+- **错误分类脱敏**：不同故障阶段给出可区分的中文提示，且回包前抹掉
+  API Key、Bearer token 与 URL query，避免凭证进入聊天窗口。
+
 官方文档见 ``model_config.py`` 顶部注释中的四份链接。
 """
 
@@ -18,6 +25,7 @@ from astrbot.api import logger
 
 from ..core import (
     CLEANUP_INTERVAL,
+    DEFAULT_MAX_RETRIES,
     QIANWEN_POLL_FAST_WINDOW,
     QIANWEN_POLL_INITIAL_INTERVAL,
     QIANWEN_POLL_MAX_INTERVAL,
@@ -25,6 +33,9 @@ from ..core import (
     QIANWEN_SUPPORTED_RATIOS,
     ClientManager,
     ImageManager,
+    mask_text,
+    to_user_message,
+    with_retry,
 )
 from .model_config import (
     ENDPOINT_TASK,
@@ -250,8 +261,8 @@ class QianwenClient:
             # 已经是转换过的中文异常，直接向上抛避免二次包装
             raise
         except Exception as e:
-            self.debug_log(f"未知错误: {e}")
-            raise RuntimeError(f"千问云 API 调用失败: {e}") from e
+            self.debug_log(f"未知错误: {mask_text(e)}")
+            raise RuntimeError(f"千问云 API 调用失败: {to_user_message(e)}") from e
 
         await self._maybe_cleanup()
         return result
@@ -291,21 +302,33 @@ class QianwenClient:
         self.debug_log(f"发送同步请求: model={self.model}, size={size}")
 
         timeout = aiohttp.ClientTimeout(total=QIANWEN_POLL_TIMEOUT)
-        try:
+
+        async def _request() -> dict[str, Any]:
+            """执行一次同步请求，非 2xx 直接抛业务异常（不参与重试）."""
             async with session.post(
                 url,
                 json=payload,
                 headers=self._build_headers(api_key),
                 timeout=timeout,
             ) as response:
-                data = await response.json(content_type=None)
+                data: dict[str, Any] = await response.json(content_type=None)
                 if response.status != 200:
                     raise self._build_error(data, response.status)
+                return data
+
+        try:
+            # 仅重试连接类瞬时故障；_build_error 抛出的业务异常应快速失败
+            data = await with_retry(
+                _request,
+                max_retries=DEFAULT_MAX_RETRIES,
+                label="千问云同步生图请求",
+                on_retry=self._log_retry("同步请求"),
+            )
         except RuntimeError:
             raise
         except Exception as e:
-            self.debug_log(f"同步请求异常: {e}")
-            raise RuntimeError(f"千问云请求失败: {e}") from e
+            self.debug_log(f"同步请求异常: {mask_text(e)}")
+            raise RuntimeError(f"千问云请求失败：{to_user_message(e)}") from e
 
         image_url = self._extract_image_url(data, spec)
         return await self._download(image_url, session)
@@ -362,20 +385,30 @@ class QianwenClient:
 
         self.debug_log(f"提交异步任务: model={self.model}, size={size}, url={url}")
 
-        try:
+        async def _request() -> dict[str, Any]:
+            """提交一次任务，非 2xx 抛业务异常（不参与重试）."""
             async with session.post(
                 url,
                 json=payload,
                 headers=self._build_headers(api_key, is_async=True),
             ) as response:
-                data = await response.json(content_type=None)
+                data: dict[str, Any] = await response.json(content_type=None)
                 if response.status != 200:
                     raise self._build_error(data, response.status)
+                return data
+
+        try:
+            data = await with_retry(
+                _request,
+                max_retries=DEFAULT_MAX_RETRIES,
+                label="千问云任务提交",
+                on_retry=self._log_retry("提交任务"),
+            )
         except RuntimeError:
             raise
         except Exception as e:
-            self.debug_log(f"提交任务异常: {e}")
-            raise RuntimeError(f"提交千问云任务失败: {e}") from e
+            self.debug_log(f"提交任务异常: {mask_text(e)}")
+            raise RuntimeError(f"提交千问云任务失败：{to_user_message(e)}") from e
 
         task_id = (data.get("output", {}) or {}).get("task_id")
         if not task_id:
@@ -413,16 +446,27 @@ class QianwenClient:
 
         while elapsed < QIANWEN_POLL_TIMEOUT:
             data: dict[str, Any] | None = None
-            try:
+
+            async def _request() -> dict[str, Any]:
+                """查询一次任务状态，非 2xx 抛业务异常（不参与重试）."""
                 async with session.get(url, headers=headers) as response:
-                    data = await response.json(content_type=None)
+                    payload: dict[str, Any] = await response.json(content_type=None)
                     if response.status != 200:
-                        raise self._build_error(data, response.status)
+                        raise self._build_error(payload, response.status)
+                    return payload
+
+            try:
+                data = await with_retry(
+                    _request,
+                    max_retries=DEFAULT_MAX_RETRIES,
+                    label="千问云任务状态查询",
+                    on_retry=self._log_retry("轮询"),
+                )
             except RuntimeError:
                 raise
             except Exception as e:
                 # 单次轮询失败不终止任务，交由下一轮退避重试
-                self.debug_log(f"轮询异常: {e}，等待重试")
+                self.debug_log(f"轮询异常: {mask_text(e)}，等待重试")
                 data = None
 
             if data is not None:
@@ -436,9 +480,11 @@ class QianwenClient:
                 if status in ("FAILED", "CANCELED", "CANCELLED"):
                     code = data.get("code") or output.get("code", "未知")
                     message = data.get("message") or output.get("message", "未知错误")
+                    # 服务端 message 可能回显请求内容，统一脱敏后再上报
                     raise RuntimeError(
                         f"千问云任务异常终止（状态 {status}），"
-                        f"task_id={task_id}, code={code}, message={message}"
+                        f"task_id={task_id}, code={mask_text(code)}, "
+                        f"message={mask_text(message)}"
                     )
 
             # 退避策略：快速窗口内高频轮询，之后逐步放宽到最大间隔
@@ -516,6 +562,25 @@ class QianwenClient:
         self.debug_log(f"图片保存成功: {filepath}")
         return filepath
 
+    def _log_retry(self, scene: str):
+        """构造一个「记录重试」的回调，交给 ``with_retry`` 使用.
+
+        Args:
+            scene: 场景名（如「同步请求」「提交任务」「轮询」），用于日志区分
+
+        Returns:
+            回调函数，签名为 ``(第几次重试, 退避秒数, 异常)``
+        """
+
+        def _callback(attempt: int, delay: float, exc: BaseException) -> None:
+            """记录一次重试，异常文本已脱敏."""
+            self.debug_log(
+                f"{scene} 失败，第 {attempt}/{DEFAULT_MAX_RETRIES} 次重试"
+                f"（{delay:.0f}s 后）: {type(exc).__name__} - {mask_text(exc)}"
+            )
+
+        return _callback
+
     def _build_error(self, data: dict[str, Any], status: int) -> RuntimeError:
         """把接口错误转换为面向用户的中文异常.
 
@@ -548,10 +613,10 @@ class QianwenClient:
         if status >= 500:
             return RuntimeError("千问云服务器内部错误，请稍后再试。")
 
-        # 其余错误保留服务端原始信息，同时保留上下文
+        # 其余错误保留服务端原始信息，同时保留上下文（回包前脱敏）
         detail = f"{code} {message}".strip() or f"HTTP {status}"
-        logger.debug(f"千问云错误响应: status={status}, detail={detail}")
-        return RuntimeError(f"千问云 API 调用失败: {detail}")
+        logger.debug(f"千问云错误响应: status={status}, detail={mask_text(detail)}")
+        return RuntimeError(f"千问云 API 调用失败：{mask_text(detail)}")
 
     async def get_models(
         self, vendor: str = "", type: str = ""
