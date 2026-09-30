@@ -62,7 +62,18 @@ jobs:
           # 之后的剩余文本：前缀 .* 先贪婪吃掉此前所有内容，指令只按「行首」锚定
           # （^ 配合 /m），避免把指令行 /review-killer 之后的"再提一次"误当成触发；
           # 尾部只裁空格/制表符，保留 LF 缩进与空行。
-          INSTRUCTIONS=$(printf '%s' "$COMMENT" | perl -0 -pe 's/.*^[ \t]*\@[iI][fF][lL][oO][wW]-[cC][lL][iI][ \t]+\/[rR][eE][vV][iI][eE][wW]-[kK][iI][lL][lL][eE][rR][ \t]*//sm; s/[ \t]+\z//;')
+          #
+          # 前置守卫：perl 的 s/// 在「未命中」时会把输入原样吐出（不是空串）。
+          # 而 job 级 if 用的是 contains(评论体, ...)，命中范围比「行首指令」更宽——
+          # 评论里只要出现被引号/反引号包裹的 "@iflow-cli /review-killer" 字样，
+          # job 就会进入本步骤，但此时行首并无指令行。缺了这层守卫，整段评论会被
+          # 原样当作指令喂给 iFlow CLI（误投喂）。故先按「行首锚定」判定一次是否
+          # 真正存在指令行，未命中则 output 保持空值、不发起任何提取。
+          if printf '%s' "$COMMENT" | grep -qE '^[[:space:]]*@[iI][fF][lL][oO][wW]-[cC][lL][iI][[:space:]]+/[rR][eE][vV][iI][eE][wW]-[kK][iI][lL][lL][eE][rR]'; then
+            INSTRUCTIONS=$(printf '%s' "$COMMENT" | perl -0 -pe 's/.*^[ \t]*\@[iI][fF][lL][oO][wW]-[cC][lL][iI][ \t]+\/[rR][eE][vV][iI][eE][wW]-[kK][iI][lL][lL][eE][rR][ \t]*//sm; s/[ \t]+\z//;')
+          else
+            INSTRUCTIONS=""
+          fi
 
           # 多行内容必须用 heredoc 分隔符形式写入 $GITHUB_OUTPUT（"key<<DELIM" ... DELIM）：
           # 沿用 "instructions=$INSTRUCTIONS" 时换行会让后续行缺少 "key=" 前缀而报格式错误；
