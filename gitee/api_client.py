@@ -26,6 +26,8 @@ from ..core import (
     ClientManager,
     ImageManager,
     build_timeout,
+    describe_http_status,
+    is_retryable,
     mask_text,
     to_user_message,
     with_retry,
@@ -107,6 +109,68 @@ class GiteeAIClient:
             f"轮询 API Key: index={self.current_key_index - 1}, api_key={api_key[:10]}..."
         )
         return api_key
+
+    async def _download_remote_image(self, url: str, session: Any) -> tuple[bytes, str]:
+        """下载远程图片并返回内容与 MIME 类型.
+
+        远程取图是编辑链路上的前置步骤，单独收口在这里有三个好处：
+
+        1. **响应必然被关闭**：用 ``async with`` 打开响应，正常情况下读完即
+           归还连接，任一步骤抛异常也会退出上下文，不会把共享 Session 的
+           连接悄悄占住（裸 ``await session.get(...)`` 只把响应推进到读取
+           阶段，不释放便会拖垮连接池）。
+        2. **瞬时故障可重试**：DNS / 建连 / 超时 / TLS / 连接重置交由
+           ``with_retry`` 按 1s / 2s / 4s 退避重试，避免一次抖动白等整轮编辑。
+        3. **失败文案可读且脱敏**：非 2xx 走 ``describe_http_status`` 快速失败
+           （不重试），网络类异常走 ``to_user_message`` 分类，回包前抹掉 URL
+           query 与疑似凭证。
+
+        Args:
+            url: 远程图片 URL
+            session: aiohttp Session
+
+        Returns:
+            ``(图片字节内容, MIME 类型)`` 元组
+
+        Raises:
+            RuntimeError: 下载失败（已分类并脱敏的中文异常）
+        """
+
+        async def _fetch() -> tuple[bytes, str]:
+            """拉取一次远程图片，非 2xx 抛状态异常（不可重试）."""
+            async with session.get(url, timeout=build_timeout()) as response:
+                if response.status != 200:
+                    # 非 2xx 属确定性业务错误：raise_for_status 会转成
+                    # ClientResponseError，由下面的 _should_retry 判定不重试
+                    response.raise_for_status()
+                content = await response.read()
+                mime = response.headers.get("Content-Type", "application/octet-stream")
+                return content, mime
+
+        def _should_retry(exc: BaseException) -> bool:
+            """状态码类错误不重试，其余交由统一分类器判定."""
+            if isinstance(exc, aiohttp.ClientResponseError):
+                return False
+            return is_retryable(exc)
+
+        self.debug_log(f"开始下载远程图片: url={mask_text(url, limit=80)}")
+
+        try:
+            return await with_retry(
+                _fetch,
+                max_retries=DEFAULT_MAX_RETRIES,
+                label="远程图片下载",
+                on_retry=self._log_retry("远程图片下载"),
+                should_retry=_should_retry,
+            )
+        except aiohttp.ClientResponseError as e:
+            # 非 2xx：状态类业务错误，直接回具体状态，不重试
+            raise RuntimeError(
+                f"下载远程图片失败：{describe_http_status(e.status)}"
+            ) from e
+        except Exception as e:
+            # 网络类失败：统一分类 + 脱敏后再回包
+            raise RuntimeError(f"下载远程图片失败：{to_user_message(e)}") from e
 
     def _log_retry(self, scene: str):
         """构造一个「记录重试」的回调，交给 ``with_retry`` 使用.
@@ -374,13 +438,12 @@ class GiteeAIClient:
             name = os.path.basename(filepath)
             if filepath.startswith(("http://", "https://")):
                 if download_urls:
-                    # 下载远程图片后再上传（复用统一超时配置，区分连接/读取）
-                    file_timeout = build_timeout()
-                    response = await session.get(filepath, timeout=file_timeout)
-                    response.raise_for_status()
-                    content = await response.read()
-                    remote_mime = response.headers.get(
-                        "Content-Type", "application/octet-stream"
+                    # 下载远程图片后再上传：交给 _download_remote_image 统一
+                    # 处理——带三段式超时、瞬时网络故障指数退避重试、非 2xx
+                    # 快速失败、回包中文分类脱敏，并保证响应被正确关闭
+                    # （裸 await session.get 不会归还连接，连接池会被占满）。
+                    content, remote_mime = await self._download_remote_image(
+                        filepath, session
                     )
                     fields.append(("image", (name, content, remote_mime)))
                 else:
