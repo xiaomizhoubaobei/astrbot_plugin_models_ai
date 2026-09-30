@@ -26,7 +26,9 @@ from ..core import (
     ClientManager,
     ImageManager,
     build_timeout,
+    is_safe_to_replay,
     mask_text,
+    new_idempotency_key,
     to_user_message,
     with_retry,
 )
@@ -396,9 +398,15 @@ class GiteeAIClient:
                 )
 
         # 构建请求头
+        # Idempotency-Key：图片编辑是「创建异步任务」的非幂等 POST，
+        # 连接在响应回程中断时若原样重试，会在上游生成孤立的重复编辑任务。
+        # 这里为**同一次逻辑提交**（含其全部重试）生成并复用同一个幂等键，
+        # 配合下方收窄后的重试判定，双保险抑制重复作业。
+        idempotency_key = new_idempotency_key("cnb-gitee-edit")
         headers = {
             "Authorization": f"Bearer {api_key}",
             "X-Failover-Enabled": "true",
+            "Idempotency-Key": idempotency_key,
         }
 
         self.debug_log("发送图片编辑请求")
@@ -457,6 +465,9 @@ class GiteeAIClient:
                 max_retries=DEFAULT_MAX_RETRIES,
                 label="Gitee AI 图片编辑任务提交",
                 on_retry=self._log_retry("图片编辑提交"),
+                # 非幂等任务创建：只重放「请求确定未送达上游」的建连类故障，
+                # 结果不明的连接重置 / 读取超时一律不重试，避免作业倍增
+                should_retry=is_safe_to_replay,
             )
 
             task_id = result.get("task_id")

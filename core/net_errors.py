@@ -20,6 +20,7 @@ TLS 握手、读写等多个阶段，任何一段出问题，用户此前看到�
 
 import asyncio
 import re
+import secrets
 import socket
 import ssl
 from collections.abc import Awaitable, Callable
@@ -356,6 +357,83 @@ def is_retryable(exc: BaseException) -> bool:
             "connection refused",
         ),
     )
+
+
+def is_safe_to_replay(exc: BaseException) -> bool:
+    """判断异常是否发生在「请求尚未送达上游之前」——即重放是否安全.
+
+    对**非幂等**的「创建任务」类 POST（如 Gitee 图片编辑、千问云任务提交），
+    盲目重试会造成上游作业数量倍增：若请求已到达服务端、任务已创建，只是
+    响应在回程丢失，重试就会生成**孤立的重复任务**。
+
+    因此这里把可重试范围收窄到「**确定没有送达**」的连接建立阶段故障：
+
+    - DNS 解析失败、TCP 建连超时/被拒、TLS 握手失败：请求根本没发出去，重放安全；
+    - 连接重置 / 读取超时 / 服务端断开：请求**可能已送达**，结果不确定，**不重试**；
+    - 其余（含 HTTP 状态类错误）：交由调用方判定，这里默认不重试。
+
+    Args:
+        exc: 捕获到的异常
+
+    Returns:
+        可安全重放返回 ``True``
+    """
+    if not isinstance(exc, BaseException):  # pragma: no cover
+        return False
+
+    # 证书类确定性失败：重试无意义，且不属「未送达」
+    if _search_chain(exc, NON_RETRYABLE) or _search_chain(exc, _AiohttpCertError):
+        return False
+
+    # 建连阶段失败：请求未送达，可安全重放
+    if _search_chain(
+        exc,
+        (
+            socket.gaierror,
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ProxyError,
+        ),
+    ):
+        return True
+
+    if _has_text(
+        exc,
+        (
+            "name or service not known",
+            "nodename nor servname",
+            "temporary failure in name resolution",
+            "getaddrinfo",
+            "connection refused",
+            "network is unreachable",
+            "no route to host",
+            "connect timeout",
+            "connection timed out",
+            "timed out connecting",
+            "certificate verify failed",
+        ),
+    ):
+        # 「connection refused / 不可达」属连接建立失败，未送达；证书失败则排除
+        return not _has_text(exc, ("certificate verify failed",))
+
+    return False
+
+
+def new_idempotency_key(prefix: str = "cnb") -> str:
+    """生成一次性幂等键，供「创建任务」类非幂等请求去重.
+
+    同一次逻辑提交（含其全部重试）应复用**同一个**键，这样即便上游支持
+    ``Idempotency-Key`` 头，重复提交也只会命中同一个作业；上游若不识别该头，
+    也仅是普通请求头，无副作用。
+
+    Args:
+        prefix: 键前缀，便于在上游日志中识别来源（如 ``cnb-gitee-edit``）
+
+    Returns:
+        形如 ``<prefix>-<32 位十六进制>`` 的幂等键
+    """
+    # secrets.token_hex 使用系统级随机源，避免多实例并发下 id 碰撞
+    return f"{prefix}-{secrets.token_hex(16)}"
 
 
 async def with_retry(

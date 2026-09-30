@@ -33,7 +33,9 @@ from ..core import (
     QIANWEN_SUPPORTED_RATIOS,
     ClientManager,
     ImageManager,
+    is_safe_to_replay,
     mask_text,
+    new_idempotency_key,
     to_user_message,
     with_retry,
 )
@@ -119,12 +121,16 @@ class QianwenClient:
         self.debug_log(f"轮询 API Key: api_key={api_key[:10]}...")
         return api_key
 
-    def _build_headers(self, api_key: str, is_async: bool = False) -> dict[str, str]:
+    def _build_headers(
+        self, api_key: str, is_async: bool = False, idempotency_key: str = ""
+    ) -> dict[str, str]:
         """构建请求头.
 
         Args:
             api_key: API Key
             is_async: 是否为异步任务提交请求，需要带 X-DashScope-Async 头
+            idempotency_key: 幂等键（可选），用于「创建任务」类非幂等请求去重；
+                同一次逻辑提交的全部重试应复用同一个键
 
         Returns:
             请求头字典
@@ -136,6 +142,9 @@ class QianwenClient:
         # 异步任务提交必须显式声明，否则服务端会按同步阻塞处理
         if is_async:
             headers["X-DashScope-Async"] = "enable"
+        # 幂等键仅在非空时注入，避免污染同步请求的请求头
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
         return headers
 
     def _build_input(self, prompt: str, spec: QianwenModelSpec) -> dict[str, Any]:
@@ -385,12 +394,19 @@ class QianwenClient:
 
         self.debug_log(f"提交异步任务: model={self.model}, size={size}, url={url}")
 
+        # Idempotency-Key：任务提交是「创建异步作业」的非幂等 POST，
+        # 连接在响应回程中断时若原样重试，会在上游生成孤立的重复任务。
+        # 为同一次逻辑提交（含其全部重试）生成并复用同一个幂等键。
+        idempotency_key = new_idempotency_key("cnb-qianwen-submit")
+
         async def _request() -> dict[str, Any]:
             """提交一次任务，非 2xx 抛业务异常（不参与重试）."""
             async with session.post(
                 url,
                 json=payload,
-                headers=self._build_headers(api_key, is_async=True),
+                headers=self._build_headers(
+                    api_key, is_async=True, idempotency_key=idempotency_key
+                ),
             ) as response:
                 data: dict[str, Any] = await response.json(content_type=None)
                 if response.status != 200:
@@ -403,6 +419,8 @@ class QianwenClient:
                 max_retries=DEFAULT_MAX_RETRIES,
                 label="千问云任务提交",
                 on_retry=self._log_retry("提交任务"),
+                # 非幂等任务创建：只重放「请求确定未送达上游」的建连类故障
+                should_retry=is_safe_to_replay,
             )
         except RuntimeError:
             raise
