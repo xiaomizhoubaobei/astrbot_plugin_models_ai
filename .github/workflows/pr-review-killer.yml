@@ -48,26 +48,39 @@ jobs:
         env:
           # 通过环境变量传递评论体，避免评论内容被直接内联进脚本导致命令注入/截断
           COMMENT: ${{ github.event.comment.body }}
+          # 赋值指令的解析以「首个 =」切分键值，perl 长内容一旦折行（默认 80 列）
+          # 会在行尾插入换行，把多行指令切碎；显式置 0 关闭折行，保证 --pe 的输出
+          # 只有一个逻辑行（内容里的真实换行仍原样保留）。
+          COLUMNS: '0'
         run: |
-          # Extract everything after "@iflow-cli /review-killer " (case insensitive)
-          # First check if the pattern exists, then extract
-          if printf '%s' "$COMMENT" | grep -qiE '@iflow-cli[[:space:]]+/review-killer'; then
-            # 用 perl 整体扫描（-0777 slurp + /s 修饰符）而非逐行的 sed：
-            # sed 默认逐行处理、"." 不跨行，多行评论时只会匹配到指令所在行，
-            # 后续指令行会被整段丢弃。perl 的 .* 配合 /s 可跨行贪婪匹配，
-            # 去掉「最后一条触发指令」之前的所有内容，保留其后剩余文本（含换行）。
-            INSTRUCTIONS=$(printf '%s' "$COMMENT" | perl -0777 -pe 's/.*\@[iI][fF][lL][oO][wW]-[cC][lL][iI]\s+\/[rR][eE][vV][iI][eE][wW]-[kK][iI][lL][lL][eE][rR]\s*//s' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+          set -euo pipefail
+
+          # 关键点：整个「判定 → 提取 → 写 $GITHUB_OUTPUT」必须按「内容本身」处理，
+          # 绝不能把 "$COMMENT" 内联进脚本（含 ``、$(...) 的评论会被二次求值，
+          # 多行体也会直接把 YAML 内嵌脚本截断）；旧版正是内联写法。
+          # 提取逻辑用 perl 整段扫描（-0 以 NUL 读入全部内容），取「最后一条触发指令」
+          # 之后的剩余文本：前缀 .* 先贪婪吃掉此前所有内容，指令只按「行首」锚定
+          # （^ 配合 /m），避免把指令行 /review-killer 之后的"再提一次"误当成触发；
+          # 尾部只裁空格/制表符，保留 LF 缩进与空行。
+          INSTRUCTIONS=$(printf '%s' "$COMMENT" | perl -0 -pe 's/.*^[ \t]*\@[iI][fF][lL][oO][wW]-[cC][lL][iI][ \t]+\/[rR][eE][vV][iI][eE][wW]-[kK][iI][lL][lL][eE][rR][ \t]*//sm; s/[ \t]+\z//;')
+
+          # 多行内容必须用 heredoc 分隔符形式写入 $GITHUB_OUTPUT（"key<<DELIM" ... DELIM）：
+          # 沿用 "instructions=$INSTRUCTIONS" 时换行会让后续行缺少 "key=" 前缀而报格式错误；
+          # 运行器解析 heredoc 时同样会逐行判定分隔符，因此「输出内混入分隔符行」是
+          # 结构风险，这里用「模型可控度低」的哨兵分隔符并把分隔符判定收紧为整行比较：
+          # 若上游确有 %0A 折叠，还原出的换行会使 "__IFLOW_INSTRUCTIONS_EOF__:" 这类
+          # 行不等于纯分隔符，不会被提前截断。当前 runner 逐行捕获 print 输出，
+          # 未观察到该折叠行为，此为纵深防御。
+          if [[ -n "${INSTRUCTIONS//[[:space:]]/}" ]]; then
+            {
+              echo "instructions<<__IFLOW_INSTRUCTIONS_EOF__"
+              printf '%s\n' "$INSTRUCTIONS"
+              echo "__IFLOW_INSTRUCTIONS_EOF__"
+            } >> "$GITHUB_OUTPUT"
           else
-            INSTRUCTIONS=""
+            # 未提取到任何有效指令时，保持单行空值形式，避免多出一次 heredoc 写入
+            echo "instructions=" >> "$GITHUB_OUTPUT"
           fi
-          # 多行内容必须用 heredoc 分隔符形式写入 $GITHUB_OUTPUT：
-          # 若沿用 "echo instructions=$INSTRUCTIONS"，换行会让输出变成多行，
-          # 超出首行的部分缺少 "key=" 前缀，GitHub Actions 会报格式错误并截断取值。
-          {
-            echo "instructions<<__IFLOW_INSTRUCTIONS_EOF__"
-            printf '%s\n' "$INSTRUCTIONS"
-            echo "__IFLOW_INSTRUCTIONS_EOF__"
-          } >> "$GITHUB_OUTPUT"
 
       - name: '运行 iFlow CLI 实现'
         uses: iflow-ai/iflow-cli-action@v2.0.0
