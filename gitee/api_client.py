@@ -404,12 +404,17 @@ class GiteeAIClient:
         self.debug_log("发送图片编辑请求")
 
         def _build_form() -> aiohttp.FormData:
-            """按需重建 multipart 表单，保证每次重试都拿到未消费的新载荷.
+            """按需重建表单请求体，保证每次重试都拿到未消费的新载荷.
 
-            ``aiohttp.FormData`` 装载的 multipart body 是一次性可读的：首次
-            POST 发送后即被消费。若在 ``_submit`` 外只构建一份并闭包复用，
-            重试时会带着已处理的残留载荷再次提交而失败。故这里改为每次调用
-            都依据原始 ``fields`` 重建一份，确保请求可安全重放。
+            ``aiohttp.FormData`` 装载的请求体是一次性可读的：首次 POST 发送后
+            即被消费。若在 ``_submit`` 外只构建一份并闭包复用，重试时会带着
+            已处理的残留载荷再次提交而失败。故这里改为每次调用都依据原始
+            ``fields`` 重建一份，确保请求可安全重放。
+
+            注意：只有当 ``fields`` 含文件型字段（本地图片，或下载后再上传的
+            远程图片）时，正文才是 ``multipart/form-data``；若全部图片都以
+            URL 形式传递（``download_urls=False``），``aiohttp.FormData`` 会
+            自动退化为 ``application/x-www-form-urlencoded``。
             """
             form = aiohttp.FormData()
             for field in fields:
