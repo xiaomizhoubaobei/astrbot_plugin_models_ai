@@ -6,15 +6,26 @@ env:
   BOT_NAME: ${{ vars.BOT_NAME || 'iflow-cli' }}
 
 on:
+  issue_comment:
+    types:
+      - 'created'
   pull_request_review_comment:
     types:
       - 'created'
   pull_request_review:
     types:
       - 'submitted'
-  issue_comment:
+  # 任务 if 条件中已按 issues(opened) 判定，此处必须声明对应触发器，否则该分支永不命中
+  issues:
     types:
-      - 'created'
+      - 'opened'
+  # 任务 if 条件中已包含 workflow_dispatch 分支，此处必须声明供手动触发
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: '要处理的 issue/PR 编号'
+        required: true
+        type: 'number'
 
 concurrency:
   group: '${{ github.workflow }}-${{ github.event.issue.number }}'
@@ -94,6 +105,10 @@ jobs:
         env:
           EVENT_NAME: '${{ github.event_name }}'
           EVENT_PAYLOAD: '${{ toJSON(github.event) }}'
+          # 手动触发（workflow_dispatch）时由用户指定的目标 issue/PR 编号
+          DISPATCH_ISSUE_NUMBER: '${{ inputs.issue_number }}'
+          GITHUB_TOKEN: '${{ steps.generate_token.outputs.token || secrets.GITHUB_TOKEN }}'
+          REPOSITORY: '${{ github.repository }}'
         run: |-
           set -euo pipefail
 
@@ -118,6 +133,18 @@ jobs:
             USER_REQUEST=$(echo "${EVENT_PAYLOAD}" | jq -r .comment.body)
             ISSUE_NUMBER=$(echo "${EVENT_PAYLOAD}" | jq -r .pull_request.number)
             IS_PR="true"
+          elif [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            # 手动触发：消费 workflow_dispatch.inputs.issue_number，未提供时快速失败
+            if [[ -z "${DISPATCH_ISSUE_NUMBER}" || "${DISPATCH_ISSUE_NUMBER}" == "null" ]]; then
+              echo "::error::workflow_dispatch 缺少 issue_number 输入，无法定位目标 issue/PR"
+              exit 1
+            fi
+            ISSUE_NUMBER="${DISPATCH_ISSUE_NUMBER}"
+            # 手动触发没有携带请求正文，使用固定指令并探测目标是否为 PR
+            USER_REQUEST="请根据该 issue/PR 的描述与评论，分析并处理其中提出的问题。"
+            if gh pr view "${ISSUE_NUMBER}" --repo "${REPOSITORY}" >/dev/null 2>&1; then
+              IS_PR="true"
+            fi
           fi
 
           # 清理用户请求
