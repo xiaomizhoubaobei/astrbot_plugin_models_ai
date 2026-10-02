@@ -4,5 +4,5 @@
 #       与本插件声明的 Python 3.12+ 保持一致。
 aiofiles>=24.1.0
 aiohttp>=3.14.3
-openai>=1.0.0
+openai>=3.19.2
 deprecated>=1.2.14
