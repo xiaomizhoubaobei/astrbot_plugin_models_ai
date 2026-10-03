@@ -17,6 +17,7 @@
 """
 
 import asyncio
+import json
 import time
 from typing import Any
 
@@ -33,7 +34,9 @@ from ..core import (
     QIANWEN_SUPPORTED_RATIOS,
     ClientManager,
     ImageManager,
+    is_safe_to_replay,
     mask_text,
+    new_idempotency_key,
     to_user_message,
     with_retry,
 )
@@ -43,6 +46,15 @@ from .model_config import (
     get_model_spec,
     list_supported_models,
 )
+
+
+class QianwenResponseError(RuntimeError):
+    """200 响应体无法解析为 JSON 对象时抛出.
+
+    与网络故障（可重试）和业务错误（``_build_error`` 产出）区分开：
+    这类「响应形状不符合契约」的错误重发请求也不会有收益，属于确定性失败，
+    由调用方快速失败并在消息里保留原始片段以便排障。
+    """
 
 
 class QianwenClient:
@@ -119,12 +131,16 @@ class QianwenClient:
         self.debug_log(f"轮询 API Key: api_key={api_key[:10]}...")
         return api_key
 
-    def _build_headers(self, api_key: str, is_async: bool = False) -> dict[str, str]:
+    def _build_headers(
+        self, api_key: str, is_async: bool = False, idempotency_key: str = ""
+    ) -> dict[str, str]:
         """构建请求头.
 
         Args:
             api_key: API Key
             is_async: 是否为异步任务提交请求，需要带 X-DashScope-Async 头
+            idempotency_key: 幂等键（可选），用于「创建任务」类非幂等请求去重；
+                同一次逻辑提交的全部重试应复用同一个键
 
         Returns:
             请求头字典
@@ -136,6 +152,9 @@ class QianwenClient:
         # 异步任务提交必须显式声明，否则服务端会按同步阻塞处理
         if is_async:
             headers["X-DashScope-Async"] = "enable"
+        # 幂等键仅在非空时注入，避免污染同步请求的请求头
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
         return headers
 
     def _build_input(self, prompt: str, spec: QianwenModelSpec) -> dict[str, Any]:
@@ -311,7 +330,7 @@ class QianwenClient:
                 headers=self._build_headers(api_key),
                 timeout=timeout,
             ) as response:
-                data: dict[str, Any] = await response.json(content_type=None)
+                data = await self._read_json_safely(response, response.status)
                 if response.status != 200:
                     raise self._build_error(data, response.status)
                 return data
@@ -385,14 +404,21 @@ class QianwenClient:
 
         self.debug_log(f"提交异步任务: model={self.model}, size={size}, url={url}")
 
+        # Idempotency-Key：任务提交是「创建异步作业」的非幂等 POST，
+        # 连接在响应回程中断时若原样重试，会在上游生成孤立的重复任务。
+        # 为同一次逻辑提交（含其全部重试）生成并复用同一个幂等键。
+        idempotency_key = new_idempotency_key("cnb-qianwen-submit")
+
         async def _request() -> dict[str, Any]:
             """提交一次任务，非 2xx 抛业务异常（不参与重试）."""
             async with session.post(
                 url,
                 json=payload,
-                headers=self._build_headers(api_key, is_async=True),
+                headers=self._build_headers(
+                    api_key, is_async=True, idempotency_key=idempotency_key
+                ),
             ) as response:
-                data: dict[str, Any] = await response.json(content_type=None)
+                data = await self._read_json_safely(response, response.status)
                 if response.status != 200:
                     raise self._build_error(data, response.status)
                 return data
@@ -403,6 +429,8 @@ class QianwenClient:
                 max_retries=DEFAULT_MAX_RETRIES,
                 label="千问云任务提交",
                 on_retry=self._log_retry("提交任务"),
+                # 非幂等任务创建：只重放「请求确定未送达上游」的建连类故障
+                should_retry=is_safe_to_replay,
             )
         except RuntimeError:
             raise
@@ -450,7 +478,7 @@ class QianwenClient:
             async def _request() -> dict[str, Any]:
                 """查询一次任务状态，非 2xx 抛业务异常（不参与重试）."""
                 async with session.get(url, headers=headers) as response:
-                    payload: dict[str, Any] = await response.json(content_type=None)
+                    payload = await self._read_json_safely(response, response.status)
                     if response.status != 200:
                         raise self._build_error(payload, response.status)
                     return payload
@@ -462,10 +490,15 @@ class QianwenClient:
                     label="千问云任务状态查询",
                     on_retry=self._log_retry("轮询"),
                 )
+            except QianwenResponseError:
+                # 轮询端点返回 200 但响应体不符合契约：属确定性失败，
+                # 继续空转只会拖到超时，这里立即上抛并保留原始片段。
+                raise
             except RuntimeError:
+                # _build_error 产出的业务异常（如任务态已 FAILED）同样快速失败
                 raise
             except Exception as e:
-                # 单次轮询失败不终止任务，交由下一轮退避重试
+                # 单次轮询的网络类失败不终止任务，交由下一轮退避重试
                 self.debug_log(f"轮询异常: {mask_text(e)}，等待重试")
                 data = None
 
@@ -580,6 +613,72 @@ class QianwenClient:
             )
 
         return _callback
+
+    async def _read_json_safely(self, response: Any, status: int) -> dict[str, Any]:
+        """读取响应体并安全解析为 JSON 字典.
+
+        上游在 5xx / 网关故障时返回的往往是 HTML 错误页而非 JSON，
+        此时先解析再判断状态会抛 ``ContentTypeError`` / ``JSONDecodeError``，
+        导致 ``_build_error`` 的准确中文分类被绕过、最终落入泛化的
+        「网络请求异常」。这里按状态码分两条路径处理：
+
+        - **非 200**：解析失败（HTML 等）或文本为空时返回空字典，交由
+          ``_build_error`` 按状态码给出中文提示，原始片段只进 debug 日志。
+        - **200**：响应形状是成功契约的一部分，必须能解析为 JSON 对象。
+          文本为空、非 JSON、或顶层不是对象都视为**确定性失败**，抛出
+          ``QianwenResponseError`` 并保留截断后的原始片段——否则调用方会拿到
+          ``{}`` 继续读必备字段，最终表现为误导性的「未返回图片地址」
+          「未返回任务 ID」，或轮询链路对着空对象空转到超时。
+
+        Args:
+            response: aiohttp 响应对象
+            status: HTTP 状态码，决定解析失败是「交给错误分类」还是「直接失败」
+
+        Returns:
+            解析出的字典；非 200 且无法解析时为空字典
+
+        Raises:
+            QianwenResponseError: 200 响应体为空 / 非 JSON / 顶层非对象
+        """
+        # 一次读取原始文本，避免重复消费响应体
+        raw = await response.text()
+
+        if status == 200:
+            if not raw:
+                raise QianwenResponseError("千问云返回空响应体（HTTP 200）")
+            try:
+                parsed = json.loads(raw)
+            except (ValueError, TypeError):
+                self.debug_log(f"200 响应非 JSON: body={mask_text(raw[:200])}")
+                raise QianwenResponseError(
+                    "千问云返回的响应无法解析为 JSON（HTTP 200），"
+                    f"原始片段：{mask_text(raw[:200])}"
+                ) from None
+            if not isinstance(parsed, dict):
+                self.debug_log(
+                    f"200 响应 JSON 顶层非对象: type={type(parsed).__name__}"
+                )
+                raise QianwenResponseError(
+                    "千问云返回的响应顶层不是 JSON 对象（HTTP 200），"
+                    f"实际类型：{type(parsed).__name__}"
+                )
+            return parsed
+
+        if not raw:
+            return {}
+
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            # 非 JSON（如 502/503 网关的 HTML 错误页）：返回空字典，
+            # 让状态码分支决定用户可见提示，原始片段只进 debug 日志。
+            self.debug_log(f"响应非 JSON: status={status}, body={mask_text(raw[:200])}")
+            return {}
+
+        if not isinstance(parsed, dict):
+            self.debug_log(f"响应 JSON 顶层非对象: status={status}")
+            return {}
+        return parsed
 
     def _build_error(self, data: dict[str, Any], status: int) -> RuntimeError:
         """把接口错误转换为面向用户的中文异常.

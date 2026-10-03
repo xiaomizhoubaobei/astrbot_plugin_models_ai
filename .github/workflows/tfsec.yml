@@ -6,6 +6,8 @@ name: tfsec
 on:
   pull_request:
     branches: [ "main" ]
+  # 支持手动触发，便于排障与补跑
+  workflow_dispatch:
 
 permissions:
   contents: read
