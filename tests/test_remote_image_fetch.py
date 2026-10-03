@@ -117,7 +117,7 @@ def test_remote_fetch_uses_async_with_and_retries(client):
     session = _FakeSession(tracker, _FakeResponse(b"png-bytes"), fail_times=1)
 
     content, mime = asyncio.run(
-        client._download_remote_image("http://x/1.png", session)
+        client._download_remote_image("https://example.invalid/1.png", session)
     )
 
     assert content == b"png-bytes"
@@ -141,7 +141,9 @@ def test_remote_fetch_non_2xx_fails_fast_without_retry(client):
 
     with pytest.raises(RuntimeError) as excinfo:
         asyncio.run(
-            client._download_remote_image("http://x/secret.png?token=abc", session)
+            client._download_remote_image(
+                "https://example.invalid/secret.png?token=abc", session
+            )
         )
 
     assert tracker["calls"] == 1, "4xx 不应重试"
@@ -162,7 +164,9 @@ def test_shared_session_connection_not_leaked(client):
         app.router.add_get("/img", handler)
         runner = web.AppRunner(app)
         await runner.setup()
-        site = web.TCPSite(runner, "127.0.0.1", 0)
+        # 回环地址是本测试的刻意选择：只需本机可达的临时服务，
+        # 不对外暴露，故保留 127.0.0.1。
+        site = web.TCPSite(runner, "127.0.0.1", 0)  # DevSkim: ignore DS162092
         await site.start()
         port = site._server.sockets[0].getsockname()[1]
 
@@ -170,7 +174,9 @@ def test_shared_session_connection_not_leaked(client):
         async with aiohttp.ClientSession(
             connector=connector, timeout=aiohttp.ClientTimeout(total=5)
         ) as session:
-            url = f"http://127.0.0.1:{port}/img"
+            # 本地回环 HTTP 服务仅存在于测试进程内，不涉传输机密，
+            # 且 127.0.0.1 明确豁免 DS137138，故保持 http://。
+            url = f"http://127.0.0.1:{port}/img"  # DevSkim: ignore DS162092
             await client._download_remote_image(url, session)
             # 连接若未归还，这里会等待到超时
             async with session.get(url) as resp:
