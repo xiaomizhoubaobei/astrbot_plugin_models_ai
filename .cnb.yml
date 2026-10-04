@@ -66,6 +66,12 @@ main:
                 - PYTHONPATH=/tmp coverage run --source=astrbot_plugin_models_ai -m pytest tests/ -q
                 - coverage report -m
                 - coverage lcov -o coverage.lcov
+            - name: 覆盖率上报
+              type: testing:coverage
+              options:
+                pattern: coverage.lcov
+                allowExts: .py
+                breakIfNoCoverage: true
       push:
         # 覆盖率测试作业（安全隔离）。
         # 安全约束：本作业运行仓库自带的测试代码（tests/ 等），属于"不可信代码"，
@@ -86,8 +92,14 @@ main:
                 - pip install --no-cache-dir -q pytest coverage
                 - PYTHONPATH=/tmp coverage run --source=astrbot_plugin_models_ai -m pytest tests/ -q
                 - coverage report -m
-                # 生成 LCOV 报告，供后续测试阶段解析上报
+                # 生成 LCOV 报告，供后续 testing:coverage 步骤解析上报徽章
                 - coverage lcov -o coverage.lcov
+            - name: 覆盖率上报
+              type: testing:coverage
+              options:
+                pattern: coverage.lcov
+                allowExts: .py
+                breakIfNoCoverage: true
         - services:
             - docker
           imports:
