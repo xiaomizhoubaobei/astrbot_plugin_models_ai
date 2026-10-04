@@ -168,11 +168,15 @@ def test_legacy_four_slash_file_uri_is_normalized():
     assert _file_uri_to_path("file:////tmp/legacy.png") == "/tmp/legacy.png"
 
 
-def test_localhost_file_uri_is_normalized():
-    """``file://localhost/path`` 也应解析为本地路径."""
+def test_localhost_file_uri_is_normalized():  # devskim: ignore DS162092
+    """``file://localhost/path`` 也应解析为本地路径."""  # devskim: ignore DS162092
     from astrbot_plugin_models_ai.core.command_utils import _file_uri_to_path
 
-    assert _file_uri_to_path("file://localhost/tmp/a.png") == "/tmp/a.png"
+    # 本用例的 localhost 是被测输入本身：``file://`` URI 的空主机名，
+    # 语义等价于省略主机（上游 ``media_utils.file_uri_to_path`` 同款判定），
+    # 全程不经网络、也非回环调试地址，故内联抑制 DevSkim DS162092 误报。
+    uri = "file://localhost/tmp/a.png"  # devskim: ignore DS162092
+    assert _file_uri_to_path(uri) == "/tmp/a.png"
 
 
 def test_plain_path_and_url_are_returned_unchanged():
