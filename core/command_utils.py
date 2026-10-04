@@ -7,8 +7,7 @@ import os
 import uuid
 from pathlib import Path
 from typing import Any, AsyncGenerator
-from urllib.parse import urlparse
-from urllib.request import url2pathname
+from urllib.parse import unquote, urlparse
 
 import aiohttp
 from astrbot.api import logger
@@ -119,7 +118,8 @@ def _file_uri_to_path(value: str) -> str:
 
     归一化规则与上游 ``media_utils.file_uri_to_path`` 保持一致：
     - 处理带 host（``file://host/path``，Windows 盘符除外）的形态；
-    - 兼容旧 AstrBot 生成的 ``file:////abs/path``（POSIX 绝对路径）。
+    - 兼容旧 AstrBot 生成的 ``file:////abs/path``（POSIX 绝对路径）；
+    - 解析结果与运行解释器版本无关（不依赖 3.14 起收紧的 url2pathname）。
 
     Args:
         value: 组件上的 ``file`` / ``url`` / ``path`` 字段值
@@ -130,33 +130,41 @@ def _file_uri_to_path(value: str) -> str:
     if not _is_file_uri(value):
         return value
 
+    # 自行解析而非调用 ``urllib.request.url2pathname``：
+    # 该函数自 Python 3.14 起会拒绝非本机 host（抛 URLError），且各版本
+    # 对空 host / 多余斜杠的处理并不一致，直接复用会把「解析行为」和
+    # 解释器版本绑死（CI 跑 Python 3.14，本地可能更早）。
     parsed = urlparse(value)
-    netloc = parsed.netloc or ""
+    netloc = (parsed.netloc or "").strip()
     raw_path = parsed.path or ""
 
-    # 此处的 "localhost" 是 file URI 的地址字段本身（RFC 8089 允许
-    # file://localhost/path），并非调试用的服务地址，不会有 devskim
-    # 提示的「调试代码 / 阻碍横向扩展」问题，故显式忽略该告警。
-    if netloc and netloc.lower() != "localhost":  # DevSkim: ignore DS162092
-        # Windows 盘符形态 file://C:/a.png
-        if len(netloc) == 2 and netloc[1] == ":" and netloc[0].isalpha():
-            return str(Path(url2pathname(f"{netloc}{raw_path}")))
-        return str(Path(url2pathname(f"//{netloc}{raw_path}")))
+    # Windows 盘符形态 file://C:/a.png：host 位置被盘符占用，非 UNC
+    if len(netloc) == 2 and netloc[1] == ":" and netloc[0].isalpha():
+        netloc, raw_path = "", netloc + raw_path
 
-    path = url2pathname(raw_path)
-    # url2pathname 在 Windows 上会产出反斜杠，这里两种前缀都兼容
+    # host 非空且非 localhost：Windows 上是 UNC 路径（\\host\share），
+    # POSIX 上按 file URI 语义同样保留为 //host/path 形式；
+    # localhost 为空主机等价形态，直接丢弃，只取路径部分。
+    prefix = f"//{netloc}" if netloc and netloc.lower() != "localhost" else ""
+
+    # 解码百分号转义；parse_qs/unquote 默认也会正确还原中文等多字节路径
+    path = unquote(raw_path)
+
+    # file:////abs/path：作者误写多个斜杠，POSIX 下归一化为单个绝对路径
+    if os.name != "nt" and prefix == "" and path.startswith("//"):
+        path = "/" + path.lstrip("/")
+
+    # Windows 盘符形态：剥掉多余的前导斜杠，交给 Path 归一化
     if (
-        len(path) >= 4
+        len(path) >= 3
         and path[0] in ("/", "\\")
         and path[2] == ":"
         and path[1].isalpha()
     ):
-        # file:///C:/a.png -> C:/a.png
         path = path[1:]
-    elif os.name != "nt" and path.startswith("//"):
-        # 兼容旧 AstrBot 生成的 file:////abs/path（POSIX 绝对路径）
-        path = "/" + path.lstrip("/")
-    return str(Path(path))
+
+    # 空主机 + 绝对路径：拼接后交由 Path 归一化（Windows 上统一为反斜杠）
+    return str(Path(prefix + path)) if prefix else str(Path(path))
 
 
 async def _resolve_image_component(component: Any) -> str | None:
