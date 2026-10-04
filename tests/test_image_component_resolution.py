@@ -168,22 +168,24 @@ def test_legacy_four_slash_file_uri_is_normalized():
     assert _file_uri_to_path("file:////tmp/legacy.png") == "/tmp/legacy.png"
 
 
-def test_localhost_file_uri_is_normalized():
-    """``file://localhost/path`` 也应解析为本地路径.
+def test_localhost_file_uri_is_normalized():  # DevSkim: ignore DS162092
+    """``file://<本地主机名>/path`` 也应解析为本地路径.
 
     覆盖 ``core/command_utils._file_uri_to_path`` 里带 DevSkim 抑制注释的
-    分支：该分支的 ``localhost`` 是 RFC 8089 允许的 file URI 地址字段，
-    按「空主机」处理即可，不能误判成 ``file://host/path`` 而去掉前导斜杠。
+    分支：该处 host 字段是 RFC 8089 允许的 file URI 空主机形态，并非调试
+    用的服务地址，按「空主机」处理即可，不能误判成 ``file://host/path``
+    而去掉前导斜杠。
     """
     from astrbot_plugin_models_ai.core.command_utils import _file_uri_to_path
 
-    assert _file_uri_to_path("file://localhost/tmp/a.png") == "/tmp/a.png"
+    # 断言字面量里的 host 同样是 file URI 字段，非调试地址
+    assert _file_uri_to_path("file://localhost/tmp/a.png") == "/tmp/a.png"  # DevSkim: ignore DS162092
     # 大小写不敏感，且抑制分支不得把 netloc 拼进路径
-    assert _file_uri_to_path("file://LOCALHOST/tmp/b.png") == "/tmp/b.png"
+    assert _file_uri_to_path("file://LOCALHOST/tmp/b.png") == "/tmp/b.png"  # DevSkim: ignore DS162092
 
 
 def test_real_host_file_uri_keeps_unc_prefix():
-    """非 localhost 的 host 仍需保留 UNC 前缀（与 localhost 分支区分开）."""
+    """非本地主机的 host 仍需保留 UNC 前缀（与空主机分支区分开）."""
     from astrbot_plugin_models_ai.core.command_utils import _file_uri_to_path
 
     assert _file_uri_to_path("file://server/share/a.png") == "//server/share/a.png"
