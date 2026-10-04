@@ -25,6 +25,15 @@ jobs:
     name: 单元测试与覆盖率
     runs-on: ubuntu-latest
     steps:
+      # 安全加固：与仓库内其余全部工作流一致，内联 step-security/harden-runner。
+      # 本工作流会在 PR（不可信来源）场景运行仓库自带测试代码，属高风险面，
+      # 故必须补齐该审计 Action；egress-policy: audit 仅审计出网调用，
+      # 保持"记录不阻断"的既有策略，与其它工作流口径统一。
+      - name: 加固运行器 (审计全部出网调用)
+        uses: step-security/harden-runner@5ef0c079ce82195b2a36a210272d6b661572d83e # v2.14.2
+        with:
+          egress-policy: audit
+
       - name: 检出代码
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
