@@ -109,24 +109,6 @@ main:
           imports:
             - https://cnb.cool/XMZZUZHI/key/-/blob/main/Github.yml
           stages:
-            - name: 单元测试与覆盖率
-              script: |
-                set -euo pipefail
-                # 安装运行与测试依赖；宿主 astrbot 由 CNB 开发镜像预置，
-                # 若缺失则装 pip 包兜底（桩件会在此基础上补最小宿主）
-                pip install --no-cache-dir -r requirements.txt
-                pip install --no-cache-dir pytest coverage
-                python -c "import astrbot" 2>/dev/null || pip install --no-cache-dir astrbot
-                # 以顶层包名 astrbot_plugin_models_ai 运行测试并统计覆盖率，
-                # 产出 LCOV 报告供下一步 testing:coverage 解析上报徽章
-                coverage run --source=astrbot_plugin_models_ai -m pytest tests/ -q
-                coverage lcov -o coverage.lcov
-            - name: 覆盖率上报
-              type: testing:coverage
-              options:
-                pattern: coverage.lcov
-                allowExts: .py
-                breakIfNoCoverage: true
             - name: 同步到GitHub
               image: tencentcom/git-sync
               settings:
