@@ -34,12 +34,16 @@ def _install_astrbot_stubs() -> None:
 
     宿主 / CI 已提供完整 astrbot 时直接返回；仅在其缺失时兜底安装，
     避免因环境差异导致本回归测试无法运行。
+
+    仅捕获 ``ModuleNotFoundError``（astrbot 本身缺失）才走桩件兜底；
+    其余导入错误（依赖缺失、宿主包内部报错等）必须原样抛出，
+    否则真实环境问题会被桩件掩盖，测试退化为"跑在假环境上"。
     """
     try:
         import astrbot.api.event.filter  # noqa: F401
 
         return
-    except Exception:
+    except ModuleNotFoundError:
         pass
 
     def _set(mod: types.ModuleType, name: str, value: object) -> None:
