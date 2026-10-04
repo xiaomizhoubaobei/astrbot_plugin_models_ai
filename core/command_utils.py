@@ -134,7 +134,10 @@ def _file_uri_to_path(value: str) -> str:
     netloc = parsed.netloc or ""
     raw_path = parsed.path or ""
 
-    if netloc and netloc.lower() != "localhost":
+    # 此处的 "localhost" 是 file URI 的地址字段本身（RFC 8089 允许
+    # file://localhost/path），并非调试用的服务地址，不会有 devskim
+    # 提示的「调试代码 / 阻碍横向扩展」问题，故显式忽略该告警。
+    if netloc and netloc.lower() != "localhost":  # DevSkim: ignore DS162092
         # Windows 盘符形态 file://C:/a.png
         if len(netloc) == 2 and netloc[1] == ":" and netloc[0].isalpha():
             return str(Path(url2pathname(f"{netloc}{raw_path}")))
