@@ -829,7 +829,11 @@ pre-commit run --all-files
 - 报告格式固定为 `coverage.xml`（`coverage xml`），`codecov.yml` 中的 `flags.unittests.paths` 与之一致。
 - **`CODECOV_TOKEN` 只能来自密钥注入**：GitHub 侧读仓库 Secret `secrets.CODECOV_TOKEN`；CNB 侧可选从密钥仓库 `imports` 注入同名变量。**严禁**写进代码、`.cnb.yml`、文档或评论。
 - 未配置 token 时上报步骤 `continue-on-error` 跳过，CI **不失败**（仅留存 `coverage-xml` 工件），属预期行为。
-- **本仓库是私有镜像同步仓库（CNB → GitHub），属私有仓库，所有上传都必须携带令牌**：Codecov 官方明确「上传无需令牌」仅适用于**公开仓库 + 组织已关闭公开仓库的令牌校验**；私有仓库不适用该开关，只能老实用 `secrets.CODECOV_TOKEN`。勿因 Codecov 后台「仓库级令牌可省略」的提示而误判本仓库可免令牌。
+- **令牌口径以 Codecov 官方规则为准，本仓库固定「显式携带 `secrets.CODECOV_TOKEN`」**（依据 Codecov 官方 *When do I need a token?* 一节）：
+  - **私有仓库**：**所有**上传都必须携带令牌。
+  - **公开仓库**：仅当「上传针对**受保护分支**（如 `main`）的提交」且「仓库所有者**未**关闭公开仓库的令牌校验」时才要求令牌；未被保护的提交（如 `pr300:main` 这类带前缀的分支）可免令牌。
+  - **本仓库的 GitHub 目标是公开仓库**（实测 `xiaomizhoubaobei/astrbot_plugin_models_ai` 的 API 返回 `private: false` / `visibility: public`；「私有」指的只是 CNB → GitHub 的**同步链路**，不是目标仓库属性，二者不要混为一谈）；而路线上的 `coverage.yml` 恰好在 `push: main` 这一**受保护分支**上上传，且我们**不打算**去 Codecov 后台关闭公开仓库令牌校验 → 走到「公开 + 受保护分支 + 未关闭校验」这一格，**依然必须带令牌**。
+  - 结论：无论仓库公开还是私有，本仓库都固定走「显式带 `secrets.CODECOV_TOKEN`」这条路径，**不要**改用免令牌上传，也不要因为目标是公开仓库就以为可以省掉 Secret。
 - Codecov 后台提示所提及的「无令牌上传」开关需 `codecov-action` **> v5.0** / `codecov-cli` **> v0.9** 才生效，且官方声明该路径共享全局限流、超限即上传失败且不贴状态，**不建议依赖**。本仓库固定走「显式带令牌」路径（`codecov-action@v5` + `env: CODECOV_TOKEN`）。
 - `codecov.yml` 的 `project` / `patch` 门禁目前均为 `informational: true`（只提示不卡 PR）；要收紧时改这两处，而不是在 CI 里加 `--fail-under`。
 

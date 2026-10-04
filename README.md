@@ -61,9 +61,21 @@
 ### 项目信息
 
 
-- 📊 [覆盖率报告](https://codecov.io/gh/xiaomizhoubaobei/astrbot_plugin_models_ai) - 单元测试覆盖率（Codecov）
+- 📊 [覆盖率报告](https://codecov.io/gh/xiaomizhoubaobei/astrbot_plugin_models_ai) - 单元测试覆盖率（Codecov，徽章见顶部）
 - 🤝 [贡献指南](CONTRIBUTING.md) - 如何参与项目贡献
 - 📜 [行为准则](CODE_OF_CONDUCT.md) - 社区行为准则
+
+### 覆盖率徽章
+
+覆盖率由两条**互不干扰**的链路产出，各产各的徽章：
+
+- **CNB 侧**：由 `.cnb.yml` 的覆盖率作业 + `testing:coverage` 上报，展示在 CNB 平台。
+- **GitHub 侧**：由 `.github/workflows/coverage.yml` 统计并上报 Codecov，徽章即本文顶部那枚。
+
+> **令牌前提**：Codecov 上传需要 `CODECOV_TOKEN`，请在 GitHub 仓库的
+> `Settings → Secrets and variables → Actions` 中新增同名 Secret；未配置时
+> 上传步骤会被安全跳过（CI 不失败），徽章显示 `unknown`。
+> 令牌**不要**写进代码或工作流文件，只走 Secrets 注入。
 
 ## 支持的图片比例
 

@@ -136,6 +136,14 @@ pre-commit run --all-files    # 首次会联网安装各 hook 环境，稍慢
 
 因此，只要环境里有 Python 3.12（或更新的 3.13），`pre-commit run` 都能正常跑通；此前把 `language_version` 写死为 `python3.12` 时，仅有 3.13 的环境反而会因找不到 `python3.12` 可执行文件而失败。
 
+### 测试与覆盖率
+
+- 单元测试位于 `tests/`，本地运行：`pytest tests -q`。
+- 覆盖率门槛目前为**提示性**（不卡 PR），但新增业务代码请尽量带测试：
+  - 整体覆盖率与增量门禁配置在 `codecov.yml`（`informational: true`）。
+  - 覆盖率口径与两条上报链路（CNB / Codecov）的差异见 `AGENTS.md` 10.8.1，改动覆盖率链路前务必先读该节。
+- 面向 Codecov 的 GitHub 工作流需要仓库 Secret `CODECOV_TOKEN` 才会真正上报；**令牌只能走 Secrets 注入**，请勿写进代码或工作流文件。未配置时上报会被跳过，CI 不失败。
+
 ### 文档规范
 
 - 所有公共函数和类都应有文档字符串
