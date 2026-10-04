@@ -216,7 +216,17 @@ class _FakePlugin:
 
 
 def _run(coro):
-    return asyncio.new_event_loop().run_until_complete(coro)
+    """在独立事件循环中跑完协程，并在结束时关闭循环.
+
+    每次调用都新建循环；若不关闭会残留未回收的循环资源，
+    在批量/重复执行测试时可能触发 unclosed event loop 告警并累积句柄。
+    因此统一在 finally 中关闭循环，保证资源即时释放。
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 def test_unexpected_kwarg_is_tolerated() -> None:
