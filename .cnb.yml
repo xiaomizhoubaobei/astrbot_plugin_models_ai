@@ -52,7 +52,42 @@ $:
                   - git clone https://github.com/AstrBotDevs/AstrBot.git
 
 main:
+      # PR 阶段：仅跑覆盖率测试（无任何写凭证导入），供评审与覆盖率上报。
+      pull_request:
+        - name: 覆盖率测试
+          runner:
+            cpus: 2
+          stages:
+            - name: 安装依赖并统计覆盖率
+              script:
+                - ln -sfn /workspace /tmp/astrbot_plugin_models_ai
+                - pip install --no-cache-dir -q -r requirements.txt
+                - pip install --no-cache-dir -q pytest coverage
+                - PYTHONPATH=/tmp coverage run --source=astrbot_plugin_models_ai -m pytest tests/ -q
+                - coverage report -m
+                - coverage lcov -o coverage.lcov
       push:
+        # 覆盖率测试作业（安全隔离）。
+        # 安全约束：本作业运行仓库自带的测试代码（tests/ 等），属于"不可信代码"，
+        # 因此**严禁**在本作业中 import 任何携带 GitHub 写入令牌的密钥仓库
+        # （如 Github.yml / GIT_ACCESS_TOKEN / GIT_USERNAME / GIT_EMAIL）。
+        # 令牌只保留给下方独立的"同步到GitHub"作业使用，两者物理隔离，
+        # 避免测试代码读取环境变量后外传凭证。
+        - name: 覆盖率测试
+          runner:
+            cpus: 2
+          stages:
+            - name: 安装依赖并统计覆盖率
+              script:
+                # 插件源码以仓库根目录为包根（astrbot_plugin_models_ai），
+                # 借助父目录同名符号链接使 import astrbot_plugin_models_ai 生效
+                - ln -sfn /workspace /tmp/astrbot_plugin_models_ai
+                - pip install --no-cache-dir -q -r requirements.txt
+                - pip install --no-cache-dir -q pytest coverage
+                - PYTHONPATH=/tmp coverage run --source=astrbot_plugin_models_ai -m pytest tests/ -q
+                - coverage report -m
+                # 生成 LCOV 报告，供后续测试阶段解析上报
+                - coverage lcov -o coverage.lcov
         - services:
             - docker
           imports:

@@ -49,3 +49,7 @@ lcov.info
 
 # 运行时数据（AstrBot 本地配置/缓存）
 data/
+
+# 覆盖率报告（覆盖率测试作业产物）
+.coverage
+coverage.lcov
