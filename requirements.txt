@@ -4,5 +4,11 @@
 #       与本插件声明的 Python 3.12+ 保持一致。
 aiofiles>=24.1.0
 aiohttp>=3.14.3
+# httpx：本插件直接使用（core/client_manager.py 的共享 AsyncClient、
+#       core/net_errors.py 的异常分类），必须显式声明。
+#       注意：openai>=3.19.2 已改依赖 httpx2（模块名 httpx2，非 httpx），
+#       不再传递引入 httpx；若依赖旧有的 openai->httpx 链路，
+#       干净环境（如 CI）会因缺 httpx 导致测试收集失败。
+httpx>=0.27
 openai>=3.19.2
 deprecated>=1.2.14
