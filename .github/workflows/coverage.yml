@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: 安装 Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -65,10 +65,10 @@ jobs:
         id: codecov
         if: always()
         continue-on-error: true
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         env:
-          # 官方推荐写法：令牌走环境变量而非 with.token。
-          # v5 起 with.token 已弃用并会产生告警；env 注入同时满足
+          # 官方推荐写法：令牌走环境变量而非 with.token（v5 起弃用，本仓库
+          # 已升到 v7.1.1，仍是唯一推荐路径）；env 注入同时满足
           # 「上传必须携带令牌」的要求：本仓库虽为公开仓库，但上传发生在
           # 受保护分支 main 上且未关闭公开仓库令牌校验，按 Codecov 规则
           # （见 AGENTS.md 10.8.1）依然必须带令牌，故一律显式注入。
@@ -80,9 +80,12 @@ jobs:
           fail_ci_if_error: false
           verbose: true
 
+      # 上传覆盖率报告工件：upload-artifact 锁到 v7.0.1 的提交 SHA，
+      # 与 security-scan.yml / Scorecard.yml 保持一致（v7 起运行时为 node24，
+      # 新增可选的 archive 直传能力；本步骤仍走默认 zip 归档，参数量级极小）。
       - name: 上传覆盖率报告工件
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-xml
           path: coverage.xml
