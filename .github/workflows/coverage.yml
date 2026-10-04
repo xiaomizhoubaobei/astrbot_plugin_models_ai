@@ -30,7 +30,7 @@ jobs:
       # 故必须补齐该审计 Action；egress-policy: audit 仅审计出网调用，
       # 保持"记录不阻断"的既有策略，与其它工作流口径统一。
       - name: 加固运行器 (审计全部出网调用)
-        uses: step-security/harden-runner@5ef0c079ce82195b2a36a210272d6b661572d83e # v2.14.2
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
           egress-policy: audit
 
