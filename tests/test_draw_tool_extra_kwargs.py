@@ -29,22 +29,37 @@ sys.path.insert(0, str(_REPO_ROOT))
 sys.path.insert(0, str(_REPO_ROOT.parent))
 
 
+# 桩件兜底时**允许缺失**的模块名：只有"宿主包本身或其预期目标模块缺失"，
+# 才判定为"环境未装宿主"、可以安装桩件；其余缺失一律原样抛出。
+_HOST_PACKAGE_MODULES = frozenset({"astrbot", "astrbot.api.event.filter"})
+
+
 def _install_astrbot_stubs() -> None:
     """安装最小 ``astrbot`` 桩件，使插件模块可在无宿主环境导入.
 
     宿主 / CI 已提供完整 astrbot 时直接返回；仅在其缺失时兜底安装，
     避免因环境差异导致本回归测试无法运行。
 
-    仅捕获 ``ModuleNotFoundError``（astrbot 本身缺失）才走桩件兜底；
-    其余导入错误（依赖缺失、宿主包内部报错等）必须原样抛出，
-    否则真实环境问题会被桩件掩盖，测试退化为"跑在假环境上"。
+    判定"缺失"必须精确到 ``ModuleNotFoundError.name``，只放行两类情况：
+
+    * ``astrbot`` / ``astrbot.api.event.filter`` 缺失 → 环境确实没装宿主，
+      安装桩件兜底（本函数存在的意义）；
+    * 其它模块名缺失 → 宿主**已安装**（或路径可达）但内部/传递依赖缺失，
+      属真实环境问题，**必须原样抛出**，不得被桩件静默掩盖；
+    * 非 ``ModuleNotFoundError`` 的导入错误（宿主包内部报错等）同样原样抛出。
+
+    这样可同时挡住「其它异常类型」与「宿主依赖缺失」两类误吞，
+    避免测试退化为"跑在假环境上"。
     """
     try:
         import astrbot.api.event.filter  # noqa: F401
 
         return
-    except ModuleNotFoundError:
-        pass
+    except ModuleNotFoundError as exc:
+        # 只有宿主包本身或其预期目标模块缺失，才允许走桩件兜底；
+        # 其它缺失（宿主已装、但内部依赖不全）必须向上抛出
+        if exc.name not in _HOST_PACKAGE_MODULES:
+            raise
 
     def _set(mod: types.ModuleType, name: str, value: object) -> None:
         # 用 setattr 动态挂属性，避免静态检查报 attr-defined
@@ -270,6 +285,88 @@ def test_non_string_prompt_is_normalized() -> None:
     # None 会被 parse_prompt_and_size 判定为空并回传参数错误，不应抛异常
     results = _run(_collect())
     assert results, "应产出一条参数错误提示"
+
+
+class _BlockedImport:
+    """临时拦截指定模块的导入，模拟"宿主已装但内部依赖缺失/报错"场景.
+
+    通过 meta_path finder 精确拦截 ``module_name``（含其子模块），
+    在不改动真实环境的前提下构造出可控的导入失败。
+    """
+
+    def __init__(self, module_name: str, exc: BaseException) -> None:
+        self.module_name = module_name
+        self.exc = exc
+
+    def find_module(self, fullname, _path=None):  # pragma: no cover - 兼容老接口
+        return self if self._hit(fullname) else None
+
+    def find_spec(self, fullname, _path=None, _target=None):  # pragma: no cover
+        if self._hit(fullname):
+            raise self.exc
+        return None
+
+    def _hit(self, fullname: str) -> bool:
+        return fullname == self.module_name or fullname.startswith(
+            self.module_name + "."
+        )
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        ModuleNotFoundError(
+            "No module named 'some_missing_dep'", name="some_missing_dep"
+        ),
+        ModuleNotFoundError(
+            "No module named 'astrbot.api.nope'", name="astrbot.api.nope"
+        ),
+        RuntimeError("宿主包内部初始化失败"),
+    ],
+    ids=["传递依赖缺失", "宿主包内其它子模块缺失", "宿主包内部报错"],
+)
+def test_stub_fallback_is_not_triggered_by_broken_host(exc, monkeypatch) -> None:
+    """宿主已装但导入失败时，桩件**不得**兜底，异常必须原样抛出.
+
+    否则真实环境问题会被静默顶替成桩件，测试退化为"跑在假环境上"。
+    """
+    import test_draw_tool_extra_kwargs as t
+
+    # 让"探测性导入"真的重新走一次，而不是命中 sys.modules 缓存
+    monkeypatch.delitem(sys.modules, "astrbot.api.event.filter", raising=False)
+    monkeypatch.setattr(
+        sys, "meta_path", [_BlockedImport("astrbot", exc), *sys.meta_path]
+    )
+
+    with pytest.raises(type(exc)):
+        t._install_astrbot_stubs()
+
+
+def test_stub_fallback_still_works_when_host_absent(monkeypatch) -> None:
+    """宿主确实没装（astrbot 本身缺失）时，仍应安装桩件兜底.
+
+    这条与上一条配对：收紧兜底条件的同时，不能把"无宿主跑单测"的
+    既有能力一并砍掉。
+    """
+    import test_draw_tool_extra_kwargs as t
+
+    monkeypatch.delitem(sys.modules, "astrbot.api.event.filter", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "meta_path",
+        [
+            _BlockedImport(
+                "astrbot",
+                ModuleNotFoundError("No module named 'astrbot'", name="astrbot"),
+            ),
+            *sys.meta_path,
+        ],
+    )
+
+    # 不应抛出：缺失模块名在白名单内 → 允许安装桩件
+    t._install_astrbot_stubs()
+
+    assert "astrbot.api.event.filter" in sys.modules
 
 
 if __name__ == "__main__":
