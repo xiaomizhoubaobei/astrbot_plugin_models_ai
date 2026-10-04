@@ -171,10 +171,13 @@ def test_legacy_four_slash_file_uri_is_normalized():
 def test_localhost_file_uri_is_normalized():  # DevSkim: ignore DS162092
     """``file://<本地主机名>/path`` 也应解析为本地路径.
 
+    本用例的 <本地主机名> 是被测输入本身：file URI 的空主机字段（RFC 8089
+    允许 ``file://localhost/path``），语义等价于省略主机，全程不经网络、
+    也非回环调试地址，故内联抑制 DevSkim DS162092 误报。
+
     覆盖 ``core/command_utils._file_uri_to_path`` 里带 DevSkim 抑制注释的
-    分支：该处 host 字段是 RFC 8089 允许的 file URI 空主机形态，并非调试
-    用的服务地址，按「空主机」处理即可，不能误判成 ``file://host/path``
-    而去掉前导斜杠。
+    分支：该处 host 字段同属 file URI 空主机形态，按「空主机」处理即可，
+    不能误判成 ``file://host/path`` 而去掉前导斜杠。
     """
     from astrbot_plugin_models_ai.core.command_utils import _file_uri_to_path
 
