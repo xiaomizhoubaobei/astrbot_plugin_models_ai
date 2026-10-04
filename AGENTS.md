@@ -829,6 +829,8 @@ pre-commit run --all-files
 - 报告格式固定为 `coverage.xml`（`coverage xml`），`codecov.yml` 中的 `flags.unittests.paths` 与之一致。
 - **`CODECOV_TOKEN` 只能来自密钥注入**：GitHub 侧读仓库 Secret `secrets.CODECOV_TOKEN`；CNB 侧可选从密钥仓库 `imports` 注入同名变量。**严禁**写进代码、`.cnb.yml`、文档或评论。
 - 未配置 token 时上报步骤 `continue-on-error` 跳过，CI **不失败**（仅留存 `coverage-xml` 工件），属预期行为。
+- **本仓库是私有镜像同步仓库（CNB → GitHub），属私有仓库，所有上传都必须携带令牌**：Codecov 官方明确「上传无需令牌」仅适用于**公开仓库 + 组织已关闭公开仓库的令牌校验**；私有仓库不适用该开关，只能老实用 `secrets.CODECOV_TOKEN`。勿因 Codecov 后台「仓库级令牌可省略」的提示而误判本仓库可免令牌。
+- Codecov 后台提示所提及的「无令牌上传」开关需 `codecov-action` **> v5.0** / `codecov-cli` **> v0.9** 才生效，且官方声明该路径共享全局限流、超限即上传失败且不贴状态，**不建议依赖**。本仓库固定走「显式带令牌」路径（`codecov-action@v5` + `env: CODECOV_TOKEN`）。
 - `codecov.yml` 的 `project` / `patch` 门禁目前均为 `informational: true`（只提示不卡 PR）；要收紧时改这两处，而不是在 CI 里加 `--fail-under`。
 
 **完成 Codecov 接线后仍需人工做一步**：打开 <https://codecov.io> 用 GitHub 账号授权本仓库，先让 CI 成功上报一次，徽章才会从 unknown 变为真实百分比。

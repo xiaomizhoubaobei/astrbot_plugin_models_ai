@@ -65,9 +65,13 @@ jobs:
         id: codecov
         if: always()
         continue-on-error: true
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
+        env:
+          # 官方推荐写法：令牌走环境变量而非 with.token。
+          # v5 起 with.token 已弃用并会产生告警；env 注入同时保证
+          # 「私有仓库必须显式携带令牌」这一要求被满足。
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
           flags: unittests
           name: python-3.12
