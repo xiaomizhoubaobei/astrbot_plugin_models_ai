@@ -679,7 +679,7 @@ python3 scripts/bailian-memory.py delete --node-id node_abc
 ├── docs/                   # 文档（开发指南、功能总览、roadmap 等）
 ├── .github/workflows/      # CI：CodeQL、安全检查、PR 审查、release 等
 ├── .cnb.yml                # CNB 云端流水线（开发环境 + 同步至 GitHub）
-└── install_agents.sh / install_gpg_keys.sh  # 环境/代理安装脚本
+└── install_gpg_keys.sh     # GPG 签名环境安装脚本
 ```
 
 ---
@@ -805,10 +805,9 @@ pre-commit run --all-files
 | `tfsec.yml` | IaC 安全扫描 |
 | `Scorecard.yml` | 供应链安全评分 |
 | `inclusiveness-analyzer.yml` | 包容性分析 |
-| `issue-killer.yml` / `issue-triage.yml` / `stale.yml` | Issue 自动化 |
-| `pr-review.yml` / `pr-review-killer.yml` | PR 审查自动化 |
+| `stale.yml` | 陈旧 Issue / PR 自动化 |
 | `release.yml` | 发布流程 |
-| `iflow-cli-assistant.yml` | iFlow CLI 助手 |
+| `ossar.yml` | OSSAR 开源静态分析 |
 
 `.cnb.yml`：CNB 流水线在 `main` 分支 push 时同步代码到 GitHub 上游仓库。
 
