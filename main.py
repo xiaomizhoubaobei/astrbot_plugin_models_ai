@@ -238,7 +238,12 @@ class AIImage(Star):
             yield result
 
     @filter_cmd.llm_tool(name="draw_image")
-    async def draw(self, event: "AstrMessageEvent", prompt: str):  # noqa: D417
+    async def draw(
+        self,
+        event: "AstrMessageEvent",
+        prompt: str,
+        **extra_kwargs: Any,
+    ):  # noqa: D417
         """根据提示词生成图片.
 
         在用户表达想要生成、绘制图片，或需要配图时调用本工具。
@@ -247,10 +252,15 @@ class AIImage(Star):
         注意: AstrBot 依据本函数的 docstring 生成工具参数 schema，
         event 由框架注入，不可写入 Args（其类型不在 JSON Schema 支持的类型内）。
 
+        容错: 通过 **extra_kwargs 吸收 LLM 脑补出的未声明参数（如 use_refs）。
+        框架按 docstring 生成 schema，但模型仍可能传入 schema 之外的参数；若此处
+        不接收，会抛 TypeError: AIImage.draw() got an unexpected keyword argument，
+        导致整次工具调用失败、用户收不到图片。
+
         Args:
             prompt (string): 图片提示词，需包含主体、场景、风格等描述；可在末尾追加比例参数（如 9:16、16:9、1:1）。
         """
-        async for result in draw_image_tool(self, event, prompt):
+        async for result in draw_image_tool(self, event, prompt, **extra_kwargs):
             yield result
 
     @ai_gitee_group.command("ai-edit")

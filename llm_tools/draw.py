@@ -16,6 +16,7 @@ async def draw_image_tool(
     plugin,
     event: "AstrMessageEvent",
     prompt: str,
+    **extra_kwargs: Any,
 ) -> AsyncGenerator[Any, None]:
     """根据提示词生成图片.
 
@@ -25,10 +26,16 @@ async def draw_image_tool(
       并结束本轮 Agent 循环（图片已直发，无需 LLM 再复述图片内容）；
     - yield str：作为工具返回值交回 LLM，由 LLM 自行组织回复（用于失败/参数错误）。
 
+    容错说明：AstrBot 依据函数 docstring 的 Args 生成工具参数 schema，但 LLM
+    仍可能"脑补"出未声明的参数（例如 use_refs）。若处理函数签名不接收这些多余
+    参数，会直接抛 TypeError 导致整次工具调用崩掉、用户收不到任何图片。因此这
+    里用 **extra_kwargs 兜底吸收未知参数，仅记录忽略，不中断生图主流程。
+
     Args:
         plugin: 插件实例，提供 api_client, rate_limiter, debug_log 等方法
         event: 消息事件对象
         prompt: 图片提示词，需要包含主体、场景、风格等描述
+        **extra_kwargs: 框架或 LLM 传入的未声明参数，统一忽略并记录
 
     Yields:
         MessageEventResult: 生成成功时直发给用户的图片消息
@@ -36,6 +43,14 @@ async def draw_image_tool(
     """
     user_id = event.get_sender_id()
     request_id = user_id
+
+    # 忽略并记录 LLM 幻觉或框架附加的未声明参数，避免 TypeError 中断生图
+    if extra_kwargs:
+        plugin.debug_log(f"[LLM工具] 忽略未声明参数: {sorted(extra_kwargs.keys())}")
+
+    # 提示词兜底为字符串，防止上游传入 None / 非字符串导致后续切片异常
+    if not isinstance(prompt, str):
+        prompt = "" if prompt is None else str(prompt)
 
     plugin.debug_log(
         f"[LLM工具] 收到生图请求: user_id={user_id}, prompt={prompt[:50]}..."
