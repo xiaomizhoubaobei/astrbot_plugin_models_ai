@@ -55,6 +55,8 @@ main:
       # PR 阶段：仅跑覆盖率测试（无任何写凭证导入），供评审与覆盖率上报。
       pull_request:
         - name: 覆盖率测试
+          docker:
+            image: docker.cnb.cool/xmzzuzhi/cnb-docker/python:0.0.1
           runner:
             cpus: 2
           stages:
@@ -80,6 +82,8 @@ main:
         # 令牌只保留给下方独立的"同步到GitHub"作业使用，两者物理隔离，
         # 避免测试代码读取环境变量后外传凭证。
         - name: 覆盖率测试
+          docker:
+            image: docker.cnb.cool/xmzzuzhi/cnb-docker/python:0.0.1
           runner:
             cpus: 2
           stages:
