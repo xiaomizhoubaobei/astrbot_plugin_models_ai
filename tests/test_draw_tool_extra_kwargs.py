@@ -27,6 +27,13 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT))
 sys.path.insert(0, str(_REPO_ROOT.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# 覆盖率运行环境：按顶层包名 `astrbot_plugin_models_ai` 可导入插件源码，
+# 保证 coverage / pytest-cov 能按真实源码路径统计行覆盖（详见该模块文档）
+from _coverage_support import ensure_package_view  # noqa: E402
+
+ensure_package_view()
 
 
 # 桩件兜底时**允许缺失**的模块名：只有"宿主包本身或其预期目标模块缺失"，

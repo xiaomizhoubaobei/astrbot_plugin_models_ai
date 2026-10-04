@@ -25,6 +25,12 @@ from aiohttp import web
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT))
 sys.path.insert(0, str(_REPO_ROOT.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# 覆盖率运行环境：按顶层包名 `astrbot_plugin_models_ai` 导入插件源码
+from _coverage_support import ensure_package_view  # noqa: E402
+
+ensure_package_view()
 
 
 class _FakeResponse:

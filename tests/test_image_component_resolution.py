@@ -30,6 +30,11 @@ sys.path.insert(0, str(_REPO_ROOT.parent))
 # 避免用 ``tests.xxx`` 包前缀触发 mypy 的 "duplicate module name" 报错
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# 覆盖率运行环境：按顶层包名 `astrbot_plugin_models_ai` 导入插件源码
+from _coverage_support import ensure_package_view  # noqa: E402
+
+ensure_package_view()
+
 # 复用生图工具测试里已铺设的最小 astrbot 桩件，保证可在无宿主环境导入
 from test_draw_tool_extra_kwargs import (  # type: ignore[import-not-found]  # noqa: E402
     _install_astrbot_stubs,
