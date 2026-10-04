@@ -808,8 +808,30 @@ pre-commit run --all-files
 | `stale.yml` | 陈旧 Issue / PR 自动化 |
 | `release.yml` | 发布流程 |
 | `ossar.yml` | OSSAR 开源静态分析 |
+| `coverage.yml` | 单元测试覆盖率统计并上报 Codecov（`main` push / PR） |
 
 `.cnb.yml`：CNB 流水线在 `main` 分支 push 时同步代码到 GitHub 上游仓库。
+
+#### 10.8.1 覆盖率链路（CNB 徽章 + Codecov 徽章，双端并行）
+
+覆盖率有**两条互不干扰**的上报链路，各产各的徽章，不要互相替换：
+
+| 链路 | 配置文件 | 触发时机 | 产物 / 展示 |
+| --- | --- | --- | --- |
+| CNB 侧 | `.cnb.yml` 的「覆盖率测试」作业 + `testing:coverage` stage | CNB `pull_request` / `push` | CNB 平台覆盖率徽章 |
+| GitHub 侧 | `.github/workflows/coverage.yml` + `codecov.yml` | GitHub `push`(main) / `pull_request` | Codecov 徽章（README 顶部） |
+
+**GitHub 侧关键约定（改动前务必先读这条，否则徽章会显示 unknown）：**
+
+- 覆盖率必须用**包名**计数：`python -m coverage run --source=astrbot_plugin_models_ai -m pytest tests -q`。
+  - 仓库目录名不等于包名，靠 `ln -sfn "$GITHUB_WORKSPACE" "$RUNNER_TEMP/astrbot_plugin_models_ai"` 铺出可导入的包视图（与 `tests/_coverage_support.py` 的垫片同源）。
+  - **不要**照搬 CNB 侧「绝对路径 `--source=/workspace`」的写法：那是为了迁就 `testing:coverage` 的匹配规则；Codecov 侧用绝对路径会写出 `/home/runner/work/...`，固定路径映射后匹配不到文件，覆盖率恒为 0。
+- 报告格式固定为 `coverage.xml`（`coverage xml`），`codecov.yml` 中的 `flags.unittests.paths` 与之一致。
+- **`CODECOV_TOKEN` 只能来自密钥注入**：GitHub 侧读仓库 Secret `secrets.CODECOV_TOKEN`；CNB 侧可选从密钥仓库 `imports` 注入同名变量。**严禁**写进代码、`.cnb.yml`、文档或评论。
+- 未配置 token 时上报步骤 `continue-on-error` 跳过，CI **不失败**（仅留存 `coverage-xml` 工件），属预期行为。
+- `codecov.yml` 的 `project` / `patch` 门禁目前均为 `informational: true`（只提示不卡 PR）；要收紧时改这两处，而不是在 CI 里加 `--fail-under`。
+
+**完成 Codecov 接线后仍需人工做一步**：打开 <https://codecov.io> 用 GitHub 账号授权本仓库，先让 CI 成功上报一次，徽章才会从 unknown 变为真实百分比。
 
 ---
 
@@ -822,7 +844,8 @@ pre-commit run --all-files
 5. **新增风格**：只改 `commands/style_prompts.json`，不写死代码。
 6. **提交前**：运行 `pre-commit run --all-files`，确认 black/flake8/mypy 通过。
 7. **提交信息**：使用 Conventional Commits 中文描述。
-8. **不要把密钥写进代码或文档**；API Key 一律通过插件配置注入。
+8. **不要把密钥写进代码或文档**；API Key 与 `CODECOV_TOKEN` 一律通过配置 / 密钥注入。
+9. **改覆盖率链路**：CNB（`.cnb.yml`）与 GitHub（`.github/workflows/coverage.yml`）两侧口径独立，修改任一侧都先读 10.8.1，确认 `--source` 写法与报告格式未被破坏。
 
 ---
 

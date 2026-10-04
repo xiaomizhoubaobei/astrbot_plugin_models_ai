@@ -1,0 +1,83 @@
+name: Coverage
+
+# 触发时机：main 分支的推送与 PR。
+# 说明：本仓库代码会在 main 推送时由 CNB（.cnb.yml）同步至本 GitHub 镜像仓库，
+#       因此 CNB 侧的每次变更最终都会以 push 形式落到这里，覆盖率随之更新；
+#       pull_request 仅用于 PR 场景的覆盖率对比（Codecov 会给出 diff 覆盖）。
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+# 同一分支/PR 的旧运行自动取消，避免重复上报造成徽章抖动
+concurrency:
+  group: coverage-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    name: 单元测试与覆盖率
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest coverage
+
+      # 仓库目录名不等于插件包名（astrbot_plugin_models_ai），测试统一按
+      # 「顶层包名」导入（见 tests/_coverage_support.py）。此处铺一层同名符号
+      # 链接，把仓库根暴露为包，使导入与覆盖率统计都能定位到真实源码行号。
+      - name: 构造可导入的包视图
+        run: ln -sfn "$GITHUB_WORKSPACE" "$RUNNER_TEMP/astrbot_plugin_models_ai"
+
+      - name: 运行测试并统计覆盖率
+        env:
+          # 覆盖率数据文件落到临时目录，避免污染工作区
+          COVERAGE_FILE: ${{ runner.temp }}/.coverage
+        run: |
+          # --source 用「包名」计数，coverage 会以包所在目录为基准写出相对路径
+          # （如 astrbot_plugin_models_ai/commands/generate.py），从而正确定位
+          # 到 GitHub 工作区文件；若误用绝对路径 --source，SF 会退化成
+          # /home/runner/work/... 这类路径，Codecov 固定路径映射后匹配不到文件。
+          python -m coverage run --source=astrbot_plugin_models_ai -m pytest tests -q
+          python -m coverage report -m
+          python -m coverage xml -o coverage.xml
+
+      # 上报 Codecov：仅在拿到 token（仓库 Secret 或同名 CNB 密钥）时执行。
+      # 未配置 token 时跳过上报，仅留存 coverage.xml 工件，不使 CI 失败。
+      - name: 上报覆盖率到 Codecov
+        id: codecov
+        if: always()
+        continue-on-error: true
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.xml
+          flags: unittests
+          name: python-3.12
+          fail_ci_if_error: false
+          verbose: true
+
+      - name: 上传覆盖率报告工件
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: warn

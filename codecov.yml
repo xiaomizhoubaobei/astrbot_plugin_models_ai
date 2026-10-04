@@ -1,0 +1,45 @@
+# Codecov 配置：覆盖率报告口径与门禁策略
+# 说明：本项目覆盖率由 .github/workflows/coverage.yml 产出 coverage.xml 后上报，
+#       CNB 侧（.cnb.yml）另有 testing:coverage 徽章，两者互不影响。
+
+coverage:
+  precision: 2
+  round: down
+  range: "70...100"
+
+  status:
+    # 项目整体覆盖率：允许小幅波动，避免无关改动的 PR 被卡
+    project:
+      default:
+        target: auto
+        threshold: 1%
+        informational: true
+    # 本次变更的增量覆盖率：新增代码应当带测试
+    patch:
+      default:
+        target: auto
+        threshold: 5%
+        informational: true
+
+# 覆盖率构成（供 Codecov 页面展开查看）
+flags:
+  unittests:
+    paths:
+      - commands/
+      - core/
+      - gitee/
+      - qianwen/
+      - llm_tools/
+      - main.py
+    carryforward: true
+
+# 忽略非业务代码，避免拉低口径
+ignore:
+  - "tests/"
+  - "docs/"
+  - "install_gpg_keys.sh"
+
+comment:
+  layout: "reach, diff, flags, files"
+  behavior: default
+  require_changes: false

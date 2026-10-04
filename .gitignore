@@ -41,15 +41,13 @@ Thumbs.db
 .pytest_cache/
 tests/__pycache__/
 
-# 覆盖率报告（coverage 生成，由 CI 解析上报，不入库）
+# 覆盖率报告（coverage 生成，由 CNB 与 GitHub 两侧 CI 解析上报，不入库）
 .coverage
+.coverage.*
 coverage.lcov
 coverage.json
+coverage.xml
 lcov.info
 
 # 运行时数据（AstrBot 本地配置/缓存）
 data/
-
-# 覆盖率报告（覆盖率测试作业产物）
-.coverage
-coverage.lcov

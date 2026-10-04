@@ -1,6 +1,7 @@
 # AstrBot AI 图像生成插件
 
 [![GitHub Repo stars](https://img.shields.io/github/stars/xiaomizhoubaobei/astrbot_plugin_models_ai)](https://github.com/xiaomizhoubaobei/astrbot_plugin_models_ai)
+[![codecov](https://codecov.io/gh/xiaomizhoubaobei/astrbot_plugin_models_ai/graph/badge.svg)](https://codecov.io/gh/xiaomizhoubaobei/astrbot_plugin_models_ai)
 [![GitHub forks](https://img.shields.io/github/forks/xiaomizhoubaobei/astrbot_plugin_models_ai)](https://github.com/xiaomizhoubaobei/astrbot_plugin_models_ai)
 [![GitHub watchers](https://img.shields.io/github/watchers/xiaomizhoubaobei/astrbot_plugin_models_ai)](https://github.com/xiaomizhoubaobei/astrbot_plugin_models_ai)
 [![GitHub issues](https://img.shields.io/github/issues/xiaomizhoubaobei/astrbot_plugin_models_ai)](https://github.com/xiaomizhoubaobei/astrbot_plugin_models_ai/issues)
@@ -15,7 +16,7 @@
 ![Repo Size](https://img.shields.io/github/repo-size/xiaomizhoubaobei/astrbot_plugin_models_ai.svg)
 
 
-> **当前版本**: v0.0.5
+> **当前版本**: v0.0.7
 
 本插件为 AstrBot 接入多家模型服务提供商AI的图像生成能力，支持通过自然语言或指令调用，支持多 Key 轮询。
 
@@ -60,6 +61,7 @@
 ### 项目信息
 
 
+- 📊 [覆盖率报告](https://codecov.io/gh/xiaomizhoubaobei/astrbot_plugin_models_ai) - 单元测试覆盖率（Codecov）
 - 🤝 [贡献指南](CONTRIBUTING.md) - 如何参与项目贡献
 - 📜 [行为准则](CODE_OF_CONDUCT.md) - 社区行为准则
 
