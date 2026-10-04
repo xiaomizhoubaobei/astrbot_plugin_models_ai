@@ -179,9 +179,13 @@ def test_localhost_file_uri_is_normalized():  # DevSkim: ignore DS162092
     from astrbot_plugin_models_ai.core.command_utils import _file_uri_to_path
 
     # 断言字面量里的 host 同样是 file URI 字段，非调试地址
-    assert _file_uri_to_path("file://localhost/tmp/a.png") == "/tmp/a.png"  # DevSkim: ignore DS162092
+    assert (
+        _file_uri_to_path("file://localhost/tmp/a.png") == "/tmp/a.png"
+    )  # DevSkim: ignore DS162092
     # 大小写不敏感，且抑制分支不得把 netloc 拼进路径
-    assert _file_uri_to_path("file://LOCALHOST/tmp/b.png") == "/tmp/b.png"  # DevSkim: ignore DS162092
+    assert (
+        _file_uri_to_path("file://LOCALHOST/tmp/b.png") == "/tmp/b.png"
+    )  # DevSkim: ignore DS162092
 
 
 def test_real_host_file_uri_keeps_unc_prefix():
