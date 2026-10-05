@@ -36,7 +36,7 @@ jobs:
       - name: '检出仓库'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: '依赖项审查'
-        uses: actions/dependency-review-action@05fe4576374b728f0c523d6a13d64c25081e0803 # v4.8.3
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         # 常用的启用选项，有关所有可用选项，请参阅 `https://github.com/actions/dependency-review-action#configuration-options`
         with:
           comment-summary-in-pr: always

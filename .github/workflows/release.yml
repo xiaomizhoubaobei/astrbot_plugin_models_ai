@@ -244,7 +244,7 @@ jobs:
 
       # 10. 创建 GitHub Release
       - name: 创建 GitHub Release
-        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
+        uses: softprops/action-gh-release@e598afbe1493e6b1bafb1f389cabb956eab91231 # v3.0.3
         with:
           tag_name: ${{ steps.get_info.outputs.tag_name }}
           name: Release ${{ steps.get_info.outputs.version }}
