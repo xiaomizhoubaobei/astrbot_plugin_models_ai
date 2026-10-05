@@ -38,7 +38,7 @@ jobs:
           sarif_file: tfsec.sarif
 
       - name: 上传 SARIF 文件
-        uses: github/codeql-action/upload-sarif@45580472a5bb82c4681c4ac726cfdb60060c2ee1 # v3.32.4
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           # 仓库根目录下 SARIF 文件的路径
           sarif_file: tfsec.sarif
