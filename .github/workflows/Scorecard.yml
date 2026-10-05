@@ -18,8 +18,11 @@ on:
   workflow_dispatch:
 
 # 声明默认权限为只读。
+# 注意：Scorecard action 有「工作流限制」，要求顶层权限保持只读，
+# 尤其 id-token 必须在 job 级声明；顶层若出现 id-token: write 会被其
+# 工作流校验直接拒绝（400 workflow verification failed），导致分析失败。
+# 因此这里顶层不声明 id-token，改为在 analysis 作业级按需授予。
 permissions:
-  id-token: write
   actions: read
   contents: read
 
