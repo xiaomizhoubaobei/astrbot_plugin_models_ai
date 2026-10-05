@@ -18,7 +18,10 @@ on:
   workflow_dispatch:
 
 # 声明默认权限为只读。
-permissions: read-all
+permissions:
+  id-token: write
+  actions: read
+  contents: read
 
 jobs:
   analysis:
@@ -38,6 +41,8 @@ jobs:
       security-events: write
       # 发布结果并获取徽章需要（请参阅下面的 publish_results）。
       id-token: write
+      actions: read
+      contents: read
 
     steps:
       - name: 加固运行器（审计所有出站调用）

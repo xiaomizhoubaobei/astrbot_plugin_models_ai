@@ -10,6 +10,12 @@ on:
       - "**/*.py"
   workflow_dispatch:
 
+# 声明最小权限（保留只读，并补齐三项统一权限）。
+permissions:
+  id-token: write
+  actions: read
+  contents: read
+
 jobs:
   Inclusiveness-Analyser-scan:
     runs-on: ubuntu-latest

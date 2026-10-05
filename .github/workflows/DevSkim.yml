@@ -18,6 +18,8 @@ on:
 permissions:
   contents: read
   security-events: write
+  id-token: write
+  actions: read
 
 jobs:
   scan:
@@ -31,6 +33,7 @@ jobs:
       actions: read
       contents: read
       security-events: write
+      id-token: write
 
     steps:
       - name: 加固运行器（审计所有出站调用）

@@ -18,6 +18,8 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+  actions: read
 
 jobs:
   OSSAR-Scan:
@@ -27,6 +29,7 @@ jobs:
       contents: read  # 用于 actions/checkout 获取代码
       security-events: write  # 用于 github/codeql-action/upload-sarif 上传 SARIF 结果
       actions: read  # 仅私有仓库需要，用于 github/codeql-action/upload-sarif 获取 Action 运行状态
+      id-token: write
     runs-on: windows-latest
 
     steps:

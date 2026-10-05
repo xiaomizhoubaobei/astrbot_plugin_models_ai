@@ -11,6 +11,8 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+  actions: read
 
 jobs:
   stale:
@@ -19,6 +21,9 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
+      id-token: write
+      actions: read
+      contents: read
 
     steps:
       - name: Harden the runner (Audit all outbound calls)

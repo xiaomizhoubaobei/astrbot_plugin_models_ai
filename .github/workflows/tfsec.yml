@@ -11,6 +11,8 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+  actions: read
 
 jobs:
   tfsec:
@@ -20,6 +22,7 @@ jobs:
       actions: read
       contents: read
       security-events: write
+      id-token: write
 
     steps:
       - name: 加固运行器（审计所有出站调用）
