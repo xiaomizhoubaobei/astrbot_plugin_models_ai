@@ -67,10 +67,9 @@
 
 ### 覆盖率徽章
 
-覆盖率由两条**互不干扰**的链路产出，各产各的徽章：
+覆盖率统一由 **GitHub 侧**的 `.github/workflows/coverage.yml` 统计并上报 Codecov，徽章即本文顶部那枚。
 
-- **CNB 侧**：由 `.cnb.yml` 的覆盖率作业 + `testing:coverage` 上报，展示在 CNB 平台。
-- **GitHub 侧**：由 `.github/workflows/coverage.yml` 统计并上报 Codecov，徽章即本文顶部那枚。
+> CNB 侧原有的覆盖率上报（`testing:coverage`）已移除，徽章不再在 CNB 平台展示。
 
 > **令牌前提**：Codecov 上传需要 `CODECOV_TOKEN`，请在 GitHub 仓库的
 > `Settings → Secrets and variables → Actions` 中新增同名 Secret；未配置时

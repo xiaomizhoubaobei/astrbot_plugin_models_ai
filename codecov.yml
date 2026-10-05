@@ -1,6 +1,6 @@
 # Codecov 配置：覆盖率报告口径与门禁策略
 # 说明：本项目覆盖率由 .github/workflows/coverage.yml 产出 coverage.xml 后上报，
-#       CNB 侧（.cnb.yml）另有 testing:coverage 徽章，两者互不影响。
+#       CNB 侧的测试与覆盖率上报（testing:coverage）已移除，Codecov 为唯一覆盖率来源。
 
 coverage:
   precision: 2

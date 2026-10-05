@@ -52,67 +52,10 @@ $:
                   - git clone https://github.com/AstrBotDevs/AstrBot.git
 
 main:
-      # PR 阶段：仅跑覆盖率测试（无任何写凭证导入），供评审与覆盖率上报。
-      pull_request:
-        - name: 覆盖率测试
-          docker:
-            image: docker.cnb.cool/xmzzuzhi/cnb-docker/python:0.0.1
-          runner:
-            cpus: 2
-          stages:
-            - name: 安装依赖并统计覆盖率
-              script:
-                # 覆盖率报告的 SF 路径必须是「绝对路径」，否则 testing:coverage
-                # 无法与工作区文件匹配，会算出 0/0 NA 并使徽章显示 unknown。
-                # coverage 的 lcov 输出以「当前工作目录」为基准做相对化：
-                # 若在 /workspace 下执行，SF 会退化成 ``commands/xxx.py`` 这类
-                # 相对路径；改为在 /tmp 下执行、``--source`` 传绝对路径后，
-                # coverage 的相对基点不在源码树内，SF 保持 ``/workspace/xxx.py``。
-                - ln -sfn /workspace /tmp/astrbot_plugin_models_ai
-                - pip install --no-cache-dir -q -r requirements.txt
-                - pip install --no-cache-dir -q pytest coverage
-                - cd /tmp && PYTHONPATH=/tmp coverage run --source=/workspace -m pytest /workspace/tests/ -q
-                - coverage report -m
-                - coverage lcov -o /workspace/coverage.lcov
-            - name: 覆盖率上报
-              type: testing:coverage
-              options:
-                pattern: coverage.lcov
-                allowExts: .py
-                breakIfNoCoverage: true
+      # 注意：本仓库已移除 CNB 侧的覆盖率上报（原「覆盖率测试 + testing:coverage」作业）。
+      # 单元测试覆盖率现统一由 GitHub 侧 .github/workflows/coverage.yml 产出并上报 Codecov，
+      # 徽章见 README 顶部。CNB 侧仅保留「同步到 GitHub」作业。
       push:
-        # 覆盖率测试作业（安全隔离）。
-        # 安全约束：本作业运行仓库自带的测试代码（tests/ 等），属于"不可信代码"，
-        # 因此**严禁**在本作业中 import 任何携带 GitHub 写入令牌的密钥仓库
-        # （如 Github.yml / GIT_ACCESS_TOKEN / GIT_USERNAME / GIT_EMAIL）。
-        # 令牌只保留给下方独立的"同步到GitHub"作业使用，两者物理隔离，
-        # 避免测试代码读取环境变量后外传凭证。
-        - name: 覆盖率测试
-          docker:
-            image: docker.cnb.cool/xmzzuzhi/cnb-docker/python:0.0.1
-          runner:
-            cpus: 2
-          stages:
-            - name: 安装依赖并统计覆盖率
-              script:
-                # 插件源码以仓库根目录为包根（astrbot_plugin_models_ai），
-                # 借助父目录同名符号链接使 import astrbot_plugin_models_ai 生效
-                - ln -sfn /workspace /tmp/astrbot_plugin_models_ai
-                - pip install --no-cache-dir -q -r requirements.txt
-                - pip install --no-cache-dir -q pytest coverage
-                # LCOV 的 SF 必须为绝对路径（/workspace/xxx.py），testing:coverage
-                # 才能匹配到工作区文件；若 cwd 在源码树内会被相对化导致 0/0 NA。
-                # 因此切到 /tmp 执行、--source 传绝对路径，报告仍落回 /workspace。
-                - cd /tmp && PYTHONPATH=/tmp coverage run --source=/workspace -m pytest /workspace/tests/ -q
-                - coverage report -m
-                # 生成 LCOV 报告，供后续 testing:coverage 步骤解析上报徽章
-                - coverage lcov -o /workspace/coverage.lcov
-            - name: 覆盖率上报
-              type: testing:coverage
-              options:
-                pattern: coverage.lcov
-                allowExts: .py
-                breakIfNoCoverage: true
         - services:
             - docker
           imports:

@@ -812,22 +812,19 @@ pre-commit run --all-files
 
 `.cnb.yml`：CNB 流水线在 `main` 分支 push 时同步代码到 GitHub 上游仓库。
 
-#### 10.8.1 覆盖率链路（CNB 徽章 + Codecov 徽章，双端并行）
+#### 10.8.1 覆盖率链路（Codecov 单一来源）
 
-覆盖率有**两条互不干扰**的上报链路，各产各的徽章，不要互相替换：
+覆盖率上报**只有一条链路**：GitHub 侧的 `.github/workflows/coverage.yml` + `codecov.yml`，在 GitHub `push`(main) / `pull_request` 时产出 `coverage.xml` 并上报 Codecov，徽章展示在 README 顶部。
 
-| 链路 | 配置文件 | 触发时机 | 产物 / 展示 |
-| --- | --- | --- | --- |
-| CNB 侧 | `.cnb.yml` 的「覆盖率测试」作业 + `testing:coverage` stage | CNB `pull_request` / `push` | CNB 平台覆盖率徽章 |
-| GitHub 侧 | `.github/workflows/coverage.yml` + `codecov.yml` | GitHub `push`(main) / `pull_request` | Codecov 徽章（README 顶部） |
+> **CNB 侧（`.cnb.yml`）原有的「覆盖率测试 + `testing:coverage`」作业已移除**，CNB 平台不再产出覆盖率徽章，`.cnb.yml` 仅保留「同步到 GitHub」作业。新增/修改覆盖率链路时**不要**再往 CNB 侧加回上报，统一走 Codecov。
 
 **GitHub 侧关键约定（改动前务必先读这条，否则徽章会显示 unknown）：**
 
 - 覆盖率必须用**包名**计数：`python -m coverage run --source=astrbot_plugin_models_ai -m pytest tests -q`。
   - 仓库目录名不等于包名，靠 `ln -sfn "$GITHUB_WORKSPACE" "$RUNNER_TEMP/astrbot_plugin_models_ai"` 铺出可导入的包视图（与 `tests/_coverage_support.py` 的垫片同源）。
-  - **不要**照搬 CNB 侧「绝对路径 `--source=/workspace`」的写法：那是为了迁就 `testing:coverage` 的匹配规则；Codecov 侧用绝对路径会写出 `/home/runner/work/...`，固定路径映射后匹配不到文件，覆盖率恒为 0。
+  - **不要**改用「绝对路径 `--source=/workspace`」的写法：Codecov 侧用绝对路径会写出 `/home/runner/work/...`，固定路径映射后匹配不到文件，覆盖率恒为 0。
 - 报告格式固定为 `coverage.xml`（`coverage xml`），`codecov.yml` 中的 `flags.unittests.paths` 与之一致。
-- **`CODECOV_TOKEN` 只能来自密钥注入**：GitHub 侧读仓库 Secret `secrets.CODECOV_TOKEN`；CNB 侧可选从密钥仓库 `imports` 注入同名变量。**严禁**写进代码、`.cnb.yml`、文档或评论。
+- **`CODECOV_TOKEN` 只能来自密钥注入**：读取仓库 Secret `secrets.CODECOV_TOKEN`。**严禁**写进代码、`.cnb.yml`、文档或评论。
 - 未配置 token 时上报步骤 `continue-on-error` 跳过，CI **不失败**（仅留存 `coverage-xml` 工件），属预期行为。
 - **令牌口径以 Codecov 官方规则为准，本仓库固定「显式携带 `secrets.CODECOV_TOKEN`」**（依据 Codecov 官方 *When do I need a token?* 一节）：
   - **私有仓库**：**所有**上传都必须携带令牌。
@@ -851,7 +848,7 @@ pre-commit run --all-files
 6. **提交前**：运行 `pre-commit run --all-files`，确认 black/flake8/mypy 通过。
 7. **提交信息**：使用 Conventional Commits 中文描述。
 8. **不要把密钥写进代码或文档**；API Key 与 `CODECOV_TOKEN` 一律通过配置 / 密钥注入。
-9. **改覆盖率链路**：CNB（`.cnb.yml`）与 GitHub（`.github/workflows/coverage.yml`）两侧口径独立，修改任一侧都先读 10.8.1，确认 `--source` 写法与报告格式未被破坏。
+9. **改覆盖率链路**：覆盖率统一由 `.github/workflows/coverage.yml` 上报 Codecov，CNB 侧上报已移除；改动前先读 10.8.1，确认 `--source` 写法与报告格式未被破坏。
 
 ---
 
