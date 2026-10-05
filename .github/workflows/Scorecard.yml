@@ -18,10 +18,14 @@ on:
   workflow_dispatch:
 
 # 声明默认权限为只读。
-permissions:
-  id-token: write
-  actions: read
-  contents: read
+# 注意：此处必须是「只读」的工作流级权限，不能写成 `id-token: write`。
+# Scorecard 在 publish_results: true 时由 OSSF 发布 API 校验工作流形态，
+# 明确禁止「工作流级 write 权限」，并要求 `id-token: write` 只出现在
+# 运行 ossf/scorecard-action 的那个 job 上（见 scorecard-action 文档
+# Workflow Restrictions）。此前把它提到工作流级后，OSSF API 拒绝了结果发布，
+# 导致「运行分析」步骤直接失败；故恢复为官方模板的 read-all 写法，
+# 写权限一律下沉到下方 job 级 permissions。
+permissions: read-all
 
 jobs:
   analysis:
