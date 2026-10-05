@@ -36,10 +36,24 @@ jobs:
       id-token: write
 
     steps:
-      - name: 加固运行器（审计所有出站调用）
+      - name: 加固运行器（阻断模式下仅放行必要出站）
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
-          egress-policy: audit
+          # 白名单依据 DevSkim 工作流历史运行（最近 50 次、156 个 job）中
+          # harden-runner 审计到的全部出站域名归纳而成，逐条来源见 PR 说明。
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            objects.githubusercontent.com:443
+            results-receiver.actions.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            uploads.github.com:443
+            pypi.org:443
+            files.pythonhosted.org:443
+            *.blob.core.windows.net:443
+            *.githubapp.com:443
+            *.actions.githubusercontent.com:443
       - name: 检出仓库
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
