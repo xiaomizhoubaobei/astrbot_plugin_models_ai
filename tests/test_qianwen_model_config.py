@@ -117,6 +117,7 @@ def test_is_supported_model() -> None:
     """只把能力表里登记过的模型判为支持."""
     assert mc.is_supported_model("z-image-turbo") is True
     assert mc.is_supported_model("wan2.6-t2i") is True
+    assert mc.is_supported_model("qwen-image-3.0-pro") is True
     assert mc.is_supported_model("flux-schnell") is False
 
 
@@ -133,6 +134,14 @@ def test_list_supported_models_contains_known_names() -> None:
     """列表应覆盖文档列出的全部模型，且顺序稳定可复现."""
     models = mc.list_supported_models()
     for expect in [
+        "qwen-image-3.0-pro",
+        "qwen-image-3.0",
+        "qwen-image-2.1-pro",
+        "qwen-image-2.0-pro",
+        "qwen-image-2.0",
+        "qwen-image-max",
+        "qwen-image-plus",
+        "qwen-image",
         "z-image-turbo",
         "wan2.6-t2i",
         "wan2.5-t2i-preview",
@@ -147,8 +156,54 @@ def test_list_supported_models_contains_known_names() -> None:
 
 
 def test_new_models_use_multimodal_endpoint() -> None:
-    """万相 2.6 与 z-image 走 messages 端点，旧模型走 prompt 端点."""
+    """Qwen-Image / 万相 2.6 / z-image 走 messages 端点，旧模型走 prompt 端点."""
+    for name in ("qwen-image-3.0-pro", "qwen-image-2.0", "qwen-image"):
+        assert mc.get_model_spec(name).endpoint == mc.ENDPOINT_MULTIMODAL, name
+        assert mc.get_model_spec(name).response_format == "choices", name
     assert mc.get_model_spec("wan2.6-t2i").endpoint == mc.ENDPOINT_MULTIMODAL
     assert mc.get_model_spec("wan2.6-t2i").response_format == "choices"
     assert mc.get_model_spec("wan2.5-t2i-preview").endpoint == mc.ENDPOINT_TEXT2IMAGE
     assert mc.get_model_spec("wan2.5-t2i-preview").response_format == "results"
+
+
+def test_qwen_image_range_models_support_sync_and_size() -> None:
+    """Qwen-Image 范围型（3.0 / 2.1-pro / 2.0 / 基础版）应同步、512~2048、支持双参数."""
+    for name in (
+        "qwen-image-3.0-pro",
+        "qwen-image-3.0",
+        "qwen-image-2.1-pro",
+        "qwen-image-2.0-pro",
+        "qwen-image-2.0",
+        "qwen-image",
+    ):
+        spec = mc.get_model_spec(name)
+        assert spec.call_mode == "sync", name
+        assert spec.endpoint == mc.ENDPOINT_MULTIMODAL, name
+        assert spec.response_format == "choices", name
+        assert spec.min_side == 512 and spec.max_side == 2048, name
+        assert spec.supports_negative_prompt is True, name
+        assert spec.supports_prompt_extend is True, name
+        assert spec.supports_size("512*512") is True, name
+        assert spec.supports_size("2048*2048") is True, name
+        assert spec.supports_size("256*256") is False, name
+        assert spec.supports_size("4096*4096") is False, name
+
+
+def test_qwen_image_max_plus_use_fixed_sizes() -> None:
+    """max / plus 仅接受固定预设分辨率，越界一律降级为 16:9 默认档."""
+    for name in ("qwen-image-max", "qwen-image-plus"):
+        spec = mc.get_model_spec(name)
+        assert spec.call_mode == "sync", name
+        assert spec.fixed_sizes is not None, name
+        for preset in (
+            "1664*928",
+            "1472*1104",
+            "1328*1328",
+            "1104*1472",
+            "928*1664",
+        ):
+            assert spec.supports_size(preset) is True, (name, preset)
+        # 范围内但不在固定档 -> 否，并降级为默认 1664*928
+        assert spec.supports_size("1024*1024") is False, name
+        assert spec.resolve_size("1024*1024") == "1664*928", name
+        assert spec.default_size == "1664*928", name

@@ -12,6 +12,10 @@
   https://platform.qianwenai.com/docs/api-reference/image-generation/wan-text-to-image-v2/synchronous
 - Z-Image（轻量快速图像生成）：
   https://platform.qianwenai.com/docs/api-reference/image-generation/z-image
+- 文生图总览（Qwen-Image / Wan 的端点、参数与尺寸口径）：
+  https://platform.qianwenai.com/docs/developer-guides/image-generation/text-to-image
+- Qwen-Image 同步调用（multimodal-generation 端点 + choices 结果格式）：
+  https://platform.qianwenai.com/docs/api-reference/image-generation/qwen-text-to-image
 
 接口形态上有两个易错点，本表用 ``endpoint`` 与 ``response_format`` 显式区分：
 
@@ -120,6 +124,116 @@ class QianwenModelSpec:
 
 # 各模型能力表：字段口径来自官方文档的「支持的模型 / 参数说明」章节
 QIANWEN_MODEL_SPECS: dict[str, QianwenModelSpec] = {
+    # ===== Qwen-Image：同步调用，messages 传参，choices 结果格式 =====
+    # 官方口径（文生图总览 → 设置输出图像分辨率 / 设置生成图片数量）：
+    # - 3.0 系列与 2.1-pro：自定义 512*512 ~ 2048*2048，默认由模型按提示词推荐，
+    #   宽高比 1:8 ~ 8:1，n 上限 6，支持 negative_prompt / prompt_extend
+    # - 2.0 系列：同为 512*512 ~ 2048*2048，默认 2048*2048(1:1)，n 上限 6
+    # - max / plus：仅接受固定预设分辨率，n 仅支持 1
+    # 注意：Qwen-Image 无独立「默认尺寸」概念（由模型推荐），这里取 2K 方图为默认值。
+    "qwen-image-3.0-pro": QianwenModelSpec(
+        endpoint=ENDPOINT_MULTIMODAL,
+        call_mode="sync",
+        response_format="choices",
+        default_size="2048*2048",
+        min_side=512,
+        max_side=2048,
+        supports_negative_prompt=True,
+        supports_prompt_extend=True,
+        max_prompt_length=2000,
+    ),
+    "qwen-image-3.0": QianwenModelSpec(
+        endpoint=ENDPOINT_MULTIMODAL,
+        call_mode="sync",
+        response_format="choices",
+        default_size="2048*2048",
+        min_side=512,
+        max_side=2048,
+        supports_negative_prompt=True,
+        supports_prompt_extend=True,
+        max_prompt_length=2000,
+    ),
+    "qwen-image-2.1-pro": QianwenModelSpec(
+        endpoint=ENDPOINT_MULTIMODAL,
+        call_mode="sync",
+        response_format="choices",
+        default_size="2048*2048",
+        min_side=512,
+        max_side=2048,
+        supports_negative_prompt=True,
+        supports_prompt_extend=True,
+        max_prompt_length=2000,
+    ),
+    "qwen-image-2.0-pro": QianwenModelSpec(
+        endpoint=ENDPOINT_MULTIMODAL,
+        call_mode="sync",
+        response_format="choices",
+        default_size="2048*2048",
+        min_side=512,
+        max_side=2048,
+        supports_negative_prompt=True,
+        supports_prompt_extend=True,
+        max_prompt_length=2000,
+    ),
+    "qwen-image-2.0": QianwenModelSpec(
+        endpoint=ENDPOINT_MULTIMODAL,
+        call_mode="sync",
+        response_format="choices",
+        default_size="2048*2048",
+        min_side=512,
+        max_side=2048,
+        supports_negative_prompt=True,
+        supports_prompt_extend=True,
+        max_prompt_length=2000,
+    ),
+    # max / plus：仅支持固定预设分辨率，尺寸越界一律降级为 16:9 默认档
+    "qwen-image-max": QianwenModelSpec(
+        endpoint=ENDPOINT_MULTIMODAL,
+        call_mode="sync",
+        response_format="choices",
+        default_size="1664*928",
+        min_side=0,
+        max_side=0,
+        supports_negative_prompt=True,
+        supports_prompt_extend=True,
+        fixed_sizes=(
+            "1664*928",
+            "1472*1104",
+            "1328*1328",
+            "1104*1472",
+            "928*1664",
+        ),
+        max_prompt_length=2000,
+    ),
+    "qwen-image-plus": QianwenModelSpec(
+        endpoint=ENDPOINT_MULTIMODAL,
+        call_mode="sync",
+        response_format="choices",
+        default_size="1664*928",
+        min_side=0,
+        max_side=0,
+        supports_negative_prompt=True,
+        supports_prompt_extend=True,
+        fixed_sizes=(
+            "1664*928",
+            "1472*1104",
+            "1328*1328",
+            "1104*1472",
+            "928*1664",
+        ),
+        max_prompt_length=2000,
+    ),
+    "qwen-image": QianwenModelSpec(
+        endpoint=ENDPOINT_MULTIMODAL,
+        call_mode="sync",
+        response_format="choices",
+        default_size="2048*2048",
+        min_side=512,
+        max_side=2048,
+        supports_negative_prompt=True,
+        supports_prompt_extend=True,
+        max_prompt_length=2000,
+    ),
     # ===== Z-Image：轻量快速，同步调用，messages 传参 =====
     # 文档：分辨率范围 512x512 ~ 2048x2048，推荐 1024x1024 ~ 1536x1536，提示词上限 800
     "z-image-turbo": QianwenModelSpec(

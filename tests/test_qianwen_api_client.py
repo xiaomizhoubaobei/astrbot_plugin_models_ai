@@ -165,6 +165,80 @@ def test_build_parameters_respects_model_capabilities() -> None:
     assert params2["prompt_extend"] is True
 
 
+def test_qwen_image_payload_matches_official_shape() -> None:
+    """Qwen-Image 的请求体应与官方 cURL 一致：messages 传参 + choices 结果 + 双参数."""
+    c = _make_client(
+        model="qwen-image-3.0-pro", negative_prompt="低质量", prompt_extend=True
+    )
+    spec = ac.get_model_spec("qwen-image-3.0-pro")
+
+    # 提示词走 input.messages，而非旧端点的 input.prompt
+    payload_input = c._build_input("画一幅海报", spec)
+    assert payload_input["messages"][0]["role"] == "user"
+    assert payload_input["messages"][0]["content"][0]["text"] == "画一幅海报"
+    assert "prompt" not in payload_input
+
+    # parameters 带 size / n / negative_prompt / prompt_extend
+    params = c._build_parameters("2048*2048", spec)
+    assert params["size"] == "2048*2048"
+    assert params["n"] == 1
+    assert params["negative_prompt"] == "低质量"
+    assert params["prompt_extend"] is True
+
+    # 完整请求体结构
+    payload = c._build_payload("画一幅海报", "2048*2048", spec)
+    assert payload["model"] == "qwen-image-3.0-pro"
+    assert "input" in payload and "parameters" in payload
+
+
+def test_qwen_image_extract_choices_format() -> None:
+    """Qwen-Image 结果位于 output.choices[].message.content[].image."""
+    c = _make_client(model="qwen-image-3.0-pro")
+    spec = ac.get_model_spec("qwen-image-3.0-pro")
+    data = {
+        "output": {
+            "choices": [
+                {
+                    "message": {"content": [{"image": "https://cdn/qwen.png"}]},
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+    }
+    assert c._extract_image_url(data, spec) == "https://cdn/qwen.png"
+
+
+def test_qwen_image_sync_generate_success(monkeypatch) -> None:
+    """Qwen-Image 走同步链路：一次 POST 即返回图片并落盘."""
+    body = json.dumps(
+        {
+            "output": {
+                "choices": [
+                    {"message": {"content": [{"image": "https://cdn/qwen.png"}]}}
+                ]
+            },
+            "request_id": "req-qwen",
+        }
+    )
+    session = FakeSession(FakeResponse(body=body, status=200))
+    c = _make_client(model="qwen-image-3.0-pro")
+
+    async def _fake_session():
+        return session
+
+    async def _fake_download(url, sess):
+        assert url == "https://cdn/qwen.png"
+        return "/tmp/qwen.png"
+
+    monkeypatch.setattr(c.client_manager, "get_http_session", _fake_session)
+    monkeypatch.setattr(c, "_download", _fake_download)
+
+    result = run(c.generate_image("画一只猫", "1024*1024"))
+    assert result == "/tmp/qwen.png"
+    # 同步链路不带 X-DashScope-Async 头
+    assert "X-DashScope-Async" not in session.posts[0]["headers"]
+
+
 def test_build_parameters_skips_empty_negative_prompt() -> None:
     """negative_prompt 为空时即使模型支持也不下发."""
     c = _make_client(negative_prompt="")

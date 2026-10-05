@@ -7,7 +7,7 @@
 | provider | 平台 | 当前支持能力 |
 | --- | --- | --- |
 | `gitee`（默认） | Gitee AI | 文生图、图生图、风格转换、AI 图片编辑、模型列表查询 |
-| `qianwen` | 千问云（platform.qianwenai.com） | 文生图（万相 / Z-Image 系列）；图片编辑与图生图暂不支持 |
+| `qianwen` | 千问云（platform.qianwenai.com） | 文生图（Qwen-Image / 万相 / Z-Image 系列）；图片编辑与图生图暂不支持 |
 
 ## 配置项
 
@@ -25,6 +25,11 @@
 
 | 模型 | 端点 | 提示词传参 | 调用方式 | 提示词上限 |
 | --- | --- | --- | --- | --- |
+| `qwen-image-3.0-pro` / `qwen-image-3.0` | `multimodal-generation` | `messages` | 同步 | 2,000 |
+| `qwen-image-2.1-pro` | `multimodal-generation` | `messages` | 同步 | 2,000 |
+| `qwen-image-2.0-pro` / `qwen-image-2.0` | `multimodal-generation` | `messages` | 同步 | 2,000 |
+| `qwen-image-max` / `qwen-image-plus` | `multimodal-generation` | `messages` | 同步 | 2,000 |
+| `qwen-image` | `multimodal-generation` | `messages` | 同步 | 2,000 |
 | `z-image-turbo` | `multimodal-generation` | `messages` | 同步 | 800 |
 | `wan2.6-t2i` | `multimodal-generation` | `messages` | 异步 | 2,100 |
 | `wan2.5-t2i-preview` | `text2image/image-synthesis` | `prompt` | 异步 | 2,000 |
@@ -34,16 +39,22 @@
 
 ### 分辨率与降级策略
 
-各模型可接受的分辨率范围不同（例如 `wan2.6-t2i` 要求 1280×1280 ~ 1440×1440，
-`z-image-turbo` 支持 512×512 ~ 2048×2048）。当你指定的比例映射出的尺寸超出
-当前模型范围时，插件会**自动降级为该模型的默认尺寸**，而不是让整次生图失败；
-提示词超长也会按模型上限自动截断。相关日志可在 `debug_mode` 开启后查看。
+各模型可接受的分辨率范围不同，插件按官方口径登记了每型能力：
+
+- **Qwen-Image 3.0 / 2.1-pro / 2.0 系列、`qwen-image`**：自定义 `512*512` ~ `2048*2048`，宽高比 1:8 ~ 8:1，默认取 2K 方图；
+- **`qwen-image-max` / `qwen-image-plus`**：仅接受固定预设（`1664*928` / `1472*1104` / `1328*1328` / `1104*1472` / `928*1664`），越界降级为 `1664*928`；
+- **`z-image-turbo`**：`512*512` ~ `2048*2048`；
+- **`wan2.6-t2i`**：`1280*1280` ~ `1440*1440`。
+
+当你指定的比例映射出的尺寸超出当前模型范围时，插件会**自动降级为该模型的默认尺寸**，
+而不是让整次生图失败；提示词超长也会按模型上限自动截断。相关日志可在 `debug_mode`
+开启后查看。
 
 ### 结果解析
 
 万相 2.6 与更早版本的成功响应字段不同：
 
-- `wan2.6-t2i` / `z-image-turbo`：`output.choices[].message.content[].image`
+- `qwen-image-*` / `wan2.6-t2i` / `z-image-turbo`：`output.choices[].message.content[].image`
 - `wan2.5` 及更早版本：`output.results[].url`
 
 插件会按型号优先解析对应格式，并在未命中时自动回退尝试另一种格式，

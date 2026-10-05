@@ -3,7 +3,7 @@
         "description": "服务商",
         "type": "string",
         "default": "gitee",
-        "hint": "可选 gitee(Gitee AI) 或 qianwen(千问云，含万相 wan2.x / z-image)。切换到 qianwen 后，生图命令与 LLM 生图工具统一调用千问云接口",
+        "hint": "可选 gitee(Gitee AI) 或 qianwen(千问云，含 Qwen-Image / 万相 wan2.x / z-image)。切换到 qianwen 后，生图命令与 LLM 生图工具统一调用千问云接口",
         "options": [
             "gitee",
             "qianwen"
@@ -40,7 +40,7 @@
         "description": "使用的模型名称",
         "type": "string",
         "default": "z-image-turbo",
-        "hint": "跨服务商共用。Gitee 例如 z-image-turbo；千问云例如 z-image-turbo、wan2.6-t2i、wan2.5-t2i-preview（填未登记的型号会自动回退为默认模型）"
+        "hint": "跨服务商共用。Gitee 例如 z-image-turbo；千问云例如 z-image-turbo、qwen-image-3.0-pro、qwen-image-2.0、qwen-image-max、wan2.6-t2i、wan2.5-t2i-preview（填未登记的型号会自动回退为默认模型）"
     },
     "size": {
         "description": "图片大小",

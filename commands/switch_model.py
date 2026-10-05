@@ -22,6 +22,7 @@ async def switch_model_command(
 
     用法: /ai-gitee switch-model <模型名称>
     示例: /ai-gitee switch-model z-image-turbo
+          /ai-gitee switch-model qwen-image-3.0-pro
           /ai-gitee switch-model wan2.6-t2i
 
     Args:
