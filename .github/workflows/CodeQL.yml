@@ -49,21 +49,14 @@ jobs:
             python-version: '3.13'
 
     steps:
-    - name: 加固运行器（阻断模式下仅放行必要出站）
+    - name: 加固运行器（审计所有出站调用）
+      # 观察模式：egress-policy 保持 audit，仅记录出网调用、不阻断构建。
+      # 曾短暂切换为 block + 白名单，因阻断模式下任何未覆盖端点都会直接
+      # 让步骤失败（如 setup-python 回退拉取 versions-manifest.json），
+      # 故按仓库统一策略回退为观察模式；后续如需收紧，先凭审计日志收敛白名单。
       uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
       with:
-        egress-policy: block
-        allowed-endpoints: >
-          api.github.com:443
-          raw.githubusercontent.com:443
-          github.com:443
-          objects.githubusercontent.com:443
-          results-receiver.actions.githubusercontent.com:443
-          release-assets.githubusercontent.com:443
-          uploads.github.com:443
-          *.blob.core.windows.net:443
-          *.githubapp.com:443
-          *.actions.githubusercontent.com:443
+        egress-policy: audit
 
     - name: 检出仓库
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
