@@ -807,10 +807,16 @@ pre-commit run --all-files
 | `inclusiveness-analyzer.yml` | 包容性分析 |
 | `stale.yml` | 陈旧 Issue / PR 自动化 |
 | `release.yml` | 发布流程 |
-| `ossar.yml` | OSSAR 开源静态分析 |
 | `coverage.yml` | 单元测试覆盖率统计并上报 Codecov（`main` push / PR） |
 
 `.cnb.yml`：CNB 流水线在 `main` 分支 push 时同步代码到 GitHub 上游仓库。
+
+> **OSSAR 工作流已移除（`ossar.yml`）**：上游 `github/ossar-action` 停更在 v2.0.0（2024-04），
+> 其 `action.yml` 固定为 `node20`、内置 `@actions/core@1.2.6` 仍使用已废弃的 `set-output` 命令，
+> 因此持续产生「Node.js 20 弃用」与「`set-output` 弃用」两条告警，且**上游无 Node 24 版本可升**。
+> 其能力（静态安全分析）已由 `CodeQL.yml`（Python 语义级分析，主运行器矩阵覆盖三平台三版本）、
+> `DevSkim.yml`（多版本源码模式扫描）与 `security-scan.yml`（Bandit）完整覆盖，
+> 故直接移除该工作流以根治告警，避免为消警而长期背负一个无人维护的 Action。
 
 #### 10.8.1 覆盖率链路（Codecov 单一来源）
 
