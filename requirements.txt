@@ -9,6 +9,6 @@ aiohttp>=3.14.3
 #       注意：openai>=3.19.2 已改依赖 httpx2（模块名 httpx2，非 httpx），
 #       不再传递引入 httpx；若依赖旧有的 openai->httpx 链路，
 #       干净环境（如 CI）会因缺 httpx 导致测试收集失败。
-httpx>=0.27
+httpx>=0.28.1
 openai>=3.19.2
 deprecated>=1.2.14
