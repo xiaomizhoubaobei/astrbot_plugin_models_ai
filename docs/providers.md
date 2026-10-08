@@ -28,8 +28,7 @@
 | `qwen-image-3.0-pro` / `qwen-image-3.0` | `multimodal-generation` | `messages` | 同步 | 2,000 |
 | `qwen-image-2.1-pro` | `multimodal-generation` | `messages` | 同步 | 2,000 |
 | `qwen-image-2.0-pro` / `qwen-image-2.0` | `multimodal-generation` | `messages` | 同步 | 2,000 |
-| `qwen-image-max` / `qwen-image-plus` | `multimodal-generation` | `messages` | 同步 | 2,000 |
-| `qwen-image` | `multimodal-generation` | `messages` | 同步 | 2,000 |
+| `qwen-image-max` / `qwen-image-plus` / `qwen-image` | `multimodal-generation` | `messages` | 同步 | 2,000 |
 | `z-image-turbo` | `multimodal-generation` | `messages` | 同步 | 800 |
 | `wan2.6-t2i` | `multimodal-generation` | `messages` | 异步 | 2,100 |
 | `wan2.5-t2i-preview` | `text2image/image-synthesis` | `prompt` | 异步 | 2,000 |
@@ -41,8 +40,9 @@
 
 各模型可接受的分辨率范围不同，插件按官方口径登记了每型能力：
 
-- **Qwen-Image 3.0 / 2.1-pro / 2.0 系列、`qwen-image`**：自定义 `512*512` ~ `2048*2048`，宽高比 1:8 ~ 8:1，默认取 2K 方图；
-- **`qwen-image-max` / `qwen-image-plus`**：仅接受固定预设（`1664*928` / `1472*1104` / `1328*1328` / `1104*1472` / `928*1664`），越界降级为 `1664*928`；
+- **Qwen-Image 3.0 / 2.1-pro / 2.0 系列**：自定义 `512*512` ~ `2048*2048`，宽高比 1:8 ~ 8:1，默认取 2K 方图；
+- **`qwen-image-max` / `qwen-image-plus` / `qwen-image`**：仅接受固定预设（`1664*928` / `1472*1104` / `1328*1328` / `1104*1472` / `928*1664`），越界降级为 `1664*928`；
+  官方图像模型表将基础版 `qwen-image` 与 max / plus 同列（最大分辨率 `1664×928`、最大输出数 1），故三者按同一档口径登记；
 - **`z-image-turbo`**：`512*512` ~ `2048*2048`；
 - **`wan2.6-t2i`**：`1280*1280` ~ `1440*1440`。
 

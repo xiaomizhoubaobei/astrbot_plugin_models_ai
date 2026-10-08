@@ -129,8 +129,9 @@ QIANWEN_MODEL_SPECS: dict[str, QianwenModelSpec] = {
     # - 3.0 系列与 2.1-pro：自定义 512*512 ~ 2048*2048，默认由模型按提示词推荐，
     #   宽高比 1:8 ~ 8:1，n 上限 6，支持 negative_prompt / prompt_extend
     # - 2.0 系列：同为 512*512 ~ 2048*2048，默认 2048*2048(1:1)，n 上限 6
-    # - max / plus：仅接受固定预设分辨率，n 仅支持 1
-    # 注意：Qwen-Image 无独立「默认尺寸」概念（由模型推荐），这里取 2K 方图为默认值。
+    # - max / plus / 基础版 qwen-image：仅接受固定预设分辨率（1664*928 等 5 档），
+    #   n 仅支持 1，默认 1664*928(16:9)（官方图像模型表：最大分辨率 1664×928、最大输出数 1）
+    # 注意：3.0 系列与 2.1-pro 无独立「默认尺寸」概念（由模型按提示词推荐），这里取 2K 方图为默认值。
     "qwen-image-3.0-pro": QianwenModelSpec(
         endpoint=ENDPOINT_MULTIMODAL,
         call_mode="sync",
@@ -223,15 +224,23 @@ QIANWEN_MODEL_SPECS: dict[str, QianwenModelSpec] = {
         ),
         max_prompt_length=2000,
     ),
+    # 基础版 qwen-image：与 max / plus 同档，仅支持固定预设分辨率，n 仅支持 1
     "qwen-image": QianwenModelSpec(
         endpoint=ENDPOINT_MULTIMODAL,
         call_mode="sync",
         response_format="choices",
-        default_size="2048*2048",
-        min_side=512,
-        max_side=2048,
+        default_size="1664*928",
+        min_side=0,
+        max_side=0,
         supports_negative_prompt=True,
         supports_prompt_extend=True,
+        fixed_sizes=(
+            "1664*928",
+            "1472*1104",
+            "1328*1328",
+            "1104*1472",
+            "928*1664",
+        ),
         max_prompt_length=2000,
     ),
     # ===== Z-Image：轻量快速，同步调用，messages 传参 =====

@@ -167,14 +167,13 @@ def test_new_models_use_multimodal_endpoint() -> None:
 
 
 def test_qwen_image_range_models_support_sync_and_size() -> None:
-    """Qwen-Image 范围型（3.0 / 2.1-pro / 2.0 / 基础版）应同步、512~2048、支持双参数."""
+    """Qwen-Image 范围型（3.0 / 2.1-pro / 2.0）应同步、512~2048、支持双参数."""
     for name in (
         "qwen-image-3.0-pro",
         "qwen-image-3.0",
         "qwen-image-2.1-pro",
         "qwen-image-2.0-pro",
         "qwen-image-2.0",
-        "qwen-image",
     ):
         spec = mc.get_model_spec(name)
         assert spec.call_mode == "sync", name
@@ -190,8 +189,12 @@ def test_qwen_image_range_models_support_sync_and_size() -> None:
 
 
 def test_qwen_image_max_plus_use_fixed_sizes() -> None:
-    """max / plus 仅接受固定预设分辨率，越界一律降级为 16:9 默认档."""
-    for name in ("qwen-image-max", "qwen-image-plus"):
+    """max / plus / 基础版 qwen-image 仅接受固定预设分辨率，越界一律降级为 16:9 默认档.
+
+    官方图像模型表将基础版 qwen-image 与 max / plus 同列（最大分辨率 1664×928、
+    最大输出数 1），故三者尺寸口径必须一致，不能登记为 512~2048 区间档。
+    """
+    for name in ("qwen-image-max", "qwen-image-plus", "qwen-image"):
         spec = mc.get_model_spec(name)
         assert spec.call_mode == "sync", name
         assert spec.fixed_sizes is not None, name
