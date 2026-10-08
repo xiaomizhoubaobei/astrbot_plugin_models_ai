@@ -23,18 +23,26 @@
 
 模型与端点的对应关系来自官方文档，**不同版本端点不同**，插件已按型号自动选择：
 
-| 模型 | 端点 | 提示词传参 | 调用方式 | 提示词上限 |
-| --- | --- | --- | --- | --- |
-| `qwen-image-3.0-pro` / `qwen-image-3.0` | `multimodal-generation` | `messages` | 同步 | 2,000 |
-| `qwen-image-2.1-pro` | `multimodal-generation` | `messages` | 同步 | 2,000 |
-| `qwen-image-2.0-pro` / `qwen-image-2.0` | `multimodal-generation` | `messages` | 同步 | 2,000 |
-| `qwen-image-max` / `qwen-image-plus` / `qwen-image` | `multimodal-generation` | `messages` | 同步 | 2,000 |
-| `z-image-turbo` | `multimodal-generation` | `messages` | 同步 | 800 |
-| `wan2.6-t2i` | `multimodal-generation` | `messages` | 异步 | 2,100 |
-| `wan2.5-t2i-preview` | `text2image/image-synthesis` | `prompt` | 异步 | 2,000 |
-| `wan2.2-t2i-plus` / `wan2.2-t2i-flash` | `text2image/image-synthesis` | `prompt` | 异步 | 500 |
-| `wan2.1-t2i-plus` / `wan2.1-t2i-turbo` | `text2image/image-synthesis` | `prompt` | 异步 | 500 |
-| `wanx2.0-t2i-turbo` | `text2image/image-synthesis` | `prompt` | 异步 | 800 |
+| 模型 | 端点 | 提示词传参 | 调用方式 | 提示词上限 | 上限计法 |
+| --- | --- | --- | --- | --- | --- |
+| `qwen-image-3.0-pro` / `qwen-image-3.0` | `multimodal-generation` | `messages` | 同步 | 2,000 | 字符 |
+| `qwen-image-2.1-pro` | `multimodal-generation` | `messages` | 同步 | 2,000 | 字符 |
+| `qwen-image-2.0-pro` / `qwen-image-2.0` | `multimodal-generation` | `messages` | 同步 | 2,000 | **token** |
+| `qwen-image-max` / `qwen-image-plus` / `qwen-image` | `multimodal-generation` | `messages` | 同步 | 2,000 | **token** |
+| `z-image-turbo` | `multimodal-generation` | `messages` | 同步 | 800 | **token** |
+| `wan2.6-t2i` | `multimodal-generation` | `messages` | 异步 | 2,100 | 字符 |
+| `wan2.5-t2i-preview` | `text2image/image-synthesis` | `prompt` | 异步 | 2,000 | 字符 |
+| `wan2.2-t2i-plus` / `wan2.2-t2i-flash` | `text2image/image-synthesis` | `prompt` | 异步 | 500 | 字符 |
+| `wan2.1-t2i-plus` / `wan2.1-t2i-turbo` | `text2image/image-synthesis` | `prompt` | 异步 | 500 | 字符 |
+| `wanx2.0-t2i-turbo` | `text2image/image-synthesis` | `prompt` | 异步 | 800 | 字符 |
+
+> **提示词上限不是「一个 2,000 套所有模型」**：官方对两代模型分两种口径——
+> 3.0 系列 / 2.1-pro 与万相系列按**字符**计（`len()` 直接数），
+> 2.0 系列 / max / plus / 基础版 / z-image 按 **token** 计（中文约 1 字 1 token，西文约 4 字 1 token）。
+> 若统一按字符卡 token 口径的模型，会误截掉本来合法的长英文提示词；
+> 反之则会放行超限请求、由上游返回 400。
+> 插件用 `prompt_limit_mode` 逐模型声明计法，token 口径下按保守估算截断
+> （CJK 1 字/token，其余 4 字符/token 向上取整，宁少勿多）。
 
 ### 分辨率与降级策略
 
@@ -47,8 +55,8 @@
 - **`wan2.6-t2i`**：`1280*1280` ~ `1440*1440`。
 
 当你指定的比例映射出的尺寸超出当前模型范围时，插件会**自动降级为该模型的默认尺寸**，
-而不是让整次生图失败；提示词超长也会按模型上限自动截断。相关日志可在 `debug_mode`
-开启后查看。
+而不是让整次生图失败；提示词超长也会**按该模型的上限与计法**自动截断（字符口径按字符、
+token 口径按估算 token）。相关日志可在 `debug_mode` 开启后查看。
 
 ### 结果解析
 
