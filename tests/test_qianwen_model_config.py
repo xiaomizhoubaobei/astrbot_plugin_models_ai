@@ -70,16 +70,90 @@ def test_resolve_size_falls_back_to_default() -> None:
 
 
 def test_resolve_prompt_truncates_over_limit() -> None:
-    """超过 max_prompt_length 时按上限截断；未超时原样返回."""
-    spec = mc.get_model_spec("z-image-turbo")  # 上限 800
-    long_prompt = "字" * 1000
-    assert len(spec.resolve_prompt(long_prompt)) == 800
+    """字符口径模型：超过 max_prompt_length 时按字符精确截断；未超时原样返回."""
+    spec = mc.get_model_spec("qwen-image-3.0-pro")  # 字符口径，上限 2000
+    assert spec.prompt_limit_mode == mc.PROMPT_LIMIT_CHARS
+    long_prompt = "字" * 2500
+    assert len(spec.resolve_prompt(long_prompt)) == 2000
     short = "一个女孩"
     assert spec.resolve_prompt(short) == short
 
 
+def test_prompt_limit_mode_is_declared_per_model() -> None:
+    """上限计法必须按模型分别声明，不得全表一个数字了事.
+
+    官方两代模型口径不同：3.0 系列 / 2.1-pro 与万相按「字符」计，
+    2.0 系列 / max / plus / 基础版 / z-image 按「token」计。
+    """
+    char_models = {
+        "qwen-image-3.0-pro": 2000,
+        "qwen-image-3.0": 2000,
+        "qwen-image-2.1-pro": 2000,
+        "wan2.6-t2i": 2100,
+        "wan2.5-t2i-preview": 2000,
+        "wan2.2-t2i-plus": 500,
+        "wan2.1-t2i-turbo": 500,
+        "wanx2.0-t2i-turbo": 800,
+    }
+    token_models = {
+        "qwen-image-2.0-pro": 2000,
+        "qwen-image-2.0": 2000,
+        "qwen-image-max": 2000,
+        "qwen-image-plus": 2000,
+        "qwen-image": 2000,
+        "z-image-turbo": 800,
+    }
+    for name, limit in char_models.items():
+        spec = mc.get_model_spec(name)
+        assert spec.prompt_limit_mode == mc.PROMPT_LIMIT_CHARS, name
+        assert spec.max_prompt_length == limit, name
+    for name, limit in token_models.items():
+        spec = mc.get_model_spec(name)
+        assert spec.prompt_limit_mode == mc.PROMPT_LIMIT_TOKENS, name
+        assert spec.max_prompt_length == limit, name
+    # 兜底同样声明计法，且取最严口径
+    fallback = mc.get_model_spec("不存在的模型")
+    assert fallback.prompt_limit_mode == mc.PROMPT_LIMIT_CHARS
+    assert fallback.max_prompt_length == 500
+
+
+def test_estimate_prompt_tokens_is_conservative() -> None:
+    """token 估算：CJK 按 1 字 1 token，其余按 4 字符 1 token 向上取整."""
+    spec = mc.get_model_spec("z-image-turbo")
+    assert spec.estimate_prompt_tokens("") == 0
+    # 4 个中文字 -> 4 token
+    assert spec.estimate_prompt_tokens("一二三四") == 4
+    # 8 个西文字符 -> 2 token
+    assert spec.estimate_prompt_tokens("abcdefgh") == 2
+    # 5 个西文字符 -> 向上取整为 2 token（宁可高估，避免触发上游 400）
+    assert spec.estimate_prompt_tokens("abcde") == 2
+    # 中英混排：2 个中文 + 4 个西文 = 2 + 1 = 3
+    assert spec.estimate_prompt_tokens("中文abcd") == 3
+
+
+def test_resolve_prompt_token_mode_truncates_by_estimate() -> None:
+    """token 口径模型：按估算 token 截断，且截断后估算值必须不超上限."""
+    spec = mc.get_model_spec("z-image-turbo")  # token 口径，上限 800
+    assert spec.prompt_limit_mode == mc.PROMPT_LIMIT_TOKENS
+
+    long_prompt = "字" * 2000  # 约 2000 token，远超 800
+    trimmed = spec.resolve_prompt(long_prompt)
+    assert spec.estimate_prompt_tokens(trimmed) <= 800
+    assert len(trimmed) == 800  # 中文 1 字 1 token，正好截到 800 字
+
+    # 未超限则原样返回，不得无故截断
+    short = "一只在草地上奔跑的柯基犬"
+    assert spec.resolve_prompt(short) == short
+
+    # 同一模型下，纯西文能容纳的字符数远多于中文（这正是不能用字符口径卡 token 模型的证据）
+    english = "a" * 4000  # 约 1000 token，超过 800
+    trimmed_en = spec.resolve_prompt(english)
+    assert spec.estimate_prompt_tokens(trimmed_en) <= 800
+    assert len(trimmed_en) > 800
+
+
 def test_resolve_prompt_no_limit_when_zero() -> None:
-    """max_prompt_length=0 表示不限制，不得截断."""
+    """max_prompt_length=0 表示不限制，无论哪种计法都不得截断."""
     spec = mc.QianwenModelSpec(
         endpoint=mc.ENDPOINT_TEXT2IMAGE,
         call_mode="async",

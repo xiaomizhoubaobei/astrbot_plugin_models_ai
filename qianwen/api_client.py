@@ -42,6 +42,7 @@ from ..core import (
 )
 from .model_config import (
     ENDPOINT_TASK,
+    PROMPT_LIMIT_TOKENS,
     QianwenModelSpec,
     get_model_spec,
     list_supported_models,
@@ -264,7 +265,12 @@ class QianwenClient:
         target_size = self._resolve_size(size, spec)
         safe_prompt = spec.resolve_prompt(prompt)
         if safe_prompt != prompt:
-            self.debug_log(f"提示词超过模型上限 {spec.max_prompt_length}，已自动截断")
+            # 上限计法随模型不同（字符 / token），日志里一并打印，便于对齐官方口径排错
+            unit = "token" if spec.prompt_limit_mode == PROMPT_LIMIT_TOKENS else "字符"
+            self.debug_log(
+                f"提示词超过模型上限 {spec.max_prompt_length} {unit}，已自动截断"
+                f"（原 {len(prompt)} 字符 → {len(safe_prompt)} 字符）"
+            )
 
         self.debug_log(
             f"模型调用模式: {spec.call_mode}, 端点: {spec.endpoint}, "
