@@ -62,7 +62,11 @@ token 口径按估算 token）。相关日志可在 `debug_mode` 开启后查看
 
 万相 2.6 与更早版本的成功响应字段不同：
 
-- `qwen-image-*` / `wan2.6-t2i` / `z-image-turbo`：`output.choices[].message.content[].image`
+- Qwen-Image 全系列（`qwen-image-3.0-pro` / `qwen-image-3.0` / `qwen-image-2.1-pro` /
+  `qwen-image-2.0-pro` / `qwen-image-2.0` / `qwen-image-max` / `qwen-image-plus`）
+  以及无后缀的基础版 `qwen-image`；
+  再加上 `wan2.6-t2i` / `z-image-turbo`：
+  成功结果位于 `output.choices[].message.content[].image`
 - `wan2.5` 及更早版本：`output.results[].url`
 
 插件会按型号优先解析对应格式，并在未命中时自动回退尝试另一种格式，
