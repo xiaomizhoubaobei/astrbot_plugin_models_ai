@@ -200,7 +200,7 @@ bash install_gpg_keys.sh
 
 SuperNPC 支持把文字回复合成为**角色语音**再交付给用户：NPC 用 **Qwen3-TTS-12Hz-1.7B-Base** 声音克隆模型，以角色参考音频复现音色，把「文字回复」变成「文字 + 语音」的双通道回复。
 
-- 能力入口：`tts-voice` 技能（`/root/.codebuddy/skills/tts-voice/`），核心脚本 `scripts/npc_generate.py`。
+- 能力入口：`tts-voice` 技能（`/root/.codebuddy/skills/tts-voice/`），核心脚本 `/root/.codebuddy/skills/tts-voice/scripts/npc_generate.py`。
 - 音色素材：镜像预置于 `/root/.codebuddy/voices/`（`<角色名>.mp3` + `manifest.json`）。
 - 模型路径：镜像预置 `/models/Qwen3-TTS-12Hz-1.7B-Base`，构建期固化，**无需联网下载**。
 
@@ -324,7 +324,7 @@ ls "/root/.codebuddy/voices/<角色名>.mp3"
 
 ### 9.3 参数与接口约定（以脚本 `--help` 为准，勿凭记忆臆测）
 
-> 本节是「调什么、怎么调、怎么排错」的落地说明，与 `tts-voice` 技能脚本 `scripts/npc_generate.py` **逐项对齐**。
+> 本节是「调什么、怎么调、怎么排错」的落地说明，与 `tts-voice` 技能脚本 `/root/.codebuddy/skills/tts-voice/scripts/npc_generate.py` **逐项对齐**。
 
 #### 一、运行环境（SuperNPC 镜像）
 
@@ -433,15 +433,21 @@ cd /workspace && "${TTS_PYTHON:-/opt/tts-venv/bin/python}" /root/.codebuddy/skil
 - **交付闭环**：合成成功必须上传附件并附 `asset_link`，否则视为未完成。
 - **素材不落调用方**：音色放镜像预置目录（`/root/.codebuddy/voices`），**不要**写进 `/workspace/voices`，避免被调用方工作区覆盖。
 - **逐字对应**：`manifest.json.ref_text` 必须与参考音频逐字对应，写错会直接毁掉克隆音色。
-- **文档与脚本同源**：本节参数表 / 示例 / 报错文案均须与 `scripts/npc_generate.py` 保持一致；改脚本时同步改文档（以 `--help` 为准）。
+- **文档与脚本同源**：本节参数表 / 示例 / 报错文案均须与 `/root/.codebuddy/skills/tts-voice/scripts/npc_generate.py` 保持一致；改脚本时同步改文档（以 `--help` 为准）。
 
 ---
 
 ## 10. 阿里云百炼记忆库（长期记忆）(Bailian Memory)
 
-SuperNPC 通过 `scripts/bailian-memory.py` 接入**阿里云百炼记忆库 API**，为 NPC / Agent 提供跨会话的长期记忆能力：把对话或结论写入记忆库，后续会话再按语义检索召回，避免「每次任务都从零开始」。
+SuperNPC 通过 **`/app/scripts/bailian-memory.py`** 接入**阿里云百炼记忆库 API**，为 NPC / Agent 提供跨会话的长期记忆能力：把对话或结论写入记忆库，后续会话再按语义检索召回，避免「每次任务都从零开始」。
 
 - 官方文档：<https://docs.agent.bailian.aliyun.com/zh/api/memory/fragments/add-memory>（同组还有「搜索 / 列出 / 更新 / 删除记忆」与「用户画像」接口）。
+
+> **📌 运行时 vs 仓库的边界（先读这条，避免照抄路径撞空）**：本脚本是 **SuperNPC 运行时能力**，真身固化在**运行时镜像的 `/app/scripts/bailian-memory.py`**，与物理上由哪个仓库（如本仓库 `astrbot_plugin_models_ai`，一个 AstrBot 生图插件）拉起 NPC **毫无血缘**。因此：
+> 1. 本章所有命令示例一律使用**运行时绝对路径 `/app/scripts/bailian-memory.py`**，可直接复制执行，**不依赖当前工作目录**；
+> 2. **不要**把该脚本复制进被拉起仓库（会污染其项目边界），也**不要**假定被拉起仓库内存在 `scripts/bailian-memory.py`；
+> 3. 要改脚本本体，应去 **SuperNPC 仓库**改；被拉起仓库要动的只是**文档口径**（同类教训见 1.5 节：早期 `scripts/gpg-setup.sh` 等文件本仓库并不存在的注记）；
+> 4. 同理，本章涉及的脚本回归 / 自检用例（如接口契约回归、使用引导自检）**只在 SuperNPC 仓库存在**，被拉起仓库不必、也无法执行。
 
 ### 10.1 记忆库使用引导（第一次接触请从这里开始）【必读】
 
@@ -472,7 +478,7 @@ NPC 读取 AGENTS.md 第 10 章（本章）决定「要不要用记忆库」
         ↓
 命中 10.2 的触发场景 → 任务开始先 search；产出可复用结论 → 任务收尾 add
         ↓
-调用 scripts/bailian-memory.py（唯一入口）写入 / 检索同一个记忆库
+调用 /app/scripts/bailian-memory.py（唯一入口）写入 / 检索同一个记忆库
 ```
 
 - **无需手动开启**：只要密钥仓库注入了 `DASHSCOPE_API_KEY`，NPC 在需要时**自行判断**是否读写；未注入时脚本会**快速失败并跳过**记忆环节，任务照常完成（不阻断主流程）。
@@ -505,7 +511,7 @@ NPC 读取 AGENTS.md 第 10 章（本章）决定「要不要用记忆库」
 | 我想… | 怎么做 | 去哪里看结果 |
 | --- | --- | --- |
 | 知道记忆库到底存了什么 | 让 NPC「列出我的记忆」（它会用同一 user-id 调 `list`） | NPC 评论里的 `[memory] 本页 N 条记忆` + 逐条内容 |
-| 手动写入一条结论 | 让 NPC「记住：<结论>」，或直接在容器 / 本地跑 `scripts/bailian-memory.py add --content "…"` | `[memory] 写入成功，变更片段 1 条` |
+| 手动写入一条结论 | 让 NPC「记住：<结论>」，或在**运行时容器内**跑 `/app/scripts/bailian-memory.py add --content "…"`（脚本只活在运行时镜像，本地 / 被拉起仓库内均无此物） | `[memory] 写入成功，变更片段 1 条` |
 | 验证某条结论是否已入库 | 让 NPC「检索记忆：<关键词>」 | `[memory] 命中 N 条记忆`（命中 0 条属正常，说明还没沉淀过） |
 
 > ⚠️ 手动 `delete` 前务必先检索确认 `memory_node_id`：**删除不可恢复**，误删只能重新写入。
@@ -659,11 +665,11 @@ NPC 读取 AGENTS.md 第 10 章（本章）决定「要不要用记忆库」
   ```bash
   # 仓库 A（XMZZUZHI/SuperNPC）由 qixiaoxin 写入
   # → 实体自动推导为 qixiaoxin（无需传 --user-id）
-  python3 scripts/bailian-memory.py add --content "本组织镜像构建统一走 docker.yml 复用模板"
+  python3 /app/scripts/bailian-memory.py add --content "本组织镜像构建统一走 docker.yml 复用模板"
 
   # 仓库 B（任何其它仓库，同一人 qixiaoxin）检索
   # → 实体同样为 qixiaoxin，无需任何额外配置即可召回上述结论
-  python3 scripts/bailian-memory.py search --query "镜像构建复用模板怎么用？"
+  python3 /app/scripts/bailian-memory.py search --query "镜像构建复用模板怎么用？"
 
   # 如需显式确认检索实体，看日志里的 user_id（或 add 时 meta_data.user_identity）
   ```
@@ -672,7 +678,7 @@ NPC 读取 AGENTS.md 第 10 章（本章）决定「要不要用记忆库」
 
   ```bash
   # 无论从哪个仓库调用，同一人的 user_id 恒为登录名本身
-  python3 scripts/bailian-memory.py list   # user_id=qixiaoxin
+  python3 /app/scripts/bailian-memory.py list   # user_id=qixiaoxin
   ```
 
 - **定时任务 / 无用户上下文**（如 `crontab`）场景下拿不到任何用户标识，会回落到组织级实体 `usr_<根组织>`，与人工触发时的「人」实体**不是同一个**（这是刻意设计：避免无人任务污染某个人的记忆线）；如需完全统一，请在密钥仓库注入 `MEMORY_USER_ID`（如 `qixiaoxin`）。
@@ -687,28 +693,28 @@ NPC 读取 AGENTS.md 第 10 章（本章）决定「要不要用记忆库」
 | --- | --- | --- |
 | 已注入 `DASHSCOPE_API_KEY` | `[ -n "$DASHSCOPE_API_KEY" ] && echo 已注入` | 到**密钥仓库**（如 `key/npc.yml`）注入后重跑，**不要**写死进代码 / `.cnb.yml` |
 | 环境有 `python3`（≥ 3.8） | `python3 --version` | 镜像已预装（实测 3.11 系）；缺失时先补装再调用 |
-| 处于仓库根目录（脚本相对路径正确） | `ls scripts/bailian-memory.py` | 用绝对路径调用，或先 `cd` 到仓库根 |
+| 运行时脚本就位（镜像预置） | `ls /app/scripts/bailian-memory.py` | 属运行时预置文件；缺失说明镜像异常，**不要**去被拉起仓库里找 |
 | 已知触发者登录名（用于确认写入哪个实体） | `echo "$CNB_BUILD_USER"` | 为空时脚本会按 10.5 优先级继续推导，无需手工传 `--user-id` |
 
 #### 二、三步跑通
 
 ```bash
 # 第 1 步：写入一条可复用结论（不传 --user-id，自动落到触发者登录名）
-python3 scripts/bailian-memory.py add --content "本组织镜像构建统一走 docker.yml 复用模板"
+python3 /app/scripts/bailian-memory.py add --content "本组织镜像构建统一走 docker.yml 复用模板"
 # 期望输出：
 #   [memory] 写入记忆: user_id=qixiaoxin
 #   [memory] 写入成功，变更片段 1 条
 #   [memory]   [ADD] node_xxx 本组织镜像构建统一走 docker.yml 复用模板
 
 # 第 2 步：语义召回（同一登录名，换任意仓库都行）
-python3 scripts/bailian-memory.py search --query "镜像构建复用模板怎么用"
+python3 /app/scripts/bailian-memory.py search --query "镜像构建复用模板怎么用"
 # 期望输出：
 #   [memory] 检索记忆: user_id=qixiaoxin query='镜像构建复用模板怎么用'
 #   [memory] 命中 1 条记忆
 #   [memory]   node_xxx 本组织镜像构建统一走 docker.yml 复用模板
 
 # 第 3 步：确认落到了预期实体（看 user_id 是否为本人登录名）
-python3 scripts/bailian-memory.py list --page-size 5
+python3 /app/scripts/bailian-memory.py list --page-size 5
 # 期望输出：
 #   [memory] 列出记忆: user_id=qixiaoxin page_num=1
 #   [memory] 本页 1 条记忆
@@ -737,7 +743,7 @@ python3 scripts/bailian-memory.py list --page-size 5
 | `delete` | 删除片段（不可恢复） | `--node-id` | `--user-id` |
 | 全局 | — | — | `--json`（额外输出完整 JSON 响应）、`-h` |
 
-参数与脚本 `build_parser()` **逐项对齐**，改动能以 `python3 scripts/bailian-memory.py <子命令> --help` 为准。
+参数与脚本 `build_parser()` **逐项对齐**，改动能以 `python3 /app/scripts/bailian-memory.py <子命令> --help` 为准。
 
 > 取值细节：`--rewrite` / `--rerank` 为布尔参数，接受 `true/false`、`1/0`、`yes/no`（**大小写不敏感**）；`--plan-version` 仅接受 `Pro` / `Lite`（**大小写敏感**）。
 
@@ -745,24 +751,24 @@ python3 scripts/bailian-memory.py list --page-size 5
 
 ```bash
 # 添加记忆：对话形式（最多 50 条消息，role 仅支持 user / assistant）
-python3 scripts/bailian-memory.py add --user-id user_001 \
+python3 /app/scripts/bailian-memory.py add --user-id user_001 \
   --message user:"每天上午9点提醒我喝水" --message assistant:"好的，已记录"
 
 # 添加记忆：自定义内容形式（与 --message 互斥，max 512 字符）
-python3 scripts/bailian-memory.py add --user-id user_001 --content "用户偏好用 Python 3.12 与 PEP 8 风格"
+python3 /app/scripts/bailian-memory.py add --user-id user_001 --content "用户偏好用 Python 3.12 与 PEP 8 风格"
 
 # 搜索记忆：语义检索（默认开启改写与重排，相似度阈值 0.6）
-python3 scripts/bailian-memory.py search --user-id user_001 --query "我需要做什么？" --max-results 10
+python3 /app/scripts/bailian-memory.py search --user-id user_001 --query "我需要做什么？" --max-results 10
 
 # 列出记忆：分页查看
-python3 scripts/bailian-memory.py list --user-id user_001 --page-size 10 --page-num 1
+python3 /app/scripts/bailian-memory.py list --user-id user_001 --page-size 10 --page-num 1
 
 # 更新 / 删除记忆：需先拿到 memory_node_id
-python3 scripts/bailian-memory.py update --user-id user_001 --node-id NODE_ID --content "还要提醒我10点吃药"
-python3 scripts/bailian-memory.py delete --user-id user_001 --node-id NODE_ID
+python3 /app/scripts/bailian-memory.py update --user-id user_001 --node-id NODE_ID --content "还要提醒我10点吃药"
+python3 /app/scripts/bailian-memory.py delete --user-id user_001 --node-id NODE_ID
 
 # 需要完整响应体时追加 --json（便于解析 memory_node_id）
-python3 scripts/bailian-memory.py --json search --user-id user_001 --query "我的偏好？"
+python3 /app/scripts/bailian-memory.py --json search --user-id user_001 --query "我的偏好？"
 ```
 
 #### 三、输出格式（敲完能看到什么）
@@ -789,13 +795,13 @@ python3 scripts/bailian-memory.py --json search --user-id user_001 --query "我�
 
 ```bash
 # ① 写入
-python3 scripts/bailian-memory.py add --content "GPG 签名 unknown_key 需把公钥登记到平台"
+python3 /app/scripts/bailian-memory.py add --content "GPG 签名 unknown_key 需把公钥登记到平台"
 # ② 召回（拿到 memory_node_id，假设为 node_abc）
-python3 scripts/bailian-memory.py search --query "GPG unknown_key 怎么处理"
+python3 /app/scripts/bailian-memory.py search --query "GPG unknown_key 怎么处理"
 # ③ 内容纠偏（用 ② 拿到的 node_abc）
-python3 scripts/bailian-memory.py update --node-id node_abc --content "GPG 签名 unknown_key：需重新登记公钥后再提交"
+python3 /app/scripts/bailian-memory.py update --node-id node_abc --content "GPG 签名 unknown_key：需重新登记公钥后再提交"
 # ④ 结论失效时删除（不可恢复，删前先 search 确认 node_id）
-python3 scripts/bailian-memory.py delete --node-id node_abc
+python3 /app/scripts/bailian-memory.py delete --node-id node_abc
 ```
 
 #### 五、取值回落与退出码
@@ -851,7 +857,7 @@ python3 scripts/bailian-memory.py delete --node-id node_abc
 - **失败不阻断主流程**：记忆读写属**增强能力**，调用失败（尤其鉴权缺失）时应告警并继续完成任务，**不得**因记忆库不可用而中断 NPC 主流程。
 - **跨仓库共享勿破坏**：`user_id` 会被**所有仓库**共用，写入时须确保是「跨仓库可复用」的结论性知识（平台约定、排查经验、通用规范）；仓库特有的临时信息请写进 `meta_data` 或不要入库，避免污染其它仓库的检索结果。
 - **勿给 `user_id` 加组织/仓库前缀**：`user_id` 统一为登录名本身（如 `qixiaoxin`），**禁止**改写成 `usr_<根组织>/<登录名>`、`<组织>_<登录名>` 或拼接 `repo_slug` 等形态，否则同一人会被拆成多个实体，「一个 user-id 检索全部记录」失效。
-- **文档与脚本同源**：本章参数表 / 示例 / 报错文案均须与 `scripts/bailian-memory.py` 保持一致；改脚本时同步改文档（以 `--help` 为准）。
+- **文档与脚本同源**：本章参数表 / 示例 / 报错文案均须与 `/app/scripts/bailian-memory.py` 保持一致；改脚本时同步改文档（以 `--help` 为准）。
 
 ---
 
