@@ -248,7 +248,7 @@ Agent 按 9.2 判断「本次是否该发语音」
 | 我想… | 怎么做 | 去哪里看结果 |
 | --- | --- | --- |
 | 知道当前角色有没有音色 | 让 NPC 检查音色目录，或直接看目录内是否有 `<角色名>.mp3` | 有则后续会发声；无则一直是纯文字 |
-| 手动合成一条试听 | 在容器里跑 `"$TTS_PYTHON" <skill_dir>/scripts/npc_generate.py --text "<60~120字摘要>" --name <角色名>` | 生成 `/workspace/voice.mp3` |
+| 手动合成一条试听 | 在容器里跑 `"$TTS_PYTHON" /root/.codebuddy/skills/tts-voice/scripts/npc_generate.py --text "<60~120字摘要>" --name <角色名>` | 生成 `/workspace/voice.mp3` |
 | 排查「为什么这次没语音」 | 看 9.2 三「什么时候不发语音」+ 9.3 五「常见报错」 | 命中降级条件属正常；否则按报错定位 |
 
 > ⚠️ 合成耗时随字数近似线性增长：CPU 节点单条约 **40~60 秒**属正常。**严禁**拿整篇长回复去合成（核时浪费），语音文本务必摘要到 60~120 字。
@@ -385,7 +385,7 @@ ls "/root/.codebuddy/voices/<角色名>.mp3"
 
 ```bash
 # 推荐：在仓库根执行，用 TTS_PYTHON 调用，传入 60~120 字口语化摘要
-cd /workspace && "${TTS_PYTHON:-/opt/tts-venv/bin/python}" <skill_dir>/scripts/npc_generate.py \
+cd /workspace && "${TTS_PYTHON:-/opt/tts-venv/bin/python}" /root/.codebuddy/skills/tts-voice/scripts/npc_generate.py \
   --text "这是一段六十到一百二十字的口语化摘要。" --name 妲己
 ```
 
@@ -410,7 +410,7 @@ cd /workspace && "${TTS_PYTHON:-/opt/tts-venv/bin/python}" <skill_dir>/scripts/n
 **结构化日志**：脚本每条日志前缀为**相对启动秒数**（如 `[+00012.34s]`），末尾打印各阶段耗时占比 `PROFILE 摘要`，可直接定位慢在哪一步。常用组合：
 
 ```bash
-"${TTS_PYTHON:-/opt/tts-venv/bin/python}" <skill_dir>/scripts/npc_generate.py \
+"${TTS_PYTHON:-/opt/tts-venv/bin/python}" /root/.codebuddy/skills/tts-voice/scripts/npc_generate.py \
   --text "摘要文本" --name 妲己 --log-level debug --log-file /tmp/tts.log
 ```
 
