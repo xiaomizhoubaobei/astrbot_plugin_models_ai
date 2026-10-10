@@ -64,6 +64,7 @@
 - 📊 [覆盖率报告](https://codecov.io/gh/xiaomizhoubaobei/astrbot_plugin_models_ai) - 单元测试覆盖率（Codecov，徽章见顶部）
 - 🤝 [贡献指南](CONTRIBUTING.md) - 如何参与项目贡献
 - 📜 [行为准则](CODE_OF_CONDUCT.md) - 社区行为准则
+- 🔒 [安全策略](SECURITY.md) - 安全支持范围与漏洞报告方式
 
 ### 覆盖率徽章
 
