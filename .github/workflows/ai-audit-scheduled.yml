@@ -164,9 +164,12 @@ jobs:
           # 因此调用前必须确保其非空（GitHub Actions 未配置的 Secret 会解析成空串）
           : "${AI_MODEL_NAME:?请配置仓库 Secret AI_MODEL_NAME 以指定 AI 审计所用模型}"
           export COPILOT_DEFAULT_MODEL="${AI_MODEL_NAME}"
-          # -g repo 注入唯一仓库值：使 taskflow 的 globals.repo（告警拉取与 memcache
-          #   状态 key 均基于它）与本 job / publish job 的实际仓库 github.repository 完全一致，
-          #   杜绝「拉 A 仓库告警、却按 B 仓库的 key 审计 / 建 Issue」的仓库分裂。
+          # -g repo 注入唯一仓库值：使 taskflow 的 globals.repo（**智能体任务**的
+          #   memcache 状态 key 基于它）与本 job / publish job 的实际仓库 github.repository
+          #   完全一致，杜绝「拉 A 仓库告警、却按 B 仓库的 key 审计 / 建 Issue」的仓库分裂。
+          #   ⚠️ globals.repo 只进 user_prompt（会渲染）；shell 任务的 run: 不做渲染，
+          #   故第 0 步拉取告警的仓库路径在 taskflow 里**写死**——
+          #   该写死值与这里的 github.repository 必须保持一致（同为本仓库）。
           # -m 显式指定 model_config（声明 api_type: chat_completions；模型由上面的
           #   COPILOT_DEFAULT_MODEL 环境变量决定，见 ai-audit/model_config.yaml）
           hatch run main -t ai_audit.alert_triage_example \

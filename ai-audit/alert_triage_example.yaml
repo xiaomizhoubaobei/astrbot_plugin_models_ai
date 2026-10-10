@@ -47,7 +47,10 @@ seclab-taskflow-agent:
 # 可选：引入模型配置（参照 examples/model_configs/），如无需可删除本行
 # model_config: examples.model_configs.model_config
 
-# 仓库名（owner/repo），用于拉取 CodeQL 告警与标识审计对象；也可通过 -g repo=... 覆盖
+# 仓库名（owner/repo）：用于**智能体任务**（user_prompt 会做 Jinja 渲染）里的
+# memcache key 前缀，标识审计对象；也可通过 -g repo=... 覆盖。
+# ⚠️ 它**不会**注入 shell 任务的 run:（框架不渲染 run:），故第 0 步拉取告警的
+#    仓库路径改为在该步 run 里**写死**；两处值必须保持一致（见该步注释）。
 globals:
   repo: xiaomizhoubaobei/astrbot_plugin_models_ai
 
@@ -68,12 +71,18 @@ taskflow:
         set -euo pipefail
         # 需要 GITHUB_TOKEN（PAT，含 security_events 读权限）来读取 CodeQL 告警
         : "${GITHUB_TOKEN:?请设置 GITHUB_TOKEN 环境变量以读取 CodeQL 告警}"
-        # 仓库统一取 globals.repo（owner/repo）这一个值：
-        #   告警拉取、memcache 状态 key、下游建 Issue 全部基于同一个 repo，
-        #   避免「拉 A 仓库告警、却按 B 仓库的 key 审计 / 建 Issue」的分裂。
-        #   仓库值由上方 globals.repo 定义（workflow 通过 -g repo=... 注入实际仓库）。
-        _REPO="{{ globals.repo }}"
-        : "${_REPO:?globals.repo 未设置（owner/repo）}"
+        # 仓库路径【写死】在此处（owner/repo），不引用 {{ globals.repo }}：
+        #   框架只对 user_prompt 做 Jinja 渲染，**shell 任务的 run: 原样交给 bash 执行**
+        #   （见框架 runner.py：shell 分支直接 shell_tool_call(run)，不经 render_template）。
+        #   因此 run: 里的 {{ globals.repo }} 只会是**死字面量**，会拼出
+        #   `https://api.github.com/repos/{{ globals.repo }}/...` 这种非法 URL → 告警拉取必失败。
+        #   故此处直接写死仓库路径，保证拉取端点正确。
+        # ⚠️ 一致性约束：本值必须与上方 globals.repo 及 workflow 传入的
+        #   -g repo="${{ github.repository }}" **完全一致**——globals.repo 用于
+        #   智能体任务（user_prompt 会渲染）里的 memcache key，若两者不一致会
+        #   重新引入「拉 A 仓库告警、却按 B 仓库的 key 审计 / 建 Issue」的仓库分裂。
+        _REPO="xiaomizhoubaobei/astrbot_plugin_models_ai"
+        : "${_REPO:?仓库路径未设置（owner/repo）}"
         # 有界网络参数：宁可单页请求失败后重试，也不让 curl 无限期挂起。
         #   --connect-timeout 10  建连超时
         #   --max-time 60         单页总超时（含传输），防止连接建立后长时间无响应
