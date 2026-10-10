@@ -36,9 +36,15 @@ repos:
   hooks:
   - id: mypy
     additional_dependencies: [types-aiofiles]
+    # ai-audit/ 是 AI 审计示例的「部署源目录」：目录名带连字符，只有被复制并重命名为
+    # ai_audit（下划线）后才成为合法 Python 包。带连字符的目录会被 mypy 判为
+    # 「含 __init__.py 但包名非法」，故按目录排除，不参与类型检查。
+    exclude: '^ai-audit/'
     args: ['--ignore-missing-imports']
 - repo: https://github.com/pycqa/pydocstyle
   rev: 6.3.0
   hooks:
   - id: pydocstyle
     args: ['--convention=google']
+    # 与 mypy 口径一致：ai-audit/ 下的 .py 为框架侧说明性模块，不纳入本仓库门禁。
+    exclude: '^ai-audit/'

@@ -1,0 +1,156 @@
+# =============================================================================
+# AI 审计（AI 漏洞分流）— CodeQL 完成后自动运行
+# =============================================================================
+# 用途：在 CodeQL 工作流（.github/workflows/CodeQL.yml）完成后自动运行
+#       ai-audit/alert_triage_example.yaml，消费本仓库 CodeQL 扫描产生的最
+#       新安全告警，做 AI 自动分流。
+#
+# 触发设计：
+#   - workflow_run：监听 CodeQL.yml（name: "代码质量分析"）的 completed 事件。
+#     为保证 CodeQL 成功后消费最新告警（而非失败/被取消的过期扫描状态），job 级
+#     增加 conclusion == 'success' 门禁（见 jobs.ai-audit.if）。
+#   - workflow_dispatch：保留手动触发，方便首次部署时验证链路。
+#
+# 最小权限：workflow_run 会触发可携仓库凭据并创建 Issue 的自动化路径，因此本工作流
+#   把顶层 GITHUB_TOKEN 收紧到 contents: read；读取告警与创建 Issue 一律走 GH_PAT，
+#   且 GH_PAT 只在真正运行审计的唯一步骤（step 级 env）注入，不在 job 级暴露。
+#   读取 CodeQL 告警的 GITHUB_TOKEN 权限为只读，不授予写能力。
+#
+# 所需 Secrets（仓库 Settings → Secrets and variables → Actions）：
+#   - AI_API_ENDPOINT 必填，上游 base_url（OpenAI 兼容口，如 https://api.deepseek.com/v1）
+#   - AI_API_TOKEN    必填，对应厂商的 API Key（需支持函数调用）
+#   - AI_MODEL_NAME   必填，实际调用的模型名（如 deepseek-v4-flash / qwen-max / kimi-k2 等）。
+#                     框架经环境变量 COPILOT_DEFAULT_MODEL 读取（见 model_config.yaml），
+#                     工作流运行时将本 Secret 透传过去，从而免改代码即可切换模型。
+#   - GH_PAT          必填，GitHub PAT，需同时含以下权限：
+#                     · security_events 读权限 —— 读取本仓库 CodeQL 告警
+#                     · repo / issues 写权限   —— 为确认的漏洞创建真实 Issue
+#   - MCP_CONFIG      可选，MCP Server（GitHub API）配置
+#
+# 创建 Issue 方式：第 5 步「创建真实 Issue」通过 GitHub MCP（github_official
+# toolbox，repos/issues 工具集）的 issues.create 工具创建，不直接调用 HTTP API / curl。
+#
+# ⚠️ 注意：
+#   - 首次使用前请先用 workflow_dispatch 手动跑一次，确认链路正常。
+#   - GITHUB_TOKEN 由 Actions 自动注入，不占上述 secrets（读取告警走 GH_PAT）。
+#   - ⚠️ 本示例会**真实创建 Issue**（仅对判定为真实漏洞的告警，且自动去重）。
+#     如只想看分流结果、不修改仓库，请在 alert_triage_example.yaml 中注释第 5 步
+#     「创建真实 Issue」任务。
+# =============================================================================
+
+name: "AI 审计（CodeQL 完成后自动分流）"
+
+on:
+  workflow_run:
+    # 监听 CodeQL.yml 的 workflow 名（.github/workflows/CodeQL.yml 的 name: "代码质量分析"）
+    workflows: ["代码质量分析"]
+    types: [completed]
+  workflow_dispatch:  # 保留手动触发，便于首次部署时验证链路
+
+permissions:
+  # 最小权限：本工作流读取代码/告警与创建 Issue 均走 GH_PAT（见下），
+  # 顶层 GITHUB_TOKEN 仅需只读 contents。禁止授予 security-events/issues 写权限，
+  # 以免 job 内第三方/外部代码在缺省令牌的写能力下被利用。
+  contents: read
+
+jobs:
+  ai-audit:
+    name: Run AI Audit Taskflow
+    runs-on: ubuntu-latest
+    # 门禁：仅在「手动触发」或「上游 CodeQL 工作流成功完成」时才运行 AI 审计，
+    # 避免 CodeQL 失败/被取消（同样会触发 workflow_run.completed）时仍拿着
+    # 高权限令牌去消费旧告警、浪费模型配额甚至基于过期扫描状态误建 Issue。
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success')
+
+    steps:
+      # 只读出站加固运行器（audit 模式：记录所有出站调用，便于事后审计）
+      - name: 加固运行器（审计所有出站调用）
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      # 拉取本项目源码（含 ai-audit 示例）
+      # ⚠️ 安全性：第三方 Actions 一律锁定到已复核的不可变 commit SHA，禁用易被
+      #   上游篡改的浮动 tag（如 actions/checkout@v4），并将可执行的外部框架代码
+      #   锁定到复核过的发布 commit，杜绝「上游仓库改默认分支 -> 本工作流执行恶意
+      #   代码」的供应链投毒路径。后续升级需走正式依赖评审，而非直接改浮动 tag。
+      - name: Checkout 本项目（含 ai-audit 示例）
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # 拉取 seclab-taskflow-agent 框架，固定到已复核发布的不可变 commit SHA
+      - name: Checkout seclab-taskflow-agent 框架（固定 commit）
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: GitHubSecurityLab/seclab-taskflow-agent
+          # 固定到复核过的 v0.5.0 发布 commit，而非浮动默认分支
+          ref: 6038bb4ee9661887a09215eac70fccceb396cd02 # v0.5.0
+          path: seclab-taskflow-agent
+
+      - name: 把 ai-audit 复制进框架根目录 ai_audit（目录名用下划线）
+        # 框架通过 importlib.resources.files(package) 按 Python 模块路径加载
+        # taskflow / personality / model_config。运行命令使用 -t ai_audit.* 引用
+        # 顶层模块 ai_audit，因此必须把目录复制到框架仓库根目录（在 sys.path 上），
+        # 而不能放到 examples/ 下（那样会变成 examples.ai_audit，路径对不上）。
+        # ai-audit 已含 __init__.py（含 personalities/），复制后 ai_audit 即为
+        # 可导入的 Python 包，importlib.resources 才能正确解析其下资源文件。
+        run: |
+          cp -r ai-audit seclab-taskflow-agent/ai_audit
+
+      # 安装 hatch：锁定版本，避免未加约束的 pip install 拉取到被替换/污染的包
+      # ⚠️ 关键约束：同时把 virtualenv 固定到 <21。hatch 1.14.0 依赖 virtualenv 旧版
+      #    解释器发现 API（virtualenv.discovery.builtin.propose_interpreters）；而
+      #    GitHub Actions ubuntu-latest 运行器默认 Python 预装/可解析的 virtualenv
+      #    21.x 已彻底重构并移除该 API（改用 python_discovery 子包），导致 hatch run
+      #    创建 default 虚拟环境时报：
+      #       Environment `default` is incompatible:
+      #       module 'virtualenv.discovery.builtin' has no attribute 'propose_interpreters'
+      #    因此强制约束 virtualenv<21（解析到 20.x）以兼容 hatch 1.14.0。
+      - name: 安装 hatch（锁定版本）
+        run: pip install hatch==1.14.0 "virtualenv<21"
+
+      # 运行 AI 审计 taskflow（消费最新 CodeQL 告警）
+      # 说明：凭据仅在真正执行审计的唯一 step 注入（step 级 env），不放到 job 级，
+      #       使工作流里其它 step（含复制/安装等）不暴露这些敏感令牌，收敛凭据暴露面。
+      # ⚠️ 已知取舍：本示例为最小演示，审计与「创建真实 Issue」仍在同一 job 内完成；
+      #   生产落地建议按上文 review 意见拆成两段——先在无凭据 job 里产出并校验审计
+      #   报告（credential-free），再在最小权限的发布 job 里用窄域 PAT 创建 Issue。
+      - name: 运行 AI 审计 taskflow（消费最新 CodeQL 告警）
+        working-directory: seclab-taskflow-agent
+        env:
+          # alert_triage_example.yaml 的 alerts 任务从 GitHub Code Scanning API
+          # 实时拉取最新告警，需 PAT 含 security_events 读权限；
+          # 第 5 步「创建真实 Issue」由 agent 通过 github_official（GitHub MCP）创建，
+          # 用 GH_TOKEN（即 GH_PAT，含 repo/issues 写权限）授权
+          AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
+          AI_API_TOKEN: ${{ secrets.AI_API_TOKEN }}
+          AI_MODEL_NAME: ${{ secrets.AI_MODEL_NAME }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          MCP_CONFIG: ${{ secrets.MCP_CONFIG }}
+          # 默认审计本仓库，如需改为其它仓库可改这里（owner/repo）
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          # 模型从仓库 Secret AI_MODEL_NAME 经 COPILOT_DEFAULT_MODEL 传入框架，
+          # 因此调用前必须确保其非空（GitHub Actions 未配置的 Secret 会解析成空串）
+          : "${AI_MODEL_NAME:?请配置仓库 Secret AI_MODEL_NAME 以指定 AI 审计所用模型}"
+          export COPILOT_DEFAULT_MODEL="${AI_MODEL_NAME}"
+          # -m 显式指定 model_config（声明 api_type: chat_completions；模型由上面的
+          #   COPILOT_DEFAULT_MODEL 环境变量决定，见 ai-audit/model_config.yaml）
+          hatch run main -t ai_audit.alert_triage_example \
+              -m ai_audit.model_config
+
+# ---------------------------------------------------------------------------
+# 说明：本工作流已由 schedule（cron 时间差）改为 workflow_run 触发，
+#       因此不再依赖 cron 表达式。若后续想额外保留定时触发以做兜底，
+#       可在上方 on 下追加 schedule 块，例如：
+#   on:
+#     workflow_run:
+#       workflows: ["代码质量分析"]
+#       types: [completed]
+#     schedule:
+#       - cron: "30 0 * * 1"   # 每周一 UTC 00:30（兜底）
+#     workflow_dispatch:
+# ---------------------------------------------------------------------------

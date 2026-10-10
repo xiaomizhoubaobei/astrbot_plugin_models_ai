@@ -1,0 +1,46 @@
+# =============================================================================
+# OpenAI 兼容上游模型配置（model_config.yaml）
+# =============================================================================
+# 用途：为 AI 审计 taskflow（alert_triage_example.yaml）声明使用的 API 类型。
+#       模型名【不再硬编码于此】，改为运行时从环境变量获取（详见下文“模型来源”），
+#       以便在 .github/workflows/ai-audit-scheduled.yml 通过仓库 Secret 灵活切换，
+#       无需改代码 / 重新提交即可更换上游模型。
+#
+# 模型来源（环境变量）：
+#   框架（seclab-taskflow-agent）在选择模型时读取环境变量：
+#       COPILOT_DEFAULT_MODEL —— 覆盖默认模型，即实际调用的模型名
+#   本仓库工作流把仓库 Secret `AI_MODEL_NAME` 透传给 COPILOT_DEFAULT_MODEL，
+#   运行时框架据此选中上游真实模型（如 DeepSeek / 通义千问 / Moonshot / 本地 vLLM 等）。
+#
+# 背景：本框架底层基于 OpenAI Agents Python SDK，直接构造 AsyncOpenAI 客户端：
+#       client = AsyncOpenAI(base_url=<endpoint>, api_key=<token>)
+#       其中 endpoint 与 token 的来源：
+#         - 环境变量：AI_API_ENDPOINT / AI_API_TOKEN
+#       对未知端点会兜底为通用 custom provider，因此任何实现了 OpenAI
+#       /v1/chat/completions 协议的上游都能直接接入：
+#         - 本地 vLLM / Ollama 的 OpenAI 兼容口
+#         - DeepSeek / 通义千问(Qwen) / Moonshot 等国产厂商的 OpenAI 兼容接口
+#
+# 使用方式（在运行命令中通过 -m 指定本模块路径，注意不带 .yaml 后缀）：
+#   COPILOT_DEFAULT_MODEL=<你的模型名> \
+#   AI_API_ENDPOINT=https://api.deepseek.com/v1 \
+#   AI_API_TOKEN=<你的APIKey> \
+#   hatch run main -t ai_audit.alert_triage_example \
+#       -m ai_audit.model_config
+#
+# 前提：所选上游必须支持函数调用（tool calling），因为 AI 审计 taskflow
+#       依赖工具调用；框架对自定义 provider 默认按“支持”乐观处理，
+#       建议先在单个告警上跑通验证。
+#
+# 适配语言：Python
+# 框架：GitHubSecurityLab/seclab-taskflow-agent
+# =============================================================================
+
+seclab-taskflow-agent:
+  version: "1.0"
+  filetype: model_config
+
+# chat_completions 走 OpenAIChatCompletionsModel（OpenAI 兼容标准协议）。
+# 模型名一律由环境变量 COPILOT_DEFAULT_MODEL 提供，不在本文件中写死，
+# 便于工作流通过 Secret（AI_MODEL_NAME）按需切换模型而无需改动代码。
+api_type: chat_completions

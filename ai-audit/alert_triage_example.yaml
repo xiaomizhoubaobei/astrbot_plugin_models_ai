@@ -1,0 +1,267 @@
+# =============================================================================
+# AI 审计 Taskflow 测试示例 — Python 仓库（已按官方 GRAMMAR 语法适配）
+# =============================================================================
+# 用途：对 CodeQL 静态扫描在本仓库（main.py / core/ / commands/ / gitee/ /
+#       llm_tools/ / qianwen/ / tests/**）产生的安全告警做 AI 分流。
+# 框架：GitHubSecurityLab/seclab-taskflow-agent
+# 说明：
+#   - 本文件是一个“测试用示例”，用于验证 AI 审计链路能跑通
+#     （CodeQL 告警 -> 信息收集 -> 审计 -> 报告 -> 校验 -> 创建真实 Issue）。
+#   - 阶段间数据贯通：各审计阶段通过 memcache（按 alert_number 为 key）把前一步
+#     的取证/判定/报告传给下一步，并仅对校验结论为 APPROVED 的告警创建 Issue；
+#     原“即时知识回流”因无法在创建后立即获得人工反馈而移除（见文末说明）。
+#   - 已按官方 doc/GRAMMAR.md 语法编写：seclab-taskflow-agent 头部 + filetype: taskflow、
+#     顶层 taskflow key、agents 引用 personalities、shell run 任务 + outputs JSON Schema 校验、
+#     repeat_prompt/over 批量循环等。
+#   - 为适配本项目（Python），使用项目自带的 Python 审计人格
+#     ai_audit.personalities.python_auditer，而非官方默认的 C 语言人格
+#     c_auditer（详见 personalities/python_auditer.yaml）。
+#   - 引用路径 ai_audit.* 假设已将 ai-audit 目录（重命名为 ai_audit）
+#     复制到框架仓库根目录（而非 examples/，那样会变成 examples.ai_audit 导致
+#     模块路径对不上）；详见 README.md 的部署说明。
+#   - 请先阅读同目录下的 README.md 了解运行前提（LLM 配置、GitHub PAT、MCP Server、人格模块路径）。
+#
+# 适配语言：Python
+# 告警输入：由 .github/workflows/CodeQL.yml 扫描产出的 CodeQL 安全告警
+# 运行方式：hatch run main -t ai_audit.alert_triage_example （详见 README.md 部署说明）
+# =============================================================================
+
+seclab-taskflow-agent:
+  version: "1.0"
+  filetype: taskflow
+
+# 可选：引入模型配置（参照 examples/model_configs/），如无需可删除本行
+# model_config: examples.model_configs.model_config
+
+# 仓库名（owner/repo），用于第 5 步创建真实 Issue；也可通过 -g repo=... 覆盖
+globals:
+  repo: xiaomizhoubaobei/astrbot_plugin_models_ai
+
+taskflow:
+  # ---------------------------------------------------------------------------
+  # 0) 准备：从 GitHub Code Scanning API 拉取「全部 open 的 CodeQL 告警」。
+  #    生成待审计告警的 JSON 可迭代列表，供后续 repeat_prompt 批量循环。
+  #    通过 id + outputs（JSON Schema）暴露为命名输出 outputs.alerts。
+  #    （分页：Code Scanning API 单页上限 100，此处逐页拉取直到取完，
+  #     避免仓库告警超过 100 条时其余告警被漏审。）
+  # ---------------------------------------------------------------------------
+  - task:
+      must_complete: true
+      id: alerts
+      run: |
+        # 需要 GITHUB_TOKEN（PAT，含 security_events 读权限）来读取 CodeQL 告警
+        : "${GITHUB_TOKEN:?请设置 GITHUB_TOKEN 环境变量以读取 CodeQL 告警}"
+        # 仓库使用 GITHUB_REPOSITORY（owner/repo），未设置时回退到默认仓库
+        : "${GITHUB_REPOSITORY:=xiaomizhoubaobei/astrbot_plugin_models_ai}"
+        # 逐页拉取全部 open 的 CodeQL 告警（单页 100，>100 时继续翻页），累积到同一数组
+        _ALL_JSON=""
+        _PAGE=1
+        while :; do
+          _BODY="$(curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&tool_name=CodeQL&per_page=100&page=${_PAGE}")"
+          if [ -z "$_ALL_JSON" ]; then
+            _ALL_JSON="$_BODY"
+          else
+            # 合并两段 JSON 数组：去掉前一数组末尾的 ] 与后一数组开头的 [
+            _ALL_JSON="${_ALL_JSON%]},${_BODY#[}"
+          fi
+          # 不足一页说明已到末页
+          _PAGE_LEN="$(printf '%s' "$_BODY" | jq 'length')"
+          if [ "$_PAGE_LEN" -lt 100 ]; then
+            break
+          fi
+          _PAGE=$((_PAGE+1))
+        done
+        # 统一映射成下游结构并写命名输出 outputs.alerts
+        printf '%s' "$_ALL_JSON" \
+          | jq -c '
+              map({
+                alert_number: .number,
+                rule: (.rule.id // .rule.description // "unknown"),
+                path: (.most_recent_instance.location.path // "unknown"),
+                message: (.most_recent_instance.message.text // "")
+              })
+            ' > /tmp/alerts.json
+        cat /tmp/alerts.json
+        # 无告警时给 stderr 写一条明确提示，避免下游 repeat_prompt 反复输出空迭代告警
+        # （提示写入 stderr，不污染 stdout 的纯 JSON，保证命名输出可被正确解析）
+        if [ "$(jq 'length' /tmp/alerts.json)" -eq 0 ]; then
+          echo "INFO: 仓库 ${GITHUB_REPOSITORY} 当前没有 open 的 CodeQL 告警，无需 AI 分流，任务提前正常结束。" >&2
+        fi
+      outputs:
+        type: array
+        items:
+          type: object
+          properties:
+            alert_number:
+              type: integer
+            rule:
+              type: string
+            path:
+              type: string
+            message:
+              type: string
+          required: [alert_number, rule, path, message]
+
+  # ---------------------------------------------------------------------------
+  # 1) 信息收集：调 GitHub API / MCP Server 拿告警上下文（触发点、调用链、权限），
+  #    并把「每一条告警的取证结果」落到以告警为 key 的 memcache，供第 2~4 步消费。
+  #    （框架 repeat_prompt 每步默认只把原始告警喂给 {{ result }}，跨步骤结果需要
+  #      显式经 memcache 按 alert_number 贯通，否则第 2~4 步将看不到上一步结论。）
+  # ---------------------------------------------------------------------------
+  - task:
+      must_complete: true
+      if: "outputs.alerts | length > 0"
+      repeat_prompt: true
+      over: "outputs.alerts"
+      agents:
+        - ai_audit.personalities.python_auditer
+      user_prompt: |
+        你是一名 Python 安全审计员。针对以下 CodeQL 安全告警 {{ result.alert_number }}
+        （规则：{{ result.rule }}，文件：{{ result.path }}，描述：{{ result.message }}），
+        调用可用的 MCP Server（如 GitHub API / CodeQL toolbox）收集信息：
+        - 告警的 source（来源点）与 sink（汇点）在该 Python 文件中的精确行号；
+        - 告警路径上是否有用户输入（不可信数据）流入（如聊天消息、指令参数、URL 参数、请求体、环境变量）；
+        - 该代码路径是否在特权/高权限上下文（如服务端处理、凭证处理、文件系统操作、子进程调用）中执行；
+        - 该告警触发的输入是否真的可被外部攻击者控制。
+        调用 memcache_set_state 把取证结果存为一条 JSON，key 为
+        "{{ globals.repo }}_{{ result.alert_number }}_evidence"，value 形如：
+        {"source":"文件:行号","sink":"文件:行号","user_input_controlled":true|false,
+         "privileged_context":true|false,"notes":"..."}
+        不得编造，无法取证的字段写 null 并在 notes 说明。
+
+  # ---------------------------------------------------------------------------
+  # 2) 审计：剔除误报（攻击者能否触发？是否特权上下文？）
+  #    读取第 1 步写入的 _evidence 取证结果，基于它而非凭空判定。
+  # ---------------------------------------------------------------------------
+  - task:
+      must_complete: true
+      if: "outputs.alerts | length > 0"
+      repeat_prompt: true
+      over: "outputs.alerts"
+      agents:
+        - ai_audit.personalities.python_auditer
+      user_prompt: |
+        针对告警 {{ result.alert_number }}（规则：{{ result.rule }}，文件：{{ result.path }}）：
+        1. 调用 memcache_get_state 读取 key "{{ globals.repo }}_{{ result.alert_number }}_evidence"
+           取得第 1 步的取证结果（若不存在则直接判定为证据不足，输出 FP）。
+        2. 基于取证结果判定是否真实漏洞：
+           - 攻击者无法触发该路径，或输入不可控 => 误报 FP；
+           - 在特权上下文执行且输入可控 => 潜在漏洞 TP。
+        3. 调用 memcache_set_state 把判定写入 key "{{ globals.repo }}_{{ result.alert_number }}_triage"，
+           value 形如 {"decision":"FP"|"TP","reasons":["...","..."]}。
+        若证据不存在或无法支撑 TP，一律判 FP，防止凭空/幻觉升级。
+
+  # ---------------------------------------------------------------------------
+  # 3) 生成漏洞报告（带精确文件+行号引用）：仅对第 2 步判定为 TP 的告警写报告，
+  #    并把报告落到 memcache 供第 4 步校验、第 5 步创建 Issue 复用。
+  # ---------------------------------------------------------------------------
+  - task:
+      must_complete: true
+      if: "outputs.alerts | length > 0"
+      repeat_prompt: true
+      over: "outputs.alerts"
+      agents:
+        - ai_audit.personalities.python_auditer
+      user_prompt: |
+        针对告警 {{ result.alert_number }}（规则：{{ result.rule }}，文件：{{ result.path }}）：
+        1. 调用 memcache_get_state 读取 key "{{ globals.repo }}_{{ result.alert_number }}_evidence"
+           与 "{{ globals.repo }}_{{ result.alert_number }}_triage"，确认 decision 是否为 TP。
+        2. 仅当 decision==TP 时，基于取证结果生成完整漏洞报告（含漏洞类型、严重程度、
+           精确 source/sink 文件+行号、攻击路径、修复建议）。
+        3. 调用 memcache_set_state 把报告写入 key "{{ globals.repo }}_{{ result.alert_number }}_report"，
+           value 为报告全文（Markdown）。
+        若为误报(FP)或证据不足，则调用 memcache_delete_state 删除该 _report key
+        （确保后续创建 Issue 时读不到任何报告，从而被跳过）。
+
+  # ---------------------------------------------------------------------------
+  # 4) 校验：报告不完整/不一致=幻觉，直接驳回。
+  #    产出结构化的校验结论（_verdict：APPROVED/REJECTED），供第 5 步创建 Issue 门槛判断。
+  #    ⚠️ 本步是「是否创建 Issue」的唯一审批门：仅 APPROVED 才会在第 5 步被发布。
+  # ---------------------------------------------------------------------------
+  - task:
+      must_complete: true
+      if: "outputs.alerts | length > 0"
+      repeat_prompt: true
+      over: "outputs.alerts"
+      agents:
+        - ai_audit.personalities.python_auditer
+      user_prompt: |
+        针对告警 {{ result.alert_number }}（规则：{{ result.rule }}，文件：{{ result.path }}）：
+        1. 调用 memcache_get_state 读取 key "{{ globals.repo }}_{{ result.alert_number }}_report"。
+        2. 若报告不存在或为空（FP / 未写报告），直接写入校验结论
+           key "{{ globals.repo }}_{{ result.alert_number }}_verdict"，
+           value 形如 {"status":"REJECTED","reason":"no_report"} 并结束。
+        3. 否则逐项校验报告：
+           - 报告中的文件/行号是否与取证(_evidence)一致？
+           - 是否缺少关键字段（漏洞类型/位置/攻击路径/修复建议）？
+           - 是否含未渲染的模板变量占位（以左双大括号开头的 Jinja 残留）？
+           只要任一不满足即判定幻觉/不完整。
+        4. 调用 memcache_set_state 写入校验结论
+           key "{{ globals.repo }}_{{ result.alert_number }}_verdict"，
+           value 形如 {"status":"APPROVED"|"REJECTED","reason":"..."}。
+        本步只写 _verdict，不创建任何 Issue。
+
+  # ---------------------------------------------------------------------------
+  # 5) 创建真实 Issue：仅对「校验结论为 APPROVED」的真实漏洞创建 GitHub Issue。
+  #    agent 任务（agents: + user_prompt）：先读 _report 与 _verdict 双重把关，
+  #    通过 GitHub MCP（github_official，repos/issues 工具集）创建，非 APPROVED 一律 SKIP。
+  #    ⚠️ 本步会真实创建 Issue，请在确认链路无误后开启；如需仅输出不改仓库，可注释本步。
+  #    需要 GH_TOKEN（PAT，含 repo / issues 写权限），否则 github_official 工具不可用。
+  # ---------------------------------------------------------------------------
+  - task:
+      must_complete: true
+      if: "outputs.alerts | length > 0"
+      repeat_prompt: true
+      over: "outputs.alerts"
+      agents:
+        - ai_audit.personalities.python_auditer
+      toolboxes:
+        - seclab_taskflow_agent.toolboxes.github_official
+        - seclab_taskflow_agent.toolboxes.memcache
+      env:
+        GITHUB_MCP_TOOLSETS: repos,issues
+      user_prompt: |
+        针对 CodeQL 告警 {{ result.alert_number }}（规则：{{ result.rule }}，文件：{{ result.path }}），
+        只有当它通过第 4 步校验（_verdict.status==APPROVED）时才创建 GitHub Issue。请严格按以下步骤执行：
+
+        1. 读取报告与结论：调用 memcache_get_state 读取
+           key "{{ globals.repo }}_{{ result.alert_number }}_verdict"
+           与 "{{ globals.repo }}_{{ result.alert_number }}_report"。
+        2. 门槛校验，任一不满足则直接跳过（不做任何创建，仅输出 SKIP）：
+           - _verdict 不存在或其 status != "APPROVED"（含被驳回 REJECTED / 误报 FP）；
+           - _report 不存在或为空；
+           - alert_number、rule、path 任一为空；
+           - 待创建的标题/正文中仍含未渲染的模板变量占位（以左双大括号开头的
+             Jinja 残留，说明模板未被替换），禁止创建以免再次生成垃圾 Issue。
+        3. 防重复：先调用 GitHub MCP 工具（issues 工具集）检查仓库 {{ globals.repo }} 中是否
+           已存在标题完全相同的 open Issue；若已存在，则跳过（仅输出 SKIP）。
+        4. 通过 GitHub MCP 的 issues.create 工具（github_official toolbox，issues 工具集）
+           在仓库 {{ globals.repo }} 创建 Issue，禁止直接调用 HTTP API / curl：
+           - 通过 GitHub MCP 工具接口调用，而不是直接发起 HTTP 请求；
+           - 标题："[AI审计] {{ result.rule }} - {{ result.path }}"
+           - 正文（Markdown）如下，报告内容取自步骤 1 读取的漏洞报告（_report）：
+             ## 漏洞概述
+             {报告全文}
+
+             ## 关联 CodeQL 告警
+             - 告警编号：{{ result.alert_number }}
+             - 规则：{{ result.rule }}
+             - 文件：{{ result.path }}
+
+             ## 修复建议
+             - 请参考上方报告中给出的修复建议，在对应文件中修复后关闭本 Issue。
+           - 标签：["bug", "security", "ai-audit"]
+        5. 创建成功后输出 CREATED。
+
+  # ---------------------------------------------------------------------------
+  # 说明：原「第 6 步 知识回流」已被移除。
+  #   原因：该步紧跟创建 Issue 之后运行，此刻人类评审根本还没来得及给出反馈，
+  #   既读不到任何真实“驳回原因”，也没有持久化落点，只会产出一个孤立回复——并不能
+  #   形成所宣称的学习闭环。真实的人工反馈（对 Issue 打“误报/已修复”标签、关闭原因、
+  #   评论等）属于事后事件，应由一套独立的事件驱动工作流（如监听 issues labeled/closed）
+  #   在 Issue 被人工处理后异步摄入并持久化，供下一次运行前载入知识库，而不是在本
+  #   次自动分流内即时回收。如需人工反馈驱动改进，请另建反馈工作流并在此引用其产物。
+  # ---------------------------------------------------------------------------
