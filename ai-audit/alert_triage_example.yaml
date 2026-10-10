@@ -54,42 +54,81 @@ taskflow:
       must_complete: true
       id: alerts
       run: |
+        # 失败即停：curl 拉取/JSON 解析一旦出错，宁可让本任务明确失败（must_complete 会
+        # 阻断后续），也不要「静默继续」——静默继续会让累积 JSON 残缺、告警被漏审。
+        set -euo pipefail
         # 需要 GITHUB_TOKEN（PAT，含 security_events 读权限）来读取 CodeQL 告警
         : "${GITHUB_TOKEN:?请设置 GITHUB_TOKEN 环境变量以读取 CodeQL 告警}"
         # 仓库使用 GITHUB_REPOSITORY（owner/repo），未设置时回退到默认仓库
         : "${GITHUB_REPOSITORY:=xiaomizhoubaobei/astrbot_plugin_models_ai}"
+        # 有界网络参数：宁可单页请求失败后重试，也不让 curl 无限期挂起。
+        #   --connect-timeout 10  建连超时
+        #   --max-time 60         单页总超时（含传输），防止连接建立后长时间无响应
+        #   --retry 3             传输层瞬时错误（连接重置/超时/5xx）重试 3 次
+        #   --retry-all-errors    让上面的重试覆盖更多瞬时错误（否则仅重试部分错误码）
+        #   --retry-delay 2       重试间隔 2 秒（避免打爆上游且给限流留恢复时间）
+        _CURL_OPTS=(--connect-timeout 10 --max-time 60 --retry 3 --retry-all-errors --retry-delay 2)
+        # 翻页硬上限：即便上游持续返回整页（异常/被重定向到总返回 100 条的端点），
+        # 也不会无限翻页，最坏情况在本上限处明确失败，而不是拖到 workflow 超时。
+        _MAX_PAGES=200
         # 逐页拉取全部 open 的 CodeQL 告警（单页 100，>100 时继续翻页），累积到同一数组。
         # 关键：以 jq 的数组拼接('+')来累积，空页([])天然被吞掉，
         # 不依赖「手工去掉首尾方括号再拼逗号」那种字符串黑魔法——
         # 后者在告警数恰为 100 的整数倍时会多拉一页空页，被拼成尾随逗号，
         # 令后续 jq 解析失败、整批告警静默漏审。
-        _ALL_JSON="[]"
+        # 累积结果一律走**临时文件**，不塞进 shell 变量 / argv：
+        # 既避免大仓库（告警上万条）时触发 ARG_MAX（"Argument list too long"），
+        # 也让每页拼接是纯文件级 jq 操作，无字符串黑魔法。
+        _ACC_FILE="$(mktemp)"
+        _PAGE_FILE="$(mktemp)"
+        trap 'rm -f "$_ACC_FILE" "$_PAGE_FILE"' EXIT
+        # 累加器初始为空数组（空页 [] 是数组拼接的单位元，天然被吞掉，不留尾随逗号）
+        echo '[]' > "$_ACC_FILE"
         _PAGE=1
         while :; do
-          _BODY="$(curl -fsSL \
+          if [ "$_PAGE" -gt "$_MAX_PAGES" ]; then
+            echo "ERROR: 翻页超过硬上限 ${_MAX_PAGES} 页仍未取完 CodeQL 告警，疑似上游异常。" >&2
+            exit 1
+          fi
+          # 显式判 curl 退出码：失败即报错退出，绝不带着空 body 继续往下走。
+          if ! _BODY="$(curl -fsSL "${_CURL_OPTS[@]}" \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&tool_name=CodeQL&per_page=100&page=${_PAGE}")"
-          # 本页条数：既用于判末页，也用于判空页
-          _PAGE_LEN="$(printf '%s' "$_BODY" | jq 'length')"
-          # 以 jq 拼接本页；空页([])是拼接的单位元，不会污染结果（也不会留下尾随逗号）
-          _ALL_JSON="$(jq -c -n --argjson acc "$_ALL_JSON" --argjson page "$_BODY" '$acc + $page')"
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&tool_name=CodeQL&per_page=100&page=${_PAGE}")"; then
+            echo "ERROR: 拉取 CodeQL 告警失败（repo=${GITHUB_REPOSITORY} page=${_PAGE}），已重试仍不成功，停止翻页。" >&2
+            exit 1
+          fi
+          # 本页先落盘，再校验「是否为合法 JSON 数组」；解析失败说明响应异常（如错误页/HTML），
+          # 此时立即失败退出，避免把坏数据拼进累积结果、或让循环读到空长度而空转。
+          printf '%s' "$_BODY" > "$_PAGE_FILE"
+          if ! _PAGE_LEN="$(jq -er 'if type == "array" then length else error("not an array") end' "$_PAGE_FILE")"; then
+            echo "ERROR: 第 ${_PAGE} 页响应不是合法 JSON 数组，无法解析（repo=${GITHUB_REPOSITORY}）。" >&2
+            exit 1
+          fi
+          # 文件级拼接本页到累加器（改写回同一文件，故用临时中转避免读到半截）
+          jq -c -s '.[0] + .[1]' "$_ACC_FILE" "$_PAGE_FILE" > "${_ACC_FILE}.tmp" \
+            && mv "${_ACC_FILE}.tmp" "$_ACC_FILE"
           # 不足一页（含空页）说明已到末页，收工
           if [ "$_PAGE_LEN" -lt 100 ]; then
             break
           fi
           _PAGE=$((_PAGE+1))
         done
-        # 统一映射成下游结构并写命名输出 outputs.alerts
-        printf '%s' "$_ALL_JSON" \
-          | jq -c '
+        # 统一映射成下游结构并写命名输出 outputs.alerts。
+        # 先确保累积结果本身是合法 JSON 数组，再映射；解析失败即报错退出，
+        # 避免产出半截/空文件让下游把「解析失败」误当成「无告警」。
+        if ! jq -e 'type == "array"' "$_ACC_FILE" > /dev/null; then
+          echo "ERROR: 累积告警 JSON 非法（repo=${GITHUB_REPOSITORY}），停止。" >&2
+          exit 1
+        fi
+        jq -c '
               map({
                 alert_number: .number,
                 rule: (.rule.id // .rule.description // "unknown"),
                 path: (.most_recent_instance.location.path // "unknown"),
                 message: (.most_recent_instance.message.text // "")
               })
-            ' > /tmp/alerts.json
+            ' "$_ACC_FILE" > /tmp/alerts.json
         cat /tmp/alerts.json
         # 无告警时给 stderr 写一条明确提示，避免下游 repeat_prompt 反复输出空迭代告警
         # （提示写入 stderr，不污染 stdout 的纯 JSON，保证命名输出可被正确解析）
