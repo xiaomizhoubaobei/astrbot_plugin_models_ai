@@ -58,34 +58,28 @@ taskflow:
         : "${GITHUB_TOKEN:?请设置 GITHUB_TOKEN 环境变量以读取 CodeQL 告警}"
         # 仓库使用 GITHUB_REPOSITORY（owner/repo），未设置时回退到默认仓库
         : "${GITHUB_REPOSITORY:=xiaomizhoubaobei/astrbot_plugin_models_ai}"
-        # 逐页拉取全部 open 的 CodeQL 告警（单页 100，>100 时继续翻页），累积到同一数组
-        _ALL_JSON=""
+        # 逐页拉取全部 open 的 CodeQL 告警（单页 100，>100 时继续翻页），累积到同一数组。
+        # 关键：以 jq 的数组拼接('+')来累积，空页([])天然被吞掉，
+        # 不依赖「手工去掉首尾方括号再拼逗号」那种字符串黑魔法——
+        # 后者在告警数恰为 100 的整数倍时会多拉一页空页，被拼成尾随逗号，
+        # 令后续 jq 解析失败、整批告警静默漏审。
+        _ALL_JSON="[]"
         _PAGE=1
         while :; do
           _BODY="$(curl -fsSL \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${GITHUB_TOKEN}" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&tool_name=CodeQL&per_page=100&page=${_PAGE}")"
-          # 先按本页长度判空/判末页，避免把空页拼进累积数组
+          # 本页条数：既用于判末页，也用于判空页
           _PAGE_LEN="$(printf '%s' "$_BODY" | jq 'length')"
-          # 空页直接结束，不追加（否则会在数组末尾留下尾随逗号导致 JSON 非法）
-          if [ "$_PAGE_LEN" -eq 0 ]; then
-            break
-          fi
-          if [ -z "$_ALL_JSON" ]; then
-            _ALL_JSON="$_BODY"
-          else
-            # 合并两段 JSON 数组：去掉前一数组末尾的 ] 与后一数组开头的 [
-            _ALL_JSON="${_ALL_JSON%]},${_BODY#[}"
-          fi
-          # 不足一页说明已到末页
+          # 以 jq 拼接本页；空页([])是拼接的单位元，不会污染结果（也不会留下尾随逗号）
+          _ALL_JSON="$(jq -c -n --argjson acc "$_ALL_JSON" --argjson page "$_BODY" '$acc + $page')"
+          # 不足一页（含空页）说明已到末页，收工
           if [ "$_PAGE_LEN" -lt 100 ]; then
             break
           fi
           _PAGE=$((_PAGE+1))
         done
-        # 零告警（首页即空）时 _ALL_JSON 仍为空串，补成合法空数组，避免 jq 解析失败
-        [ -z "$_ALL_JSON" ] && _ALL_JSON="[]"
         # 统一映射成下游结构并写命名输出 outputs.alerts
         printf '%s' "$_ALL_JSON" \
           | jq -c '
