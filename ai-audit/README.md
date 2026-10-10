@@ -141,8 +141,10 @@ cp -r <本项目>/ai-audit ai_audit
 
 3. 按官方配置指南配好 LLM 模型 + GitHub PAT + MCP Server。
    示例的 `alerts` 任务会通过 GitHub Code Scanning API 拉取**最新 CodeQL 告警**，
-   因此需要导出 `GITHUB_TOKEN`（PAT，需含 `security_events` 读权限）；如需指定其它仓库，
-   可额外设置 `GITHUB_REPOSITORY=owner/repo`。
+   因此需要导出 `GITHUB_TOKEN`（PAT，需含 `security_events` 读权限）。
+   仓库统一由 `globals.repo`（owner/repo）这一个值决定：**告警拉取、memcache 状态 key
+   都基于它**，workflow 通过 `-g repo=...` 把实际仓库注入进来（见下文 GitHub Actions 说明），
+   因此不再需要、也不应单独设置 `GITHUB_REPOSITORY` 以免与 `globals.repo` 分裂。
 
    > 各审计阶段经 memcache 按告警贯通：第 ① 步写取证 `_evidence`，第 ② 步写判定 `_triage`，
    > 第 ③ 步对 TP 写报告 `_report`，第 ④ 步写校验结论 `_verdict`（APPROVED/REJECTED）。

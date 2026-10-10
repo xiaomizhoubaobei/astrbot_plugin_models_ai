@@ -138,7 +138,6 @@ jobs:
           # 只读令牌：仅用于读取 CodeQL 告警，不是 GH_PAT
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MCP_CONFIG: ${{ secrets.MCP_CONFIG }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
           # 审计结果落盘位置，供 publish job 消费
           AUDIT_VERDICT_FILE: /tmp/audit-verdicts.json
         run: |
@@ -146,9 +145,13 @@ jobs:
           # 因此调用前必须确保其非空（GitHub Actions 未配置的 Secret 会解析成空串）
           : "${AI_MODEL_NAME:?请配置仓库 Secret AI_MODEL_NAME 以指定 AI 审计所用模型}"
           export COPILOT_DEFAULT_MODEL="${AI_MODEL_NAME}"
+          # -g repo 注入唯一仓库值：使 taskflow 的 globals.repo（告警拉取与 memcache
+          #   状态 key 均基于它）与本 job / publish job 的实际仓库 github.repository 完全一致，
+          #   杜绝「拉 A 仓库告警、却按 B 仓库的 key 审计 / 建 Issue」的仓库分裂。
           # -m 显式指定 model_config（声明 api_type: chat_completions；模型由上面的
           #   COPILOT_DEFAULT_MODEL 环境变量决定，见 ai-audit/model_config.yaml）
           hatch run main -t ai_audit.alert_triage_example \
+              -g repo="${{ github.repository }}" \
               -m ai_audit.model_config
           # 兜底：若 taskflow 未产出结论文件，写一个空数组，保证 artifact 存在
           [ -f "$AUDIT_VERDICT_FILE" ] || echo '[]' > "$AUDIT_VERDICT_FILE"
