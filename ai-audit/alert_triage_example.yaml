@@ -7,8 +7,12 @@
 # 说明：
 #   - 本文件是一个“测试用示例”，用于验证 AI 审计链路能跑通
 #     （CodeQL 告警 -> 信息收集 -> 审计 -> 报告 -> 校验 -> 产出结构化结论）。
-#   - 阶段间数据贯通：各审计阶段通过 memcache（按 alert_number 为 key）把前一步
-#     的取证/判定/报告传给下一步；末步只**落地结构化结论文件**（不建 Issue）。
+#   - 阶段间数据贯通：第 1~4 步均为**智能体任务**，通过 memcache（按 alert_number 为 key）
+#     把前一步的取证/判定/报告传给下一步；末步只**落地结构化结论文件**（不建 Issue）。
+#     ⚠️ 末步是**纯 shell 任务**，因此**不得**在其中调用 memcache 的 MCP 工具
+#     （memcache_get_state 等只在智能体上下文可用），也**不能**依赖 `{{ result.* }}` /
+#     `{{ globals.* }}`（shell 任务不参与 repeat_prompt 扇出，run 也不做模板渲染）。
+#     末步改为自行解析 memcache 落盘目录、直接读文件后做确定性过滤，详见该步注释。
 #     Issue 的创建由持令牌的独立 job（.github/workflows/ai-audit-scheduled.yml 的
 #     publish job）消费该结论后完成——「不可信输入」与「高权限动作」由此物理隔离，
 #     本 taskflow 全程不需要 GH_PAT。原“即时知识回流”因无法在创建后立即获得
@@ -266,7 +270,14 @@ taskflow:
            只要任一不满足即判定幻觉/不完整。
         5. 调用 memcache_set_state 写入校验结论
            key "{{ globals.repo }}_{{ result.alert_number }}_verdict"，
-           value 形如 {"status":"APPROVED"|"REJECTED","reason":"..."}。
+           value 必须**自包含**（含下游落盘所需的全部字段，勿只写 status/reason）：
+           {"alert_number": {{ result.alert_number }}, "rule": {{ result.rule | tojson }},
+            "path": {{ result.path | tojson }}, "status": "APPROVED"|"REJECTED",
+            "reason": "<简短原因>",
+            "report": "<该告警的报告全文；被驳回或报告为空时填空字符串 \"\">"}
+           其中 report 若为 APPROVED 必须是第 3 步报告的**原文全文**（Markdown）。
+           ⚠️ 必须把 rule/path 也写进来：第 5 步是纯 shell、拿不到上游的 `{{ result.* }}`
+           （shell 任务不做模板渲染），只能依赖本键里的自包含字段。
         本步只写 _verdict，不创建任何 Issue。
 
   # ---------------------------------------------------------------------------
@@ -286,36 +297,92 @@ taskflow:
   - task:
       must_complete: true
       if: "outputs.alerts | length > 0"
-      repeat_prompt: true
-      over: "outputs.alerts"
-      toolboxes:
-        - seclab_taskflow_agent.toolboxes.memcache
+      # 注意：本步**不设** repeat_prompt/over——shell 任务不参与扇出（框架 fans_out 恒为 false），
+      # 且 run: 不做模板渲染，设了也不会逐告警执行，反而误导读者以为可迭代。
+      # ⚠️ 本步是**纯 shell 任务（run:）且刻意不带任何 toolboxes**——这不是省略，而是硬约束：
+      #    框架只把 MCP 工具暴露给**智能体任务**（MCP server 挂到 agent 上），
+      #    纯 shell 任务里 `memcache_get_state` **不是可执行命令**，调用只会
+      #    `command not found`（再被 `2>/dev/null || true` 吞掉）→ `_STATUS` 恒为空 →
+      #    恒判 SKIP → **每条告警被静默跳过、全量漏审**。
+      #    另两条同源硬约束（同样决定本步写法）：
+      #      · shell 任务**不参与 repeat_prompt 扇出**（框架 fans_out 恒为 false），
+      #        `run:` 只会执行一次，故不可用 `{{ result.alert_number }}` 逐告警迭代；
+      #      · `run:` 字段**不会被框架做 Jinja 渲染**（只渲染 user_prompt），
+      #        故 `{{ globals.repo }}` / `{{ result.* }}` 在 run 里都是死字面量。
+      #    正确做法：**脚本自己**按框架同一套规则解析 memcache 落盘路径、直接读文件
+      #    （不依赖任何 MCP 工具/模板渲染），再对第 4 步写入的自包含 `_verdict` 做确定性过滤。
+      #
+      # 保持「纯 shell（无 LLM）」：它只做确定性字段过滤——仅挑 status==APPROVED 且
+      # report 非空的记录落盘，字段全部经 jq 转义。它本身就是**非智能体门禁**的一半
+      # （另一半在 publish job），保证「凡 status 非 APPROVED 的结论，机制上无法进入建 Issue 路径」。
       run: |
-        # 读取本告警第 2/3/4 步的判定、报告与校验结论
-        _REPORT="$(memcache_get_state "{{ globals.repo }}_{{ result.alert_number }}_report" 2>/dev/null || true)"
-        _VERDICT="$(memcache_get_state "{{ globals.repo }}_{{ result.alert_number }}_verdict" 2>/dev/null || true)"
-        # 仅当校验结论为 APPROVED，且报告非空时才落地结论
-        _STATUS="$(printf '%s' "$_VERDICT" | jq -r '.status // ""' 2>/dev/null || echo '')"
-        if [ "$_STATUS" != "APPROVED" ]; then
-          echo "SKIP {{ result.alert_number }}: verdict=${_STATUS:-none}" >&2
+        set -euo pipefail
+        # 定位 memcache 落盘目录：优先用 MEMCACHE_STATE_DIR（与 memcache toolbox 的 env 语义一致），
+        # 未设置时回落到框架自身的解析器（platformdirs 规则；CI（Linux/root）下为
+        # ~/.local/share/seclab-taskflow-agent/seclab-taskflow-agent/memcache）。
+        _MC_DIR="${MEMCACHE_STATE_DIR:-}"
+        if [ -z "$_MC_DIR" ]; then
+          _MC_DIR="$(python3 -c 'from seclab_taskflow_agent.path_utils import mcp_data_dir; print(mcp_data_dir("seclab-taskflow-agent","memcache","MEMCACHE_STATE_DIR"))' 2>/dev/null || true)"
+        fi
+        # 防御：解析不到目录时**明确失败**，绝不静默产出空结论（否则等同漏审）。
+        if [ -z "$_MC_DIR" ] || [ ! -d "$_MC_DIR" ]; then
+          echo "ERROR: 无法定位 memcache 落盘目录（MEMCACHE_STATE_DIR=${MEMCACHE_STATE_DIR:-<unset>}），拒绝静默跳过。" >&2
+          exit 1
+        fi
+        # 读取全部键值（兼容两种后端：sqlite 默认 memory.db / dictionary_file 的 memory.json），
+        # 统一导出为扁平 JSON 对象 {key: value}，供后续 jq 过滤。
+        _KV="$(python3 - "$_MC_DIR" <<'PY'
+        import json, os, sqlite3, sys
+        d = sys.argv[1]
+        db, js = os.path.join(d, "memory.db"), os.path.join(d, "memory.json")
+        if os.path.isfile(db):
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)  # 只读打开，避免与 MCP 进程争写锁
+            out = {}
+            for key, value in con.execute("SELECT key, value FROM key_value"):
+                try:
+                    out[key] = json.loads(value)
+                except Exception:
+                    out[key] = value
+            print(json.dumps(out))
+        elif os.path.isfile(js):
+            with open(js, encoding="utf-8") as fh:
+                print(fh.read())
+        else:
+            sys.stderr.write(f"ERROR: {d} 下既无 memory.db 也无 memory.json。\n")
+            sys.exit(1)
+        PY
+        )"
+        # 防御：memcache 内容必须是合法 JSON 对象
+        if ! printf '%s' "$_KV" | jq -e 'type == "object"' > /dev/null 2>&1; then
+          echo "ERROR: memcache 落盘内容不是合法 JSON 对象，无法落地结论。" >&2
+          exit 1
+        fi
+        # 取全部 <repo>_<alert>_verdict 键，仅保留自包含、status==APPROVED 且 report 非空的记录。
+        # （rule/path/alert_number 均来自第 4 步写入的自包含 _verdict，本步不依赖上游 result。）
+        _APPROVED="$(printf '%s' "$_KV" | jq -c '
+          [ to_entries[]
+            | select(.key | endswith("_verdict"))
+            | .value
+            | select(type == "object")
+            | select(.status == "APPROVED")
+            | select((.report // "") | type == "string" and length > 0)
+            | { alert_number: (.alert_number // null),
+                rule: (.rule // ""),
+                path: (.path // ""),
+                status: .status,
+                report: .report }
+          ]')"
+        _N="$(printf '%s' "$_APPROVED" | jq 'length')"
+        if [ "$_N" -eq 0 ]; then
+          echo "INFO: memcache 中无 APPROVED 且报告非空的结论，无需落地。" >&2
           exit 0
         fi
-        if [ -z "$_REPORT" ]; then
-          echo "SKIP {{ result.alert_number }}: empty report" >&2
-          exit 0
-        fi
-        # 组装单条结论并追加进结论文件（文件不存在时先初始化为 []）
+        # 追加进结论文件（文件不存在时先初始化为 []）；jq 全程负责转义，杜绝注入
         [ -f "$AUDIT_VERDICT_FILE" ] || echo '[]' > "$AUDIT_VERDICT_FILE"
-        _ONE="$(jq -nc \
-          --argjson alert "{{ result.alert_number }}" \
-          --arg rule "{{ result.rule }}" \
-          --arg path "{{ result.path }}" \
-          --arg status "$_STATUS" \
-          --arg report "$_REPORT" \
-          '{alert_number:$alert, rule:$rule, path:$path, status:$status, report:$report}')"
         _TMP="$(mktemp)"
-        jq --argjson one "$_ONE" '. + [$one]' "$AUDIT_VERDICT_FILE" > "$_TMP" && mv "$_TMP" "$AUDIT_VERDICT_FILE"
-        echo "RECORDED {{ result.alert_number }}"
+        jq -c --argjson add "$_APPROVED" '. + $add' "$AUDIT_VERDICT_FILE" > "$_TMP" \
+          && mv "$_TMP" "$AUDIT_VERDICT_FILE"
+        echo "RECORDED ${_N} approved verdict(s)"
 
   # ---------------------------------------------------------------------------
   # 说明：原「第 6 步 知识回流」已被移除。
