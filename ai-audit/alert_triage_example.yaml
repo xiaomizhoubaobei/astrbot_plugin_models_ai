@@ -13,6 +13,11 @@
 #     publish job）消费该结论后完成——「不可信输入」与「高权限动作」由此物理隔离，
 #     本 taskflow 全程不需要 GH_PAT。原“即时知识回流”因无法在创建后立即获得
 #     人工反馈而移除（见文末说明）。
+#   - ⚖️ 确定性边界：第 4 步的 _verdict（APPROVED/REJECTED）是 **LLM 判定**，属模型判断，
+#     不保证永远正确；能确定性保证的是「结论 → 发文」这段把关——末步（纯 shell）与
+#     publish job（纯 shell）都只认 _verdict.status == APPROVED 字段，**全程无第二个 LLM**。
+#     故只可宣称「凡 _verdict.status 非 APPROVED 的告警，机制上不可能被创建 Issue」，
+#     不可宣称「被驳回的误报绝无可能被创建」（后者取决于模型判定本身是否可靠）。
 #   - 已按官方 doc/GRAMMAR.md 语法编写：seclab-taskflow-agent 头部 + filetype: taskflow、
 #     顶层 taskflow key、agents 引用 personalities、shell run 任务 + outputs JSON Schema 校验、
 #     repeat_prompt/over 批量循环等。
@@ -227,8 +232,11 @@ taskflow:
 
   # ---------------------------------------------------------------------------
   # 4) 校验：报告不完整/不一致=幻觉，直接驳回。
-  #    产出结构化的校验结论（_verdict：APPROVED/REJECTED），供第 5 步创建 Issue 门槛判断。
-  #    ⚠️ 本步是「是否创建 Issue」的唯一审批门：仅 APPROVED 的告警会被第 5 步写入结论文件。
+  #    产出结构化的校验结论（_verdict：APPROVED/REJECTED），供第 5 步筛选出「否决的结论」。
+  #    ⚠️ 本步产出的是 **LLM 判定**（某告警是否算真实漏洞，属模型判断，非确定性保证）；
+  #       确定性的把关在**下游**：第 5 步与 publish job 均只认 status==APPROVED 字段的
+  #       纯 shell 门禁（无 LLM）。故此处的 APPROVED/REJECTED 是「结论内容」，
+  #       而非「机制上不可绕过」的证明——不要过度宣称模型判定不会出错。
   # ---------------------------------------------------------------------------
   - task:
       must_complete: true
@@ -261,7 +269,11 @@ taskflow:
   #    真正的 Issue 创建由持令牌的独立 job（ai-audit-scheduled.yml 的 publish job）
   #    消费该文件后完成，从而把「不可信输入（告警/仓库内容）」与「高权限动作（建 Issue）」
   #    物理隔离；本 job 因此无需 GH_PAT，也不需要 github_official 写工具集。
-  #    本步为纯 shell 任务，字段全部经 jq 转义后写入 JSON，杜绝注入。
+  #    本步为**纯 shell（无 LLM）**：按 status==APPROVED 字段硬过滤，字段全部经 jq 转义
+  #    后写入 JSON，杜绝注入。它与 publish job 的 jq 过滤共同构成**非智能体门禁**——
+  #    凡 _verdict.status 非 APPROVED 的告警，机制上无法进入建 Issue 路径。
+  #    ⚖️ 边界：_verdict 的内容是第 4 步 LLM 的判定，非确定性保证；此处只保证
+  #       「按已写入的结论字段做确定性过滤」，不宣称模型判定不会出错。
   # ---------------------------------------------------------------------------
   - task:
       must_complete: true

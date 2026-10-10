@@ -191,7 +191,15 @@ jobs:
           name: audit-verdicts
           path: /tmp/audit
 
-      # 仅消费结构化结论并按校验状态创建 Issue；不检出源码、不执行不可信输入。
+      # ── 非智能体门禁（deterministic gate） ──────────────────────────────────
+      # 本 step 是「是否创建 Issue」的**唯一**放行点，且**全程不含任何 LLM**：
+      #   1) 只消费上游 artifact 里的结构化 JSON（纯数据）；
+      #   2) 用 jq 硬过滤 `status == "APPROVED"` + 必备字段非空；
+      #   3) 逐条创建 Issue（去重）。
+      # 因此「被写入 `_verdict.status != APPROVED` 的告警」在机制上**无法**进入建 Issue 路径。
+      # ⚠️ 注意边界：`_verdict` 的**内容**由 triage 阶段的 LLM 判定（属模型判断，非确定性保证）；
+      #    本门禁确定性保证的是「结论 → 发文」这一段——只认 APPROVED 字段，不做二次模型判断。
+      #    故**不要**宣称「被驳回的误报绝无可能被创建」，只能说「非 APPROVED 的告警不可能被创建」。
       # GH_PAT 仅在本 step 注入，且只用于 GitHub API 建 Issue。
       - name: 按审计结论创建 Issue（去重）
         env:
@@ -202,6 +210,9 @@ jobs:
           : "${GH_PAT:?请配置仓库 Secret GH_PAT 以创建 Issue}"
           FILE=/tmp/audit/audit-verdicts.json
           if [ ! -f "$FILE" ]; then echo "无结论文件，跳过"; exit 0; fi
+          # 防御：结论文件必须是合法 JSON 数组，否则直接失败（不猜测、不放行）
+          jq -e 'type == "array"' "$FILE" >/dev/null \
+            || { echo "结论文件不是 JSON 数组，拒绝发文" >&2; exit 1; }
           # 只处理校验通过（APPROVED）且必备字段齐全的条目；字段全部按字符串使用，
           # 经 jq 转义后写入 JSON body，杜绝命令/JSON 注入。
           COUNT="$(jq '[.[] | select(.status=="APPROVED")

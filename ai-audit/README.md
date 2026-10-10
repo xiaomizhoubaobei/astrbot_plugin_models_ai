@@ -37,7 +37,9 @@ LLM + Taskflow Agent 逐个审计
 > 阶段间数据贯通：各审计阶段通过 memcache 以 `alert_number` 为 key 传递上一步结果
 > （`_evidence` 取证、`_triage` 判定、`_report` 报告、`_verdict` 校验结论），
 > 第 ⑤ 步只会在读到 `_verdict.status == APPROVED` 且 `_report` 存在时才落地结论，
-> 从机制上杜绝“被驳回的误报仍被创建”。
+> 下游持令牌的 `publish` job 再用纯 shell（`jq`）**只挑 `status == "APPROVED"` 的条目**建 Issue，结论同时落盘为 `audit-verdicts.json` 留档。
+>
+> ⚖️ **确定性边界（重要，勿过度宣称）**：`_verdict` 的**内容**由第 ④ 步的 **LLM** 判定（该告警是不是真实漏洞，属模型判断，不保证永远正确）；示例能**确定性保证**的是「结论 → 发文」这段把关属**非智能体门禁**——第 ⑤ 步与 `publish` job 都只认 `status == "APPROVED"` 字段，且二者均为纯 shell（`jq`/`curl`）、**不含任何 LLM 环节**。因此准确的表述是「**凡 `_verdict.status` 被写成非 APPROVED 的告警，机制上不可能被创建 Issue**」，而**不是**「被驳回的误报绝无可能被创建」（后者取决于模型判定本身是否可靠）。
 > 原「⑥ 知识回流」因无法在创建 Issue 后立即获得人工反馈而被移除（见文末“为什么没有知识回流”）。
 
 > 🔒 **安全设计：审计与创建 Issue 分离（pwn-request 防护）**
@@ -156,6 +158,14 @@ cp -r <本项目>/ai-audit ai_audit
    > 真正的 Issue 创建交给 `ai-audit-scheduled.yml` 里持令牌的独立 `publish` job，
    > 由它消费该结论文件后完成——这样「不可信输入（告警/仓库内容）」与「高权限动作（建 Issue）」
    > 分处两个 job，杜绝 fork PR 借审计链拿高权限令牌（见上文安全设计）。
+   >
+   > ⚖️ **边界澄清（勿过度宣称）**：`_verdict` 的**内容**（某告警到底算不算真实漏洞）
+   > 是第 ④ 步由 **LLM** 判定的，属模型判断，**不保证**永远正确。本示例能确定性保证的是
+   > **「结论 → 发文」这一段被非智能体门禁把控**：第 ⑤ 步与 `publish` job 都只看
+   > `status == "APPROVED"` 这一字段，且两者均为纯 shell（`jq`/`curl`）、**不含任何 LLM 环节**。
+   > 换言之，**一旦某告警的 `_verdict.status` 不是 APPROVED，它就无法进入建 Issue 路径**——
+   > 这是被硬编码的过滤所强制的；但「判定该告警是否 APPROVED」本身仍是模型输出的判断，
+   > 因此**不能**宣称「被驳斥的误报绝无可能被创建」，只能说「被写入 REJECTED 的告警不可能被创建」。
 
 4. 运行（注意模块路径前缀 `ai_audit.`，并通过 `-m` 显式指定模型配置）：
 
@@ -248,6 +258,9 @@ hatch run main -t ai_audit.alert_triage_example \
 - **审计与发文隔离**：taskflow 只产出结论文件；Issue 由独立持令牌 job 消费结论创建
   （标题带 `[AI审计]` 前缀，并打 `bug`/`security`/`ai-audit` 标签），自动去重避免重复创建，
   且仅对 `_verdict.status == APPROVED` 的告警执行——不可信输入与高权限动作分处两个 job。
+  ⚖️ 注意边界：**「结论 → 发文」的把关是非智能体的确定性 shell 门禁**（只认 APPROVED 字段、
+  无 LLM 参与），但 **`_verdict` 本身是 LLM 判定**。故此处只能承诺「非 APPROVED 的告警不会
+  被创建 Issue」，**不能**承诺「模型判定错误（误报被误判为 TP/APPROVED）也不会被创建」。
 
 ---
 
