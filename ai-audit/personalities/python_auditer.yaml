@@ -38,4 +38,9 @@ task: |
 toolboxes:
   - seclab_taskflow_agent.toolboxes.memcache
   - seclab_taskflow_agent.toolboxes.codeql
-  - seclab_taskflow_agent.toolboxes.github_official
+  # 说明：本审计人格**不再挂载 github_official 写工具集**。
+  #   Issue 的创建已移出本 taskflow，交给 .github/workflows/ai-audit-scheduled.yml 里
+  #   持令牌的独立 publish job 完成；审计侧只做只读分析与结论落盘，不接触任何仓库写接口，
+  #   以免把「不可信审计输入」与「高权限发文动作」耦合在同一执行上下文里。
+  #   若需在审计阶段只读查询 GitHub 元数据，可临时启用下方工具集，但**严禁**授予写权限。
+  # - seclab_taskflow_agent.toolboxes.github_official

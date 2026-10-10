@@ -5,16 +5,29 @@
 #       ai-audit/alert_triage_example.yaml，消费本仓库 CodeQL 扫描产生的最
 #       新安全告警，做 AI 自动分流。
 #
+# ── 安全模型（本工作流的核心设计，勿削弱） ──────────────────────────────────
+# 威胁：workflow_run 会为 **PR（含 fork）触发的 CodeQL 运行** 也开火，而 PR 源码
+#       由提交者完全控制；若让「持令牌建 Issue」的 job 同时检出并执行 PR 源码，
+#       fork 提交者即可借 PR 改写工作流/审计模板，驱动 agent 拿高权限 PAT 发文
+#       —— 即典型 pwn-request（fork-controlled input → 高权限令牌）。
+#
+# 对策：把流程劈成两段，中间只以 artifact（纯数据）传信，令牌与不可信源码
+#       物理隔离：
+#       ┌─ triage  job（无任何 Secret / 无写权限）──────────────────────────┐
+#       │  仅在**可信 ref**（默认分支或手动触发的本次 ref）上检出源码；      │
+#       │  只给 content-free 的只读审计能力；产出结构化审计结论 artifact。   │
+#       └──────────────────────────────────────────────────────────────────┘
+#                              ↓ audit-verdicts.json（数据）
+#       ┌─ publish job（唯一持 GH_PAT 的 job）──────────────────────────────┐
+#       │  不检出/不执行任何不可信源码；只消费 artifact 里的结构化结论，     │
+#       │  按白名单字段创建 Issue。输入已被上游 schema 约束，无法注入。      │
+#       └──────────────────────────────────────────────────────────────────┘
+#
 # 触发设计：
 #   - workflow_run：监听 CodeQL.yml（name: "代码质量分析"）的 completed 事件。
-#     为保证 CodeQL 成功后消费最新告警（而非失败/被取消的过期扫描状态），job 级
-#     增加 conclusion == 'success' 门禁（见 jobs.ai-audit.if）。
+#     仅当上游运行成功、且其 head 分支属于**本仓库**（非 fork）时才进入 triage
+#     （见 jobs.triage.if 的 head_repository 门禁），从源头掐断 fork 源码流入。
 #   - workflow_dispatch：保留手动触发，方便首次部署时验证链路。
-#
-# 最小权限：workflow_run 会触发可携仓库凭据并创建 Issue 的自动化路径，因此本工作流
-#   把顶层 GITHUB_TOKEN 收紧到 contents: read；读取告警与创建 Issue 一律走 GH_PAT，
-#   且 GH_PAT 只在真正运行审计的唯一步骤（step 级 env）注入，不在 job 级暴露。
-#   读取 CodeQL 告警的 GITHUB_TOKEN 权限为只读，不授予写能力。
 #
 # 所需 Secrets（仓库 Settings → Secrets and variables → Actions）：
 #   - AI_API_ENDPOINT 必填，上游 base_url（OpenAI 兼容口，如 https://api.deepseek.com/v1）
@@ -25,17 +38,13 @@
 #   - GH_PAT          必填，GitHub PAT，需同时含以下权限：
 #                     · security_events 读权限 —— 读取本仓库 CodeQL 告警
 #                     · repo / issues 写权限   —— 为确认的漏洞创建真实 Issue
+#                     ⚠️ 仅注入 publish job（见下），triage job 绝不接触该 Secret。
 #   - MCP_CONFIG      可选，MCP Server（GitHub API）配置
-#
-# 创建 Issue 方式：第 5 步「创建真实 Issue」通过 GitHub MCP（github_official
-# toolbox，repos/issues 工具集）的 issues.create 工具创建，不直接调用 HTTP API / curl。
 #
 # ⚠️ 注意：
 #   - 首次使用前请先用 workflow_dispatch 手动跑一次，确认链路正常。
-#   - GITHUB_TOKEN 由 Actions 自动注入，不占上述 secrets（读取告警走 GH_PAT）。
-#   - ⚠️ 本示例会**真实创建 Issue**（仅对判定为真实漏洞的告警，且自动去重）。
-#     如只想看分流结果、不修改仓库，请在 alert_triage_example.yaml 中注释第 5 步
-#     「创建真实 Issue」任务。
+#   - ⚠️ 本示例会**真实创建 Issue**（仅对判定为真实漏洞、且经校验 APPROVED 的告警，
+#     并自动去重）。如只想看分流结果、不修改仓库，可把 jobs.publish 整体注释掉。
 # =============================================================================
 
 name: "AI 审计（CodeQL 完成后自动分流）"
@@ -48,23 +57,33 @@ on:
   workflow_dispatch:  # 保留手动触发，便于首次部署时验证链路
 
 permissions:
-  # 最小权限：本工作流读取代码/告警与创建 Issue 均走 GH_PAT（见下），
-  # 顶层 GITHUB_TOKEN 仅需只读 contents。禁止授予 security-events/issues 写权限，
-  # 以免 job 内第三方/外部代码在缺省令牌的写能力下被利用。
+  # 顶层默认最小权限：本工作流不依赖 GITHUB_TOKEN 的写能力（建 Issue 走 GH_PAT，
+  # 且只在 publish job 内注入），故全局只保留只读 contents。
   contents: read
 
 jobs:
-  ai-audit:
-    name: Run AI Audit Taskflow
+  # ---------------------------------------------------------------------------
+  # Job 1：审计（无 Secret、无写权限、不接触 GH_PAT）
+  # ---------------------------------------------------------------------------
+  # 这是「不可信输入」与「高权限动作」之间的隔离墙：本 job 只做只读分析，
+  # 产出结构化结论 artifact；它**永远不持有**任何可写仓库的凭据。
+  triage:
+    name: 审计分流（无凭据）
     runs-on: ubuntu-latest
-    # 门禁：仅在「手动触发」或「上游 CodeQL 工作流成功完成」时才运行 AI 审计，
-    # 避免 CodeQL 失败/被取消（同样会触发 workflow_run.completed）时仍拿着
-    # 高权限令牌去消费旧告警、浪费模型配额甚至基于过期扫描状态误建 Issue。
+    permissions:
+      # 只读：足够读取 CodeQL 告警与仓库内容；本 job 不持有任何仓库写凭据。
+      contents: read
+      security-events: read
+    # 门禁：
+    #   1) 手动触发直接放行；
+    #   2) workflow_run 需上游 CodeQL 成功完成（避免失败/取消的过期扫描状态）；
+    #   3) 【安全关键】上游运行的 head 仓库必须是本仓库，即 fork PR 触发的
+    #      CodeQL 运行**一律不进入本工作流**，杜绝 PR 源码充当不可信输入。
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'success')
-
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
       # 只读出站加固运行器（audit 模式：记录所有出站调用，便于事后审计）
       - name: 加固运行器（审计所有出站调用）
@@ -72,13 +91,17 @@ jobs:
         with:
           egress-policy: audit
 
-      # 拉取本项目源码（含 ai-audit 示例）
-      # ⚠️ 安全性：第三方 Actions 一律锁定到已复核的不可变 commit SHA，禁用易被
-      #   上游篡改的浮动 tag（如 actions/checkout@v4），并将可执行的外部框架代码
-      #   锁定到复核过的发布 commit，杜绝「上游仓库改默认分支 -> 本工作流执行恶意
-      #   代码」的供应链投毒路径。后续升级需走正式依赖评审，而非直接改浮动 tag。
-      - name: Checkout 本项目（含 ai-audit 示例）
+      # 拉取源码：只认**可信 ref**，绝不用 workflow_run 事件里的 PR head。
+      #   手动触发 -> 当前 ref（由有写权限的维护者手动发起，可信）；
+      #   workflow_run -> 本仓库默认分支（上游已在 if 中排除 fork），确保检出的是
+      #   已合并的可信代码，而非事件携带的任意提交。
+      # ⚠️ 第三方 Actions 一律锁定到已复核的不可变 commit SHA，禁用易被上游篡改的
+      #   浮动 tag（如 actions/checkout@v4）；框架同样锁定到复核过的发布 commit。
+      - name: Checkout 本项目（仅可信 ref）
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || github.event.repository.default_branch }}
+          persist-credentials: false
 
       # 拉取 seclab-taskflow-agent 框架，固定到已复核发布的不可变 commit SHA
       - name: Checkout seclab-taskflow-agent 框架（固定 commit）
@@ -88,50 +111,36 @@ jobs:
           # 固定到复核过的 v0.5.0 发布 commit，而非浮动默认分支
           ref: 6038bb4ee9661887a09215eac70fccceb396cd02 # v0.5.0
           path: seclab-taskflow-agent
+          persist-credentials: false
 
       - name: 把 ai-audit 复制进框架根目录 ai_audit（目录名用下划线）
         # 框架通过 importlib.resources.files(package) 按 Python 模块路径加载
         # taskflow / personality / model_config。运行命令使用 -t ai_audit.* 引用
-        # 顶层模块 ai_audit，因此必须把目录复制到框架仓库根目录（在 sys.path 上），
-        # 而不能放到 examples/ 下（那样会变成 examples.ai_audit，路径对不上）。
-        # ai-audit 已含 __init__.py（含 personalities/），复制后 ai_audit 即为
-        # 可导入的 Python 包，importlib.resources 才能正确解析其下资源文件。
+        # 顶层模块 ai_audit，因此必须把目录复制到框架仓库根目录（在 sys.path 上）。
         run: |
           cp -r ai-audit seclab-taskflow-agent/ai_audit
 
       # 安装 hatch：锁定版本，避免未加约束的 pip install 拉取到被替换/污染的包
-      # ⚠️ 关键约束：同时把 virtualenv 固定到 <21。hatch 1.14.0 依赖 virtualenv 旧版
-      #    解释器发现 API（virtualenv.discovery.builtin.propose_interpreters）；而
-      #    GitHub Actions ubuntu-latest 运行器默认 Python 预装/可解析的 virtualenv
-      #    21.x 已彻底重构并移除该 API（改用 python_discovery 子包），导致 hatch run
-      #    创建 default 虚拟环境时报：
-      #       Environment `default` is incompatible:
-      #       module 'virtualenv.discovery.builtin' has no attribute 'propose_interpreters'
-      #    因此强制约束 virtualenv<21（解析到 20.x）以兼容 hatch 1.14.0。
+      # ⚠️ 关键约束：同时把 virtualenv 固定到 <21（原因见历史注释，兼容 hatch 1.14.0）。
       - name: 安装 hatch（锁定版本）
         run: pip install hatch==1.14.0 "virtualenv<21"
 
-      # 运行 AI 审计 taskflow（消费最新 CodeQL 告警）
-      # 说明：凭据仅在真正执行审计的唯一 step 注入（step 级 env），不放到 job 级，
-      #       使工作流里其它 step（含复制/安装等）不暴露这些敏感令牌，收敛凭据暴露面。
-      # ⚠️ 已知取舍：本示例为最小演示，审计与「创建真实 Issue」仍在同一 job 内完成；
-      #   生产落地建议按上文 review 意见拆成两段——先在无凭据 job 里产出并校验审计
-      #   报告（credential-free），再在最小权限的发布 job 里用窄域 PAT 创建 Issue。
-      - name: 运行 AI 审计 taskflow（消费最新 CodeQL 告警）
+      # 运行 AI 审计 taskflow（消费最新 CodeQL 告警），产出结构化结论 artifact。
+      # ⚠️ 本 job 不注入 GH_PAT；读取 CodeQL 告警所需的只读令牌用 GITHUB_TOKEN
+      #   （其权限已被顶层收紧到 contents: read，且上游 CodeQL 告警读取无需写权限）。
+      #   AI_* 凭据仅用于调用 LLM，不具备任何仓库写能力。
+      - name: 运行 AI 审计 taskflow（无仓库写凭据）
         working-directory: seclab-taskflow-agent
         env:
-          # alert_triage_example.yaml 的 alerts 任务从 GitHub Code Scanning API
-          # 实时拉取最新告警，需 PAT 含 security_events 读权限；
-          # 第 5 步「创建真实 Issue」由 agent 通过 github_official（GitHub MCP）创建，
-          # 用 GH_TOKEN（即 GH_PAT，含 repo/issues 写权限）授权
           AI_API_ENDPOINT: ${{ secrets.AI_API_ENDPOINT }}
           AI_API_TOKEN: ${{ secrets.AI_API_TOKEN }}
           AI_MODEL_NAME: ${{ secrets.AI_MODEL_NAME }}
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          # 只读令牌：仅用于读取 CodeQL 告警，不是 GH_PAT
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MCP_CONFIG: ${{ secrets.MCP_CONFIG }}
-          # 默认审计本仓库，如需改为其它仓库可改这里（owner/repo）
           GITHUB_REPOSITORY: ${{ github.repository }}
+          # 审计结果落盘位置，供 publish job 消费
+          AUDIT_VERDICT_FILE: /tmp/audit-verdicts.json
         run: |
           # 模型从仓库 Secret AI_MODEL_NAME 经 COPILOT_DEFAULT_MODEL 传入框架，
           # 因此调用前必须确保其非空（GitHub Actions 未配置的 Secret 会解析成空串）
@@ -141,6 +150,89 @@ jobs:
           #   COPILOT_DEFAULT_MODEL 环境变量决定，见 ai-audit/model_config.yaml）
           hatch run main -t ai_audit.alert_triage_example \
               -m ai_audit.model_config
+          # 兜底：若 taskflow 未产出结论文件，写一个空数组，保证 artifact 存在
+          [ -f "$AUDIT_VERDICT_FILE" ] || echo '[]' > "$AUDIT_VERDICT_FILE"
+
+      # 上传审计结论（纯数据），交给下游持令牌的 publish job。
+      # 仅上传结论 JSON，不上传任何可执行产物，避免下游执行不可信代码。
+      - name: 上传审计结论 artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f4734413 # v4.6.2
+        with:
+          name: audit-verdicts
+          path: /tmp/audit-verdicts.json
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Job 2：发布（唯一持有 GH_PAT 的 job）
+  # ---------------------------------------------------------------------------
+  # 本 job 的输入只有上游 artifact（结构化 JSON），字段受白名单约束，因此即便
+  # artifact 内容被污染，也无法注入工作流或命令；它不检出/不执行任何仓库源码。
+  publish:
+    name: 创建 Issue（持令牌）
+    needs: triage
+    runs-on: ubuntu-latest
+    # 仅当上游确实产出了结论时才跑
+    if: needs.triage.result == 'success'
+    permissions:
+      # 仍保持最小权限：建 Issue 走 GH_PAT，不依赖 GITHUB_TOKEN 写能力
+      contents: read
+    steps:
+      - name: 加固运行器（审计所有出站调用）
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - name: 下载审计结论 artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: audit-verdicts
+          path: /tmp/audit
+
+      # 仅消费结构化结论并按校验状态创建 Issue；不检出源码、不执行不可信输入。
+      # GH_PAT 仅在本 step 注入，且只用于 GitHub API 建 Issue。
+      - name: 按审计结论创建 Issue（去重）
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          : "${GH_PAT:?请配置仓库 Secret GH_PAT 以创建 Issue}"
+          FILE=/tmp/audit/audit-verdicts.json
+          if [ ! -f "$FILE" ]; then echo "无结论文件，跳过"; exit 0; fi
+          # 只处理校验通过（APPROVED）且必备字段齐全的条目；字段全部按字符串使用，
+          # 经 jq 转义后写入 JSON body，杜绝命令/JSON 注入。
+          COUNT="$(jq '[.[] | select(.status=="APPROVED")
+                             | select((.rule//"")!="" and (.path//"")!=""
+                                      and (.alert_number//"")!="")]
+                        | length' "$FILE")"
+          echo "待创建 Issue 数：$COUNT"
+          if [ "$COUNT" -eq 0 ]; then echo "无可发布结论，跳过"; exit 0; fi
+          jq -c '.[] | select(.status=="APPROVED")
+                     | select((.rule//"")!="" and (.path//"")!=""
+                              and (.alert_number//"")!="")' "$FILE" \
+          | while IFS= read -r item; do
+              RULE="$(jq -r '.rule' <<<"$item")"
+              PATH_="$(jq -r '.path' <<<"$item")"
+              ALERT="$(jq -r '.alert_number' <<<"$item")"
+              REPORT="$(jq -r '.report // ""' <<<"$item")"
+              TITLE="[AI审计] ${RULE} - ${PATH_}"
+              # 防重复：标题完全相同的 open Issue 已存在则跳过
+              EXIST="$(curl -fsSL -H "Authorization: Bearer ${GH_PAT}" \
+                -H "Accept: application/vnd.github+json" \
+                "${GITHUB_API_URL:-https://api.github.com}/repos/${REPO}/issues?state=open&per_page=100" \
+                | jq --arg t "$TITLE" '[.[] | select(.title==$t)] | length')"
+              if [ "$EXIST" != "0" ]; then echo "已存在，跳过：$TITLE"; continue; fi
+              # 用 jq 组装 body，确保报告全文被正确转义（不拼接裸字符串）
+              BODY="$(jq -n --arg r "$REPORT" --arg a "$ALERT" --arg ru "$RULE" --arg p "$PATH_" \
+                '"> 由 AI 审计自动创建（CodeQL 告警分流）。\n\n## 漏洞概述\n\n\($r)\n\n## 关联 CodeQL 告警\n\n- 告警编号：\($a)\n- 规则：\($ru)\n- 文件：\($p)\n\n## 修复建议\n\n- 请参考上方报告中给出的修复建议，在对应文件中修复后关闭本 Issue。"')"
+              PAYLOAD="$(jq -n --arg t "$TITLE" --arg b "$BODY" \
+                '{title:$t, body:$b, labels:["bug","security","ai-audit"]}')"
+              curl -fsSL -X POST -H "Authorization: Bearer ${GH_PAT}" \
+                -H "Accept: application/vnd.github+json" \
+                "${GITHUB_API_URL:-https://api.github.com}/repos/${REPO}/issues" \
+                -d "$PAYLOAD" > /dev/null
+              echo "已创建：$TITLE"
+            done
 
 # ---------------------------------------------------------------------------
 # 说明：本工作流已由 schedule（cron 时间差）改为 workflow_run 触发，

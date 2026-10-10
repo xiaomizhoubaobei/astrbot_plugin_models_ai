@@ -6,10 +6,13 @@
 # 框架：GitHubSecurityLab/seclab-taskflow-agent
 # 说明：
 #   - 本文件是一个“测试用示例”，用于验证 AI 审计链路能跑通
-#     （CodeQL 告警 -> 信息收集 -> 审计 -> 报告 -> 校验 -> 创建真实 Issue）。
+#     （CodeQL 告警 -> 信息收集 -> 审计 -> 报告 -> 校验 -> 产出结构化结论）。
 #   - 阶段间数据贯通：各审计阶段通过 memcache（按 alert_number 为 key）把前一步
-#     的取证/判定/报告传给下一步，并仅对校验结论为 APPROVED 的告警创建 Issue；
-#     原“即时知识回流”因无法在创建后立即获得人工反馈而移除（见文末说明）。
+#     的取证/判定/报告传给下一步；末步只**落地结构化结论文件**（不建 Issue）。
+#     Issue 的创建由持令牌的独立 job（.github/workflows/ai-audit-scheduled.yml 的
+#     publish job）消费该结论后完成——「不可信输入」与「高权限动作」由此物理隔离，
+#     本 taskflow 全程不需要 GH_PAT。原“即时知识回流”因无法在创建后立即获得
+#     人工反馈而移除（见文末说明）。
 #   - 已按官方 doc/GRAMMAR.md 语法编写：seclab-taskflow-agent 头部 + filetype: taskflow、
 #     顶层 taskflow key、agents 引用 personalities、shell run 任务 + outputs JSON Schema 校验、
 #     repeat_prompt/over 批量循环等。
@@ -24,6 +27,8 @@
 # 适配语言：Python
 # 告警输入：由 .github/workflows/CodeQL.yml 扫描产出的 CodeQL 安全告警
 # 运行方式：hatch run main -t ai_audit.alert_triage_example （详见 README.md 部署说明）
+# 输出：结构化审计结论 JSON，路径由环境变量 AUDIT_VERDICT_FILE 指定
+#       （默认 /tmp/audit-verdicts.json），供下游持令牌 job 消费后创建 Issue。
 # =============================================================================
 
 seclab-taskflow-agent:
@@ -33,7 +38,7 @@ seclab-taskflow-agent:
 # 可选：引入模型配置（参照 examples/model_configs/），如无需可删除本行
 # model_config: examples.model_configs.model_config
 
-# 仓库名（owner/repo），用于第 5 步创建真实 Issue；也可通过 -g repo=... 覆盖
+# 仓库名（owner/repo），用于拉取 CodeQL 告警与标识审计对象；也可通过 -g repo=... 覆盖
 globals:
   repo: xiaomizhoubaobei/astrbot_plugin_models_ai
 
@@ -179,7 +184,7 @@ taskflow:
   # ---------------------------------------------------------------------------
   # 4) 校验：报告不完整/不一致=幻觉，直接驳回。
   #    产出结构化的校验结论（_verdict：APPROVED/REJECTED），供第 5 步创建 Issue 门槛判断。
-  #    ⚠️ 本步是「是否创建 Issue」的唯一审批门：仅 APPROVED 才会在第 5 步被发布。
+  #    ⚠️ 本步是「是否创建 Issue」的唯一审批门：仅 APPROVED 的告警会被第 5 步写入结论文件。
   # ---------------------------------------------------------------------------
   - task:
       must_complete: true
@@ -205,56 +210,48 @@ taskflow:
         本步只写 _verdict，不创建任何 Issue。
 
   # ---------------------------------------------------------------------------
-  # 5) 创建真实 Issue：仅对「校验结论为 APPROVED」的真实漏洞创建 GitHub Issue。
-  #    agent 任务（agents: + user_prompt）：先读 _report 与 _verdict 双重把关，
-  #    通过 GitHub MCP（github_official，repos/issues 工具集）创建，非 APPROVED 一律 SKIP。
-  #    ⚠️ 本步会真实创建 Issue，请在确认链路无误后开启；如需仅输出不改仓库，可注释本步。
-  #    需要 GH_TOKEN（PAT，含 repo / issues 写权限），否则 github_official 工具不可用。
+  # 5) 落地结构化审计结论：仅对「校验结论为 APPROVED」的告警，产出一条结构化 JSON，
+  #    追加写入 AUDIT_VERDICT_FILE（默认 /tmp/audit-verdicts.json），作为后续
+  #    「创建 Issue」的唯一输入。
+  #    ⚠️ 本步**不创建任何 Issue**、不调用任何 GitHub 写接口：它只是把结论落盘。
+  #    真正的 Issue 创建由持令牌的独立 job（ai-audit-scheduled.yml 的 publish job）
+  #    消费该文件后完成，从而把「不可信输入（告警/仓库内容）」与「高权限动作（建 Issue）」
+  #    物理隔离；本 job 因此无需 GH_PAT，也不需要 github_official 写工具集。
+  #    本步为纯 shell 任务，字段全部经 jq 转义后写入 JSON，杜绝注入。
   # ---------------------------------------------------------------------------
   - task:
       must_complete: true
       if: "outputs.alerts | length > 0"
       repeat_prompt: true
       over: "outputs.alerts"
-      agents:
-        - ai_audit.personalities.python_auditer
       toolboxes:
-        - seclab_taskflow_agent.toolboxes.github_official
         - seclab_taskflow_agent.toolboxes.memcache
-      env:
-        GITHUB_MCP_TOOLSETS: repos,issues
-      user_prompt: |
-        针对 CodeQL 告警 {{ result.alert_number }}（规则：{{ result.rule }}，文件：{{ result.path }}），
-        只有当它通过第 4 步校验（_verdict.status==APPROVED）时才创建 GitHub Issue。请严格按以下步骤执行：
-
-        1. 读取报告与结论：调用 memcache_get_state 读取
-           key "{{ globals.repo }}_{{ result.alert_number }}_verdict"
-           与 "{{ globals.repo }}_{{ result.alert_number }}_report"。
-        2. 门槛校验，任一不满足则直接跳过（不做任何创建，仅输出 SKIP）：
-           - _verdict 不存在或其 status != "APPROVED"（含被驳回 REJECTED / 误报 FP）；
-           - _report 不存在或为空；
-           - alert_number、rule、path 任一为空；
-           - 待创建的标题/正文中仍含未渲染的模板变量占位（以左双大括号开头的
-             Jinja 残留，说明模板未被替换），禁止创建以免再次生成垃圾 Issue。
-        3. 防重复：先调用 GitHub MCP 工具（issues 工具集）检查仓库 {{ globals.repo }} 中是否
-           已存在标题完全相同的 open Issue；若已存在，则跳过（仅输出 SKIP）。
-        4. 通过 GitHub MCP 的 issues.create 工具（github_official toolbox，issues 工具集）
-           在仓库 {{ globals.repo }} 创建 Issue，禁止直接调用 HTTP API / curl：
-           - 通过 GitHub MCP 工具接口调用，而不是直接发起 HTTP 请求；
-           - 标题："[AI审计] {{ result.rule }} - {{ result.path }}"
-           - 正文（Markdown）如下，报告内容取自步骤 1 读取的漏洞报告（_report）：
-             ## 漏洞概述
-             {报告全文}
-
-             ## 关联 CodeQL 告警
-             - 告警编号：{{ result.alert_number }}
-             - 规则：{{ result.rule }}
-             - 文件：{{ result.path }}
-
-             ## 修复建议
-             - 请参考上方报告中给出的修复建议，在对应文件中修复后关闭本 Issue。
-           - 标签：["bug", "security", "ai-audit"]
-        5. 创建成功后输出 CREATED。
+      run: |
+        # 读取本告警第 2/3/4 步的判定、报告与校验结论
+        _REPORT="$(memcache_get_state "{{ globals.repo }}_{{ result.alert_number }}_report" 2>/dev/null || true)"
+        _VERDICT="$(memcache_get_state "{{ globals.repo }}_{{ result.alert_number }}_verdict" 2>/dev/null || true)"
+        # 仅当校验结论为 APPROVED，且报告非空时才落地结论
+        _STATUS="$(printf '%s' "$_VERDICT" | jq -r '.status // ""' 2>/dev/null || echo '')"
+        if [ "$_STATUS" != "APPROVED" ]; then
+          echo "SKIP {{ result.alert_number }}: verdict=${_STATUS:-none}" >&2
+          exit 0
+        fi
+        if [ -z "$_REPORT" ]; then
+          echo "SKIP {{ result.alert_number }}: empty report" >&2
+          exit 0
+        fi
+        # 组装单条结论并追加进结论文件（文件不存在时先初始化为 []）
+        [ -f "$AUDIT_VERDICT_FILE" ] || echo '[]' > "$AUDIT_VERDICT_FILE"
+        _ONE="$(jq -nc \
+          --argjson alert "{{ result.alert_number }}" \
+          --arg rule "{{ result.rule }}" \
+          --arg path "{{ result.path }}" \
+          --arg status "$_STATUS" \
+          --arg report "$_REPORT" \
+          '{alert_number:$alert, rule:$rule, path:$path, status:$status, report:$report}')"
+        _TMP="$(mktemp)"
+        jq --argjson one "$_ONE" '. + [$one]' "$AUDIT_VERDICT_FILE" > "$_TMP" && mv "$_TMP" "$AUDIT_VERDICT_FILE"
+        echo "RECORDED {{ result.alert_number }}"
 
   # ---------------------------------------------------------------------------
   # 说明：原「第 6 步 知识回流」已被移除。

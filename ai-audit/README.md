@@ -29,19 +29,32 @@ LLM + Taskflow Agent 逐个审计
   ├─ ② 审计：剔除误报（攻击者能否触发？是否特权上下文？）
   ├─ ③ 生成漏洞报告（带精确文件+行号引用）
   ├─ ④ 校验：报告不完整/不一致=幻觉，直接驳回
-  └─ ⑤ 创建真实 Issue：仅对**校验通过(APPROVED)**的真实漏洞自动创建 Issue
+  └─ ⑤ 落地结构化结论：仅对**校验通过(APPROVED)**的告警产出结论 JSON
 ```
 
 本目录的 `alert_triage_example.yaml` 即对应上面的 5 阶段流程（外加第 0 步拉取告警）。
 
 > 阶段间数据贯通：各审计阶段通过 memcache 以 `alert_number` 为 key 传递上一步结果
 > （`_evidence` 取证、`_triage` 判定、`_report` 报告、`_verdict` 校验结论），
-> 第 ⑤ 步只会在读到 `_verdict.status == APPROVED` 且 `_report` 存在时才创建 Issue，
+> 第 ⑤ 步只会在读到 `_verdict.status == APPROVED` 且 `_report` 存在时才落地结论，
 > 从机制上杜绝“被驳回的误报仍被创建”。
 > 原「⑥ 知识回流」因无法在创建 Issue 后立即获得人工反馈而被移除（见文末“为什么没有知识回流”）。
 
-> ⚠️ 第 ⑤ 步会**真实创建 Issue**。若你只想看分流结果、不修改仓库，
-> 请把 `alert_triage_example.yaml` 中第 ⑤ 步「创建真实 Issue」任务整体注释掉。
+> 🔒 **安全设计：审计与创建 Issue 分离（pwn-request 防护）**
+> `ai-audit-scheduled.yml` 把流程拆成**两个 job**，中间只以 **artifact（纯数据）** 传信：
+> - `triage` job：**不持有任何仓库写凭据**（无 `GH_PAT`），仅在**可信 ref**（手动触发的本次 ref
+>   或默认分支）上检出源码，产出结论文件 `audit-verdicts.json`；
+> - `publish` job：**唯一持有 `GH_PAT` 的 job**，**不检出/不执行任何源码**，只消费 artifact 里
+>   的结构化结论按白名单字段建 Issue。
+>
+> 之所以必须这样拆：`workflow_run` 会为 **PR（含 fork）触发的 CodeQL 运行**也开火，而 PR 源码
+> 由提交者控制；若让持令牌的 job 同时执行 PR 源码，fork 提交者即可借 PR 改写审计模板，
+> 驱动 agent 拿高权限 PAT 发文（典型 pwn-request）。因此本工作流还有两道源头门禁：
+> ① `triage` job 的 `if` 要求上游运行的 `head_repository` 必须是**本仓库**，fork PR 触发的
+> CodeQL 运行一律不进入；② checkout 只认**可信 ref**，绝不用事件携带的 PR head。
+
+> ⚠️ `publish` job 会**真实创建 Issue**。若你只想看分流结果、不修改仓库，
+> 请把 `ai-audit-scheduled.yml` 中的 `publish` job 整体注释掉（`triage` 仍会正常产出结论）。
 
 > 💡 **无告警自动跳过**：当仓库当前**没有 open 的 CodeQL 告警**时，
 > `alerts` 任务（第 0 步）拉取到的列表为空，后续 5 个 `repeat_prompt` 任务
@@ -90,8 +103,9 @@ ai-audit/
 | 仓库已开启 CodeQL 扫描 | `.github/workflows/CodeQL.yml` 已存在 | ✅ 已具备 |
 | `seclab-taskflow-agent` 框架 | 需部署框架本体 | ❌ 需部署 |
 | LLM 模型（支持函数调用） | 任意 OpenAI 兼容上游：DeepSeek / 通义千问 / Moonshot / 本地 vLLM 等 | ❌ 需配置（`AI_API_ENDPOINT` + `AI_API_TOKEN`） |
-| GitHub PAT（读告警 + 写 Issue） | 读 CodeQL 告警、创建真实 Issue 用 | ❌ 需你提供 |
-| MCP Server（GitHub API） | 框架信息收集用 | ❌ 需配置 |
+| GitHub PAT（读告警） | 审计侧只读拉取 CodeQL 告警用（`security_events` 读权限即可） | ❌ 需你提供 |
+| GitHub PAT（写 Issue） | 仅 `publish` job 创建真实 Issue 用（`repo/issues` 写权限） | ❌ 需你提供 |
+| MCP Server（GitHub API） | 框架可选的信息收集能力（只读） | ⭕ 可选 |
 
 ---
 
@@ -127,21 +141,19 @@ cp -r <本项目>/ai-audit ai_audit
 
 3. 按官方配置指南配好 LLM 模型 + GitHub PAT + MCP Server。
    示例的 `alerts` 任务会通过 GitHub Code Scanning API 拉取**最新 CodeQL 告警**，
-   因此需要导出 `GITHUB_TOKEN`（PAT，需含 `security_events` 读权限 + `repo/issues` 写权限，
-   后者用于第 ⑤ 步创建真实 Issue）；如需指定其它仓库，可额外设置 `GITHUB_REPOSITORY=owner/repo`。
+   因此需要导出 `GITHUB_TOKEN`（PAT，需含 `security_events` 读权限）；如需指定其它仓库，
+   可额外设置 `GITHUB_REPOSITORY=owner/repo`。
 
-   > 第 ⑤ 步「创建真实 Issue」现由 **agent 任务**（`agents:` + `user_prompt:`）通过
-   > `seclab_taskflow_agent.toolboxes.github_official`（GitHub MCP，工具集 `repos,issues`）创建，
-   > 因为 `{{ result.xxx }}` 这类占位符只能在 agent 的 `user_prompt` 模板里渲染，`run:`
-   > 纯 shell 任务不会替换模板（旧实现因此曾把模板原文 POST 出去生成垃圾 Issue）。
-   > 需要导出 `GH_TOKEN`（PAT，含 `repo/issues` 写权限）供该 MCP 授权；默认创建到
-   > `globals.repo`（可在文件顶部 `globals:` 修改或命令行 `-g repo=owner/repo` 覆盖）。
    > 各审计阶段经 memcache 按告警贯通：第 ① 步写取证 `_evidence`，第 ② 步写判定 `_triage`，
    > 第 ③ 步对 TP 写报告 `_report`，第 ④ 步写校验结论 `_verdict`（APPROVED/REJECTED）。
-   > 第 ⑤ 步读取 `_verdict` 与 `_report`，**仅当 status==APPROVED 且报告非空/非占位符**时才创建。
-   > 同时，`python_auditer.yaml` personality 的 `toolboxes` 也已加入
-   > `seclab_taskflow_agent.toolboxes.github_official`，确保 agent 在审计/创建 Issue 全程
-   > 均通过 **GitHub MCP**（而非直接 HTTP API / curl）与 GitHub 交互。
+   > 第 ⑤ 步读取 `_verdict` 与 `_report`，**仅当 status==APPROVED 且报告非空**时，
+   > 通过纯 shell（`jq`）把 `{alert_number, rule, path, status, report}` 追加写进
+   > `AUDIT_VERDICT_FILE`（默认 `/tmp/audit-verdicts.json`）。
+   >
+   > 🔒 **本 taskflow 全程不创建 Issue、不需要 `GH_PAT`**：它只产出结论文件。
+   > 真正的 Issue 创建交给 `ai-audit-scheduled.yml` 里持令牌的独立 `publish` job，
+   > 由它消费该结论文件后完成——这样「不可信输入（告警/仓库内容）」与「高权限动作（建 Issue）」
+   > 分处两个 job，杜绝 fork PR 借审计链拿高权限令牌（见上文安全设计）。
 
 4. 运行（注意模块路径前缀 `ai_audit.`，并通过 `-m` 显式指定模型配置）：
 
@@ -149,7 +161,7 @@ cp -r <本项目>/ai-audit ai_audit
 # 方式 A：仅设环境变量（端点与密钥来自 AI_API_ENDPOINT / AI_API_TOKEN，模型用框架默认）
 AI_API_ENDPOINT=https://api.deepseek.com/v1 \
 AI_API_TOKEN=<你的APIKey> \
-GITHUB_TOKEN=<你的PAT> \
+GITHUB_TOKEN=<只读 PAT，含 security_events 读权限即可> \
 hatch run main -t ai_audit.alert_triage_example
 
 # 方式 B：显式指定 model_config（推荐，声明 api_type: chat_completions，更稳）
@@ -157,9 +169,10 @@ hatch run main -t ai_audit.alert_triage_example
 COPILOT_DEFAULT_MODEL=<你的模型名，如 deepseek-v4-flash> \
 AI_API_ENDPOINT=https://api.deepseek.com/v1 \
 AI_API_TOKEN=<你的APIKey> \
-GITHUB_TOKEN=<你的PAT> \
+GITHUB_TOKEN=<只读 PAT，含 security_events 读权限即可> \
 hatch run main -t ai_audit.alert_triage_example \
     -m ai_audit.model_config
+# 结论落在 $AUDIT_VERDICT_FILE（默认 /tmp/audit-verdicts.json），本命令不创建 Issue
 ```
 
 > `model_config.yaml` 是框架实际读取的模型配置文件（`-m` 参数指定模块路径，
@@ -175,6 +188,8 @@ hatch run main -t ai_audit.alert_triage_example \
 
 - **自动触发**：默认监听 `CodeQL.yml`（name: `代码质量分析`）的 `completed` 事件，
   在 CodeQL 扫完后确定性地运行，保证消费最新告警；同时保留 `workflow_dispatch` 手动触发。
+  🔒 **fork 门禁**：仅当上游运行的 `head_repository` 为本仓库时才进入审计，fork PR 触发的
+  CodeQL 运行一律跳过，从源头杜绝把 PR 源码当作不可信输入送进审计链。
 - **手动触发**：在仓库 **Actions → AI 审计（CodeQL 完成后自动分流）→ Run workflow** 手动跑一次用于验证。
 
 **所需 Secrets**（仓库 **Settings → Secrets and variables → Actions**）：
@@ -184,7 +199,7 @@ hatch run main -t ai_audit.alert_triage_example \
 | `AI_API_ENDPOINT` | ✅ | 上游 base_url（OpenAI 兼容口，如 `https://api.deepseek.com/v1`，或本地 vLLM / Ollama 的 OpenAI 兼容地址） |
 | `AI_API_TOKEN` | ✅ | 对应厂商的 API Key（需支持函数调用） |
 | `AI_MODEL_NAME` | ✅ | 实际调用的模型名（如 `deepseek-v4-flash` / `qwen-max` / `kimi-k2` 等）。工作流运行时将其透传给框架的 `COPILOT_DEFAULT_MODEL` 环境变量 |
-| `GH_PAT` | ✅ | GitHub PAT，需 `security_events` 读权限（读 CodeQL 告警） + `repo/issues` 写权限（创建真实 Issue） |
+| `GH_PAT` | ✅ | GitHub PAT，需 `repo/issues` 写权限（创建真实 Issue）。**仅注入 `publish` job**，`triage` job 绝不接触该 Secret |
 | `MCP_CONFIG` | 可选 | MCP Server（GitHub API）配置 |
 
 > 📌 框架只识别 `AI_API_ENDPOINT` / `AI_API_TOKEN`（即 `AsyncOpenAI(base_url=..., api_key=...)`），
@@ -193,7 +208,9 @@ hatch run main -t ai_audit.alert_triage_example \
 > `api_type: chat_completions`（OpenAI 兼容标准协议）。
 
 > ⚠️ 由于示例会为真实漏洞**创建 Issue**，`GH_PAT` 必须具有仓库的 `issues` 写权限，
-> 否则第 ⑤ 步会失败（可注释该步降级为只输出分流结果）。
+> 否则 `publish` job 会失败（可把 `publish` job 整体注释掉，降级为只产出审计结论）。
+> 🔒 `GH_PAT` 只在 `publish` job 的建 Issue 步骤注入；`triage` job 全程不接触它，
+> 因此即便审计对象被污染，也无凭据可被滥用。
 
 > 首次使用建议先 `workflow_dispatch` 手动跑一次，确认链路正常后再依赖自动触发。
 
@@ -214,20 +231,21 @@ hatch run main -t ai_audit.alert_triage_example \
    （`state=open&tool_name=CodeQL`），并映射成下游需要的
    `alert_number / rule / path / message` 结构，无需手动维护告警列表。
 2. 观察各阶段输出是否符合预期，重点看**校验阶段（第 ④ 步）**是否把不完整报告驳回并写入
-   `_verdict.status == REJECTED`，以及第 ⑤ 步是否仅对 APPROVED 创建 Issue。
-3. 确认无误后开启第 ⑤ 步（若已在任务流中启用），即可对真实漏洞自动创建 Issue。
+   `_verdict.status == REJECTED`，以及第 ⑤ 步的结论文件是否只包含 APPROVED 的告警。
+3. 确认无误后开启 `publish` job（若已注释），即可对真实漏洞自动创建 Issue。
 
 ---
 
 ## 六、本示例的特点
 
 - **针对 Python**：适配本仓库（AstrBot Python 插件）的代码审计场景。
-- **5 阶段审计链 + 数据贯通**：信息收集 → 审计 → 报告 → 校验 → 创建真实 Issue。
+- **5 阶段审计链 + 数据贯通**：信息收集 → 审计 → 报告 → 校验 → 落地结构化结论。
   各阶段经 memcache 按告警传递 `_evidence/_triage/_report/_verdict`，下游始终基于上游结论判定。
 - **分页拉取**：`alerts` 任务逐页拉取全部 open 的 CodeQL 告警，仓库告警超过 100 条也不会漏审。
 - **防幻觉校验**：报告不完整/不一致直接驳回（`_verdict=REJECTED`），避免 LLM 编造漏洞。
-- **真实 Issue 创建**：仅对 `_verdict.status == APPROVED` 的告警创建 GitHub Issue
-  （标题带 `[AI审计]` 前缀，并打 `bug`/`security`/`ai-audit` 标签），自动去重避免重复创建。
+- **审计与发文隔离**：taskflow 只产出结论文件；Issue 由独立持令牌 job 消费结论创建
+  （标题带 `[AI审计]` 前缀，并打 `bug`/`security`/`ai-audit` 标签），自动去重避免重复创建，
+  且仅对 `_verdict.status == APPROVED` 的告警执行——不可信输入与高权限动作分处两个 job。
 
 ---
 
@@ -242,6 +260,10 @@ hatch run main -t ai_audit.alert_triage_example \
 
 ---
 
+> 🔒 安全模型说明：本工作流已按「不可信输入与高权限动作隔离」原则改造——审计 job 无凭据、
+> 发文 job 不落地源码，两者以 artifact 传信，并在 `workflow_run` 上加了 fork 门禁，
+> 用于消除「fork PR 源码 → 持 GH_PAT 的 AI agent」这一提权路径。
+>
 > 📌 本示例由 CNB NPC（武则天）依据 `XMZZUZHI/Github/302/prompt_generator` 仓库的 ai-audit 示例，
 > 为本仓库 `astrbot_plugin_models_ai`（Python）适配生成的测试用示例，
 > 供你评估 AI 审计链路。请结合你的实际业务代码调整审计规则。
