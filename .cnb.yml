@@ -1,4 +1,53 @@
+# ============================================================================
+# NPC 流水线：issue / PR 评论 @NPC 触发，使用官方 npc:go 内置任务执行 AI 任务
+#
+# 与 SuperNPC 主仓库标准形态对齐（.npc: &npc），并在此补一步「Skill 目录铺设」：
+# 构建期 `npm run skills:install` 把官方技能装到 /root/.agents/skills，但 CodeBuddy CLI
+# 的用户级 skill 目录是 ~/.codebuddy/skills（见 executor.ts 的 settingSources: ['project','user']），
+# 二者对不上会导致装好的技能读不到。故在「启动NPC」之前，先做 Dockerfile 里
+# `COPY --from=builder /root/.agents/skills /root/.codebuddy/skills` 与 `RUN rm -rf /root/.agents`
+# 的等效步骤（CNB pipeline 层用 cp / rm 落地），再启动 NPC。
+# ============================================================================
+.npc: &npc
+  - runner:
+      cpus: 64
+    docker:
+      image: qixiaoxin/supernpc:latest
+    imports:
+      - https://cnb.cool/XMZZUZHI/key/-/blob/main/npc.yml
+    stages:
+      # 等效 COPY --from=builder /root/.agents/skills /root/.codebuddy/skills
+      # 用 cp -rn 合并铺设：保留 ~/.codebuddy/skills 内既有的语音技能，不覆盖同名项
+      - name: 铺设Skills到CodeBuddy用户级目录
+        script: |
+          mkdir -p /root/.codebuddy/skills
+          if [ -d /root/.agents/skills ]; then
+            cp -rn /root/.agents/skills/. /root/.codebuddy/skills/
+            echo "[skills] 已铺设 $(ls -1 /root/.codebuddy/skills | wc -l) 个技能到 /root/.codebuddy/skills"
+          else
+            echo "[skills] 未发现 /root/.agents/skills，跳过铺设"
+          fi
+      # 等效 RUN rm -rf /root/.agents：瘦身并避免源目录残留
+      - name: 清理Agents源目录
+        script: |
+          rm -rf /root/.agents
+          echo "[skills] 已清理 /root/.agents"
+      # 把随镜像分发的语音回复规范复制到 workdir，作为「项目级记忆」被 CodeBuddy 加载，
+      # 保证「先合成语音再回帖」的规则在任意调用方仓库都生效。
+      - name: 注入语音回复规范
+        script: |
+          cp -f /root/.codebuddy/CODEBUDDY.md /workspace/CODEBUDDY.md
+          ls -l /workspace/CODEBUDDY.md
+      # 使用官方 npc:go 内置任务执行 AI/NPC 任务
+      - name: 启动NPC
+        type: npc:go
+        options:
+          contextWindow: 1m
+          maxTurns: 1000
 $:
+    # NPC 触发绑定：Issue / 合并请求评论中 @NPC 即触发（配置体见顶层 .npc 锚点）
+    issue.comment@npc: *npc
+    pull_request.comment@npc: *npc
     vscode:
         - docker:
             image: docker.cnb.cool/xmzzuzhi/cnb-docker/python:0.0.1
