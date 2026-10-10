@@ -271,11 +271,27 @@ hatch run main -t ai_audit.alert_triage_example \
 - **分页拉取**：`alerts` 任务逐页拉取全部 open 的 CodeQL 告警，仓库告警超过 100 条也不会漏审。
 - **防幻觉校验**：报告不完整/不一致直接驳回（`_verdict=REJECTED`），避免 LLM 编造漏洞。
 - **审计与发文隔离**：taskflow 只产出结论文件；Issue 由独立持令牌 job 消费结论创建
-  （标题带 `[AI审计]` 前缀，并打 `bug`/`security`/`ai-audit` 标签），自动去重避免重复创建，
-  且仅对 `_verdict.status == APPROVED` 的告警执行——不可信输入与高权限动作分处两个 job。
+  （标题带 `[AI审计]` 前缀，并打 `bug`/`security`/`ai-audit` 标签），且仅对
+  `_verdict.status == APPROVED` 的告警执行——不可信输入与高权限动作分处两个 job。
   ⚖️ 注意边界：**「结论 → 发文」的把关是非智能体的确定性 shell 门禁**（只认 APPROVED 字段、
   无 LLM 参与），但 **`_verdict` 本身是 LLM 判定**。故此处只能承诺「非 APPROVED 的告警不会
   被创建 Issue」，**不能**承诺「模型判定错误（误报被误判为 TP/APPROVED）也不会被创建」。
+- **发文幂等 + 并发自愈（防重复 Issue）**：CodeQL 在 push / PR / schedule 多入口下可能
+  **并发完成**，从而同时拉起多个本工作流实例；若两个 `publish` 同时走到「先查是否存在、
+  再创建」的判定点，就会双双读到「不存在」→ 双双创建 → 同一漏洞出现两条 Issue。为此：
+  1. **工作流级 `concurrency`**：`group: ${{ github.workflow }}` + `cancel-in-progress: false`，
+     把所有触发源的实例收敛到**同一条队列**串行执行，从源头掐掉并发（不掺 `github.ref`，
+     否则不同 ref 的实例会落入不同队列、竞态依旧）。
+  2. **指纹去重**：正文首部写入 `<!-- ai-audit-alert:<alert_number> -->`（HTML 注释，用户不可见），
+     以 **`alert_number`** 而非标题作幂等判据——标题是 `[AI审计] <rule> - <path>`，同 rule+path
+     的不同告警会撞标题（误合并），同告警标题微调又会漏判（漏合并）。
+  3. **全量翻页**：去重检索**逐页遍历全部 open Issue**，而非只取 `?per_page=100` 首页——
+     仓库 open Issue 超 100 条时，排在其后的既有 Issue 会被漏查而重复创建。
+  4. **创建后自愈（TOCTOU 兜底）**：创建后立即复查同指纹；若临界区里对方已抢先建过，
+     则按「保留编号最小（最早创建）」的确定性规则**自动关闭本条**，收敛到唯一一条 open Issue，
+     无需人工清理。即便 `concurrency` 被误删或平台偶发重放，也能自愈。
+  > 说明：`concurrency` 是第一道闸（防并发发生），指纹 + 翻页 + 自愈是第二道闸（并发若发生也能收敛），
+  > 二者构成纵深防御。
 
 ---
 

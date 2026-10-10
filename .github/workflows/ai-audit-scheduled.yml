@@ -43,8 +43,10 @@
 #
 # ⚠️ 注意：
 #   - 首次使用前请先用 workflow_dispatch 手动跑一次，确认链路正常。
-#   - ⚠️ 本示例会**真实创建 Issue**（仅对判定为真实漏洞、且经校验 APPROVED 的告警，
-#     并自动去重）。如只想看分流结果、不修改仓库，可把 jobs.publish 整体注释掉。
+#   - ⚠️ 本示例会**真实创建 Issue**（仅对判定为真实漏洞、且经校验 APPROVED 的告警）。
+#     发文为**幂等**操作：正文首部写入 `<!-- ai-audit-alert:<编号> -->` 指纹，去重按指纹
+#     全量翻页检索；并叠加工作流级 concurrency 串行化 + 创建后自愈，杜绝并发重复。
+#     如只想看分流结果、不修改仓库，可把 jobs.publish 整体注释掉。
 # =============================================================================
 
 name: "AI 审计（CodeQL 完成后自动分流）"
@@ -60,6 +62,23 @@ permissions:
   # 顶层默认最小权限：本工作流不依赖 GITHUB_TOKEN 的写能力（建 Issue 走 GH_PAT，
   # 且只在 publish job 内注入），故全局只保留只读 contents。
   contents: read
+
+# ── 并发串行化（防重复 Issue 的第一道闸） ────────────────────────────────────
+# 成因：workflow_run 由「CodeQL 完成」驱动，而 CodeQL 在 push / PR / schedule
+#       多个入口下可能**短时间内并发完成**，从而同时拉起多个本工作流实例。
+#       此时两个 publish job 会同时走到「先查是否存在、再创建」的判定点，
+#       双双读到「不存在」→ 双双 POST → 同一漏洞被建成两条 Issue。
+# 对策：把整条流水线收敛到**同一个 concurrency group**，并禁用排队取消
+#       （cancel-in-progress: false）——后来者**排队等待**前一次跑完，而不是被
+#       取消，从而保证「任一时刻只有一个 publish 在跑」，从源头掐掉竞态。
+# ⚠️ 为什么不能靠 cancel-in-progress: true？取消会让 triage 白跑且可能丢掉
+#    已经生成、但尚未发文的结论；排队才是对「审计 + 发文」原子性的正确取舍。
+concurrency:
+  # group 固定为工作流名（不掺 ref/事件），确保**所有**触发源的实例都排进同一条队列；
+  # 若按 github.ref 分组，不同分支/事件的并发实例会落入不同队列，竞态依旧。
+  group: ${{ github.workflow }}
+  # false = 排队而非取消：宁可稍等，也不并发发文
+  cancel-in-progress: false
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -195,13 +214,13 @@ jobs:
       # 本 step 是「是否创建 Issue」的**唯一**放行点，且**全程不含任何 LLM**：
       #   1) 只消费上游 artifact 里的结构化 JSON（纯数据）；
       #   2) 用 jq 硬过滤 `status == "APPROVED"` + 必备字段非空；
-      #   3) 逐条创建 Issue（去重）。
+      #   3) 逐条创建 Issue（按 alert 指纹幂等去重 + 创建后并发自愈）。
       # 因此「被写入 `_verdict.status != APPROVED` 的告警」在机制上**无法**进入建 Issue 路径。
       # ⚠️ 注意边界：`_verdict` 的**内容**由 triage 阶段的 LLM 判定（属模型判断，非确定性保证）；
       #    本门禁确定性保证的是「结论 → 发文」这一段——只认 APPROVED 字段，不做二次模型判断。
       #    故**不要**宣称「被驳回的误报绝无可能被创建」，只能说「非 APPROVED 的告警不可能被创建」。
       # GH_PAT 仅在本 step 注入，且只用于 GitHub API 建 Issue。
-      - name: 按审计结论创建 Issue（去重）
+      - name: 按审计结论创建 Issue（幂等 + 并发自愈）
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
           REPO: ${{ github.repository }}
@@ -213,6 +232,46 @@ jobs:
           # 防御：结论文件必须是合法 JSON 数组，否则直接失败（不猜测、不放行）
           jq -e 'type == "array"' "$FILE" >/dev/null \
             || { echo "结论文件不是 JSON 数组，拒绝发文" >&2; exit 1; }
+          API="${GITHUB_API_URL:-https://api.github.com}"
+          AUTH_HEADER="Authorization: Bearer ${GH_PAT}"
+          ACCEPT_HEADER="Accept: application/vnd.github+json"
+
+          # ── 幂等判据：用 Issue 正文里的「告警指纹」而非 Issue 标题 ────────────
+          # 标题为 `[AI审计] <rule> - <path>`，同一 rule+path 的不同告警会撞标题，
+          # 导致「不同漏洞被误判为重复」；而同一告警若标题里的 rule/path 表述微调，
+          # 又会漏判重复。故改以 **alert_number**（CodeQL 告警的唯一编号）作指纹，
+          # 并在正文里固定写入一行 `<!-- ai-audit-alert:<alert_number> -->` 标记，
+          # 检索时按该标记精确匹配——既不会误合并，也不会漏合并。
+          FINGERPRINT_PREFIX="<!-- ai-audit-alert:"
+
+          # 是否存在「带该指纹」的 Issue：**须翻页遍历全部 open Issue**。
+          # ⚠️ 旧实现只取 `?per_page=100` 的首页：仓库 open Issue 超 100 条时，
+          #    排在 100 名之后的既有 Issue 查不到 → 误判「不存在」→ 重复创建。
+          #    这里逐页拉取直到取空，彻底消除翻页缺口。
+          find_issue_by_fingerprint() {
+            local fp="$1" page=1 found=""
+            while : ; do
+              local batch
+              batch="$(curl -fsSL -H "${AUTH_HEADER}" -H "${ACCEPT_HEADER}" \
+                "${API}/repos/${REPO}/issues?state=open&per_page=100&page=${page}")" \
+                || { echo "拉取 open Issue 第 ${page} 页失败" >&2; return 2; }
+              # 防御：必须是 JSON 数组（API 异常时可能返回对象，如限流/错误体）
+              jq -e 'type == "array"' <<<"$batch" >/dev/null \
+                || { echo "open Issue 第 ${page} 页非 JSON 数组，拒绝继续" >&2; return 2; }
+              local n
+              n="$(jq 'length' <<<"$batch")"
+              [ "$n" -eq 0 ] && break
+              # 只认 issue（排除 PR：PR 也会出现在 /issues 里，带 pull_request 字段）
+              found="$(jq -r --arg fp "$fp" \
+                '[.[] | select((.pull_request | not) and ((.body // "") | contains($fp)))]
+                 | if length > 0 then (.[0].number | tostring) else "" end' <<<"$batch")"
+              [ -n "$found" ] && { printf '%s' "$found"; return 0; }
+              [ "$n" -lt 100 ] && break
+              page=$((page + 1))
+            done
+            return 0
+          }
+
           # 只处理校验通过（APPROVED）且必备字段齐全的条目；字段全部按字符串使用，
           # 经 jq 转义后写入 JSON body，杜绝命令/JSON 注入。
           COUNT="$(jq '[.[] | select(.status=="APPROVED")
@@ -221,32 +280,67 @@ jobs:
                         | length' "$FILE")"
           echo "待创建 Issue 数：$COUNT"
           if [ "$COUNT" -eq 0 ]; then echo "无可发布结论，跳过"; exit 0; fi
-          jq -c '.[] | select(.status=="APPROVED")
-                     | select((.rule//"")!="" and (.path//"")!=""
-                              and (.alert_number//"")!="")' "$FILE" \
-          | while IFS= read -r item; do
+
+          CREATED=0
+          SKIPPED=0
+          while IFS= read -r item; do
               RULE="$(jq -r '.rule' <<<"$item")"
               PATH_="$(jq -r '.path' <<<"$item")"
               ALERT="$(jq -r '.alert_number' <<<"$item")"
               REPORT="$(jq -r '.report // ""' <<<"$item")"
               TITLE="[AI审计] ${RULE} - ${PATH_}"
-              # 防重复：标题完全相同的 open Issue 已存在则跳过
-              EXIST="$(curl -fsSL -H "Authorization: Bearer ${GH_PAT}" \
-                -H "Accept: application/vnd.github+json" \
-                "${GITHUB_API_URL:-https://api.github.com}/repos/${REPO}/issues?state=open&per_page=100" \
-                | jq --arg t "$TITLE" '[.[] | select(.title==$t)] | length')"
-              if [ "$EXIST" != "0" ]; then echo "已存在，跳过：$TITLE"; continue; fi
-              # 用 jq 组装 body，确保报告全文被正确转义（不拼接裸字符串）
-              BODY="$(jq -n --arg r "$REPORT" --arg a "$ALERT" --arg ru "$RULE" --arg p "$PATH_" \
-                '"> 由 AI 审计自动创建（CodeQL 告警分流）。\n\n## 漏洞概述\n\n\($r)\n\n## 关联 CodeQL 告警\n\n- 告警编号：\($a)\n- 规则：\($ru)\n- 文件：\($p)\n\n## 修复建议\n\n- 请参考上方报告中给出的修复建议，在对应文件中修复后关闭本 Issue。"')"
+              FINGERPRINT="${FINGERPRINT_PREFIX}${ALERT} -->"
+
+              # 第一道去重（乐观预检）：命中即跳过，省下一次创建调用。
+              # 注意：并发窗口下这一步只是「快速路径」，**不是**正确性保证，
+              #       正确性由后续的创建后自愈兜底（见下）。
+              EXIST="$(find_issue_by_fingerprint "$FINGERPRINT" || true)"
+              if [ -n "$EXIST" ]; then
+                echo "已存在（#${EXIST}），跳过：$TITLE"
+                SKIPPED=$((SKIPPED + 1))
+                continue
+              fi
+
+              # 用 jq 组装 body，确保报告全文被正确转义（不拼接裸字符串）。
+              # 指纹标记置于正文首部（HTML 注释，用户不可见），供后续精确去重。
+              BODY="$(jq -n --arg r "$REPORT" --arg a "$ALERT" --arg ru "$RULE" \
+                --arg p "$PATH_" --arg fp "$FINGERPRINT" \
+                '($fp + "\n> 由 AI 审计自动创建（CodeQL 告警分流）。\n\n## 漏洞概述\n\n\($r)\n\n## 关联 CodeQL 告警\n\n- 告警编号：\($a)\n- 规则：\($ru)\n- 文件：\($p)\n\n## 修复建议\n\n- 请参考上方报告中给出的修复建议，在对应文件中修复后关闭本 Issue。")')"
               PAYLOAD="$(jq -n --arg t "$TITLE" --arg b "$BODY" \
                 '{title:$t, body:$b, labels:["bug","security","ai-audit"]}')"
-              curl -fsSL -X POST -H "Authorization: Bearer ${GH_PAT}" \
-                -H "Accept: application/vnd.github+json" \
-                "${GITHUB_API_URL:-https://api.github.com}/repos/${REPO}/issues" \
-                -d "$PAYLOAD" > /dev/null
-              echo "已创建：$TITLE"
-            done
+
+              NEW_ID="$(curl -fsSL -X POST -H "${AUTH_HEADER}" \
+                -H "${ACCEPT_HEADER}" \
+                "${API}/repos/${REPO}/issues" \
+                -d "$PAYLOAD" | jq -r '.number')"
+              echo "已创建：#${NEW_ID} ${TITLE}"
+              CREATED=$((CREATED + 1))
+
+              # ── 创建后自愈（并发兜底） ──────────────────────────────────────
+              # 对抗「检查与创建之间」的 TOCTOU 窗口：若临界区里另一个并发实例
+              # 已抢先建了同一指纹的 Issue，此刻会存在 ≥2 条。按照「保留编号最小
+              # （最早创建）」的确定性规则，把本条（编号较大）自我关闭，保证收敛
+              # 到唯一一条 open Issue，无需人工清理。
+              # 说明：本工作流已用 concurrency 串行化，此处自愈属**纵深防御**——
+              #       即便未来有人去掉 concurrency 或 GitHub 偶发重放，也能自愈。
+              DUP_OF="$(find_issue_by_fingerprint "$FINGERPRINT" || true)"
+              if [ -n "$DUP_OF" ] && [ "$DUP_OF" != "$NEW_ID" ] \
+                 && [ "$DUP_OF" -lt "$NEW_ID" ]; then
+                echo "检测到并发重复（保留 #${DUP_OF}），自我关闭 #${NEW_ID}" >&2
+                curl -fsSL -X PATCH -H "${AUTH_HEADER}" -H "${ACCEPT_HEADER}" \
+                  "${API}/repos/${REPO}/issues/${NEW_ID}" \
+                  -d "$(jq -n --arg b "$(printf '%s\n\n%s' \
+                    "> 本条为并发竞态产生的重复 Issue，已自动关闭。" \
+                    "> 同一告警的正式跟踪 Issue：见 #${DUP_OF}。")" '{state:"closed", body:$b}')" \
+                  > /dev/null
+                CREATED=$((CREATED - 1))
+                SKIPPED=$((SKIPPED + 1))
+              fi
+          done < <(jq -c '.[] | select(.status=="APPROVED")
+                             | select((.rule//"")!="" and (.path//"")!=""
+                                      and (.alert_number//"")!="")' "$FILE")
+
+          echo "发布完成：新建 ${CREATED} 条，跳过 ${SKIPPED} 条"
 
 # ---------------------------------------------------------------------------
 # 说明：本工作流已由 schedule（cron 时间差）改为 workflow_run 触发，
