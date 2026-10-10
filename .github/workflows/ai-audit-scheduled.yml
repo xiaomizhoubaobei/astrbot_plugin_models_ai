@@ -178,7 +178,7 @@ jobs:
       # 上传审计结论（纯数据），交给下游持令牌的 publish job。
       # 仅上传结论 JSON，不上传任何可执行产物，避免下游执行不可信代码。
       - name: 上传审计结论 artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f4734413 # v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: audit-verdicts
           path: /tmp/audit-verdicts.json
