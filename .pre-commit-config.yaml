@@ -16,7 +16,7 @@ repos:
   - id: mixed-line-ending
     args: ['--fix=lf']
 - repo: https://github.com/psf/black-pre-commit-mirror
-  rev: 26.5.1
+  rev: 26.10.0
   hooks:
   - id: black
     # 不绑定 language_version：仅要求本机具备任意受支持的 Python，跨版本可跑通
@@ -27,12 +27,12 @@ repos:
   - id: flake8
     args: ['--max-line-length=100', '--extend-ignore=E203,W503']
 - repo: https://github.com/pycqa/isort
-  rev: 9.0.1
+  rev: 9.0.2
   hooks:
   - id: isort
     args: ['--profile', 'black']
 - repo: https://github.com/pre-commit/mirrors-mypy
-  rev: v2.3.1
+  rev: v2.4.0
   hooks:
   - id: mypy
     additional_dependencies: [types-aiofiles]
