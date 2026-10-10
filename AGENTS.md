@@ -1090,16 +1090,14 @@ pre-commit run --all-files
 | `inclusiveness-analyzer.yml` | 包容性分析 |
 | `stale.yml` | 陈旧 Issue / PR 自动化 |
 | `release.yml` | 发布流程 |
+| `ossar.yml` | OSSAR 开源静态分析（`windows-latest`，与 GitHub 代码扫描集成） |
 | `coverage.yml` | 单元测试覆盖率统计并上报 Codecov（`main` push / PR） |
 
 `.cnb.yml`：CNB 流水线在 `main` 分支 push 时同步代码到 GitHub 上游仓库。
 
-> **OSSAR 工作流已移除（`ossar.yml`）**：上游 `github/ossar-action` 停更在 v2.0.0（2024-04），
-> 其 `action.yml` 固定为 `node20`、内置 `@actions/core@1.2.6` 仍使用已废弃的 `set-output` 命令，
-> 因此持续产生「Node.js 20 弃用」与「`set-output` 弃用」两条告警，且**上游无 Node 24 版本可升**。
-> 其能力（静态安全分析）已由 `CodeQL.yml`（Python 语义级分析，主运行器矩阵覆盖三平台三版本）、
-> `DevSkim.yml`（多版本源码模式扫描）与 `security-scan.yml`（Bandit）完整覆盖，
-> 故直接移除该工作流以根治告警，避免为消警而长期背负一个无人维护的 Action。
+> **OSSAR 工作流（`ossar.yml`）已恢复**：该工作流历经「误删 → 恢复 → 移除 → 再恢复」多次反复，本仓库**当前状态为保留恢复**，运行在 `windows-latest`，在 `push`(main) / `pull_request`(main) / 每周五定时 / 手动触发时执行，并把 SARIF 结果上传到 GitHub Security 标签页。
+> ⚠️ **已知代价（保留时须知情）**：上游 `github/ossar-action` 停更在 v2.0.0（2024-04），其 `action.yml` 固定为 `node20`、内置 `@actions/core@1.2.6` 仍使用已废弃的 `set-output` 命令，运行时**仍会**产生「Node.js 20 弃用」与「`set-output` 弃用」两条告警，且上游无 Node 24 版本可升。其静态分析能力与 `CodeQL.yml`（Python 语义级分析）、`DevSkim.yml`（多版本源码模式扫描）、`security-scan.yml`（Bandit）存在重叠。
+> 🔁 **不要重复来回删改**：如需再次移除，请先在本节记录决策依据（告警 vs 能力覆盖），避免沦为反复拉锯的无效提交。
 
 #### 11.8.1 覆盖率链路（Codecov 单一来源）
 
