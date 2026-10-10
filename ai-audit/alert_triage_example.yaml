@@ -66,6 +66,12 @@ taskflow:
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${GITHUB_TOKEN}" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&tool_name=CodeQL&per_page=100&page=${_PAGE}")"
+          # 先按本页长度判空/判末页，避免把空页拼进累积数组
+          _PAGE_LEN="$(printf '%s' "$_BODY" | jq 'length')"
+          # 空页直接结束，不追加（否则会在数组末尾留下尾随逗号导致 JSON 非法）
+          if [ "$_PAGE_LEN" -eq 0 ]; then
+            break
+          fi
           if [ -z "$_ALL_JSON" ]; then
             _ALL_JSON="$_BODY"
           else
@@ -73,12 +79,13 @@ taskflow:
             _ALL_JSON="${_ALL_JSON%]},${_BODY#[}"
           fi
           # 不足一页说明已到末页
-          _PAGE_LEN="$(printf '%s' "$_BODY" | jq 'length')"
           if [ "$_PAGE_LEN" -lt 100 ]; then
             break
           fi
           _PAGE=$((_PAGE+1))
         done
+        # 零告警（首页即空）时 _ALL_JSON 仍为空串，补成合法空数组，避免 jq 解析失败
+        [ -z "$_ALL_JSON" ] && _ALL_JSON="[]"
         # 统一映射成下游结构并写命名输出 outputs.alerts
         printf '%s' "$_ALL_JSON" \
           | jq -c '
