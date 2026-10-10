@@ -120,11 +120,26 @@ ai-audit/
 
 1. 部署框架与 taskflows：
 
+> 🔒 **必须固定到与工作流一致的已复核 commit**：`seclab-taskflow-agent` 是要**执行**的框架本体，
+> 手工部署时若直接 `git clone` 默认分支，等于运行一个**会漂移的 HEAD**——上游任意一次提交都会
+> 悄悄改变即将以你的仓库凭据（PAT / LLM Key）执行的代码，也可能悄然破坏本文档描述的 taskflow 行为。
+> 因此这里**与你仓库中 `.github/workflows/ai-audit-scheduled.yml` 保持一致**，把框架 checkout 到
+> 同一枚已复核的发布 commit `6038bb4ee9661887a09215eac70fccceb396cd02`（即 `v0.5.0`）。
+
 ```bash
+# 克隆后显式 checkout 到已复核的发布 commit SHA（勿停留在漂移的默认分支）
 git clone https://github.com/GitHubSecurityLab/seclab-taskflow-agent
-git clone https://github.com/GitHubSecurityLab/seclab-taskflows
 cd seclab-taskflow-agent
+git checkout 6038bb4ee9661887a09215eac70fccceb396cd02   # v0.5.0，与 ai-audit-scheduled.yml 一致
+
+# seclab-taskflows 仅作官方 taskflow 范例参考（本示例不使用其中任何文件），
+# 若需查阅同样建议固定到对应发布 tag/commit，避免拿到漂移的默认分支。
+git clone https://github.com/GitHubSecurityLab/seclab-taskflows
 ```
+
+> ⚠️ **一致性要求**：升级框架时请**同时**修改本处与 `ai-audit-scheduled.yml` 中的
+> `ref: <commit-sha>`，保证手工运行与 CI 运行执行的是**同一份**已复核代码；
+> 只改一边会造成「文档描述的版本」与「实际执行的版本」悄悄分叉（本条即为此前遗留的分叉）。
 
 2. 把本目录复制到框架仓库**根目录**，**目录名使用下划线 `ai_audit`**（模块路径不能用连字符）：
 
