@@ -232,6 +232,8 @@ taskflow:
 
   # ---------------------------------------------------------------------------
   # 4) 校验：报告不完整/不一致=幻觉，直接驳回。
+  #    本步必须**同时读取 _evidence 与 _report**，基于取证核对报告的文件/行号；
+  #    若 _evidence 缺失则一律驳回（no_evidence），绝不放行未验证的行号。
   #    产出结构化的校验结论（_verdict：APPROVED/REJECTED），供第 5 步筛选出「否决的结论」。
   #    ⚠️ 本步产出的是 **LLM 判定**（某告警是否算真实漏洞，属模型判断，非确定性保证）；
   #       确定性的把关在**下游**：第 5 步与 publish job 均只认 status==APPROVED 字段的
@@ -247,16 +249,22 @@ taskflow:
         - ai_audit.personalities.python_auditer
       user_prompt: |
         针对告警 {{ result.alert_number }}（规则：{{ result.rule }}，文件：{{ result.path }}）：
-        1. 调用 memcache_get_state 读取 key "{{ globals.repo }}_{{ result.alert_number }}_report"。
+        1. 调用 memcache_get_state 同时读取两个 key：
+           - "{{ globals.repo }}_{{ result.alert_number }}_report"（第 3 步报告）；
+           - "{{ globals.repo }}_{{ result.alert_number }}_evidence"（第 1 步取证）。
+           ⚠️ 校验必须基于 _evidence，否则无从核对报告里的文件/行号，等于放行未验证的行号。
         2. 若报告不存在或为空（FP / 未写报告），直接写入校验结论
            key "{{ globals.repo }}_{{ result.alert_number }}_verdict"，
            value 形如 {"status":"REJECTED","reason":"no_report"} 并结束。
-        3. 否则逐项校验报告：
-           - 报告中的文件/行号是否与取证(_evidence)一致？
+        3. 若 _evidence 不存在或为空，则无法核对报告位置，一律按证据不足驳回：
+           value 形如 {"status":"REJECTED","reason":"no_evidence"} 并结束。
+           **不得**在缺少取证内容时给出 APPROVED。
+        4. 否则基于 _evidence 逐项校验报告：
+           - 报告中的文件/行号是否与 _evidence 的 source/sink 一致？
            - 是否缺少关键字段（漏洞类型/位置/攻击路径/修复建议）？
            - 是否含未渲染的模板变量占位（以左双大括号开头的 Jinja 残留）？
            只要任一不满足即判定幻觉/不完整。
-        4. 调用 memcache_set_state 写入校验结论
+        5. 调用 memcache_set_state 写入校验结论
            key "{{ globals.repo }}_{{ result.alert_number }}_verdict"，
            value 形如 {"status":"APPROVED"|"REJECTED","reason":"..."}。
         本步只写 _verdict，不创建任何 Issue。

@@ -165,6 +165,8 @@ cp -r <本项目>/ai-audit ai_audit
 
    > 各审计阶段经 memcache 按告警贯通：第 ① 步写取证 `_evidence`，第 ② 步写判定 `_triage`，
    > 第 ③ 步对 TP 写报告 `_report`，第 ④ 步写校验结论 `_verdict`（APPROVED/REJECTED）。
+   > 其中第 ④ 步校验**必须同时读取 `_report` 与 `_evidence`**，基于取证核对报告的文件/行号；
+   > 若 `_evidence` 缺失则一律驳回（`no_evidence`），避免放行未经验证的行号。
    > 第 ⑤ 步读取 `_verdict` 与 `_report`，**仅当 status==APPROVED 且报告非空**时，
    > 通过纯 shell（`jq`）把 `{alert_number, rule, path, status, report}` 追加写进
    > `AUDIT_VERDICT_FILE`（默认 `/tmp/audit-verdicts.json`）。
