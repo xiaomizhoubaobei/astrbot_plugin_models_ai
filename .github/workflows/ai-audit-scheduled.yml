@@ -129,6 +129,43 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || github.event.repository.default_branch }}
           persist-credentials: false
 
+      # ── 初始化 CodeQL CLI 并构建数据库（供 MCP codeql toolbox 读取）───────────
+      # 说明：审计人格挂了 seclab_taskflow_agent.toolboxes.codeql，Agent 会用
+      #   `codeql` 工具对源码做 AST/数据流取证来精确定位行号，因此这里先本地建库。
+      # 关键取舍：
+      #   - 建库对象是**本步已检出的可信源码**（workflow_run 场景下即默认分支），
+      #     与「只认可信 ref」的安全模型一致，不引入任何不可信输入。
+      #   - 数据库落在 /tmp 下（而非仓库工作区），避免污染检出树、也不会被
+      #     upload-artifact 误打包；后续用环境变量把路径透传给 Agent。
+      - name: 初始化 CodeQL CLI 并构建数据库
+        run: |
+          set -euo pipefail
+          # ① 定位 CodeQL CLI：优先用托管 runner 预装的固定位置，找不到再退回 PATH。
+          #    （GitHub 托管 runner 预装 CodeQL；回退 PATH 兼容自托管 runner。）
+          CLI="${CODEQL_CLI:-/opt/hostedtoolcache/codeql/current/codeql}"
+          if [ ! -x "$CLI" ]; then
+            CLI="$(command -v codeql || true)"
+          fi
+          [ -n "$CLI" ] && [ -x "$CLI" ] \
+            || { echo "ERROR: 未找到可执行的 CodeQL CLI，无法建库。" >&2; exit 1; }
+          echo "CodeQL CLI: $CLI"
+          "$CLI" version
+
+          # ② 建库（纯离线本地操作，不联网、不上传，只需读权限即可）。
+          mkdir -p "${CODEQL_DBS_BASE_PATH:-/tmp/codeql-dbs}"
+          "$CLI" database create "${CODEQL_DBS_BASE_PATH:-/tmp/codeql-dbs}/${{ github.repository }}" \
+            --language=python \
+            --source-root=. \
+            --overwrite
+          # 自检：数据库确实落盘，避免「静默建库失败」让后续 Agent 拿到空数据库。
+          test -d "${CODEQL_DBS_BASE_PATH:-/tmp/codeql-dbs}/${{ github.repository }}" \
+            || { echo "ERROR: CodeQL 数据库未生成。" >&2; exit 1; }
+
+          # ③ 把探测到的**真实 CLI 路径**导出到 GITHUB_ENV：后续步骤的 env 是静态
+          #    YAML，无法执行 `$(which codeql)`，这里用环境文件把实测值传给 Agent，
+          #    避免「路径写死但 runner 镜像变动」导致 codeql toolbox 拿不到 CLI。
+          echo "CODEQL_CLI=${CLI}" >> "$GITHUB_ENV"
+
       # 拉取 seclab-taskflow-agent 框架，固定到已复核发布的不可变 commit SHA
       - name: Checkout seclab-taskflow-agent 框架（固定 commit）
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -166,7 +203,20 @@ jobs:
           MCP_CONFIG: ${{ secrets.MCP_CONFIG }}
           # 审计结果落盘位置，供 publish job 消费
           AUDIT_VERDICT_FILE: /tmp/audit-verdicts.json
+          # ── CodeQL MCP（codeql toolbox）所需环境变量 ──────────────────────
+          # 说明：codeql toolbox 需要一个 **CLI 可执行文件绝对路径**与一个
+          #   **数据库基目录**（它会在其下按仓库名寻找数据库）。
+          # ⚠️ 为什么不在 env: 里写 `$(which codeql)`：env: 是**静态 YAML**，
+          #   `$(...)` 属 shell 命令替换，在 env 里**不会被执行**——会被原样当
+          #   字面量传给 Agent，指向一个根本不存在的路径。
+          #   CODEQL_CLI 由前面「建库」步骤探测真值并写入 GITHUB_ENV，会原生注入
+          #   本步骤环境；这里只补 CODEQL_DBS_BASE_PATH。run: 内部再做一次兜底导出，
+          #   确保即便 GITHUB_ENV 缺失也能把有效路径传给 hatch 子进程。
+          CODEQL_DBS_BASE_PATH: /tmp/codeql-dbs
         run: |
+          # 兜底：确保 CODEQL_CLI 非空（正常情况下由建库步经 GITHUB_ENV 注入）
+          export CODEQL_CLI="${CODEQL_CLI:-/opt/hostedtoolcache/codeql/current/codeql}"
+          export CODEQL_DBS_BASE_PATH="${CODEQL_DBS_BASE_PATH:-/tmp/codeql-dbs}"
           # 模型从仓库 Secret AI_MODEL_NAME 经 COPILOT_DEFAULT_MODEL 传入框架，
           # 因此调用前必须确保其非空（GitHub Actions 未配置的 Secret 会解析成空串）
           : "${AI_MODEL_NAME:?请配置仓库 Secret AI_MODEL_NAME 以指定 AI 审计所用模型}"

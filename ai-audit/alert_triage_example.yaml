@@ -177,6 +177,9 @@ taskflow:
   #    并把「每一条告警的取证结果」落到以告警为 key 的 memcache，供第 2~4 步消费。
   #    （框架 repeat_prompt 每步默认只把原始告警喂给 {{ result }}，跨步骤结果需要
   #      显式经 memcache 按 alert_number 贯通，否则第 2~4 步将看不到上一步结论。）
+  #    前提：工作流已在调用本 taskflow 前**本地构建 CodeQL 数据库**并注入
+  #      CODEQL_CLI（CLI 绝对路径）与 CODEQL_DBS_BASE_PATH（数据库基目录），
+  #      供本步的 codeql toolbox 读取——缺少这两个变量时，精确行号/数据流取证会退化。
   # ---------------------------------------------------------------------------
   - task:
       must_complete: true
@@ -186,18 +189,39 @@ taskflow:
       agents:
         - ai_audit.personalities.python_auditer
       user_prompt: |
-        你是一名 Python 安全审计员。针对以下 CodeQL 安全告警 {{ result.alert_number }}
+        你是一名严谨的 Python 安全审计专家。针对 CodeQL 告警 {{ result.alert_number }}
         （规则：{{ result.rule }}，文件：{{ result.path }}，描述：{{ result.message }}），
-        调用可用的 MCP Server（如 GitHub API / CodeQL toolbox）收集信息：
-        - 告警的 source（来源点）与 sink（汇点）在该 Python 文件中的精确行号；
-        - 告警路径上是否有用户输入（不可信数据）流入（如聊天消息、指令参数、URL 参数、请求体、环境变量）；
-        - 该代码路径是否在特权/高权限上下文（如服务端处理、凭证处理、文件系统操作、子进程调用）中执行；
-        - 该告警触发的输入是否真的可被外部攻击者控制。
-        调用 memcache_set_state 把取证结果存为一条 JSON，key 为
-        "{{ globals.repo }}_{{ result.alert_number }}_evidence"，value 形如：
-        {"source":"文件:行号","sink":"文件:行号","user_input_controlled":true|false,
-         "privileged_context":true|false,"notes":"..."}
-        不得编造，无法取证的字段写 null 并在 notes 说明。
+        按以下三步取证（调用可用的 MCP 工具，如 GitHub API / CodeQL toolbox /
+        get_file_contents / memcache_set_state）：
+
+        1. 【源码与上下文定位】
+           - 调用 `get_file_contents` 查看 {{ result.path }} 及其调用链相关代码；
+           - 准确定位 source（外部输入点）与 sink（危险调用汇点）的**精确行号**；
+           - 检查 sink 前是否存在充分的过滤/校验/参数化防护（如 URL 白名单、参数清洗、
+             使用参数化查询而非字符串拼接、路径规范化后再拼接）。
+
+        2. 【数据流与利用面分析】
+           - 输入是否来自**不可信来源**（聊天消息 / 指令参数 / 外部 API 响应 / Webhook /
+             URL 参数 / 请求体 / 环境变量等）；
+           - 该路径是否处于**特权或核心业务上下文**（权限提升、文件读写、私钥与网络
+             凭据处理、子进程调用等）；
+           - 评估攻击者在真实场景下能否构成**闭环利用链**。
+           ⚠️ 注意：`tests/**` 下的测试代码里出现的 Mock / 样例 URL / 假凭据，通常
+             **不属于生产运行时风险**——若判定为测试代码，须把 is_test_code 置 true，
+             并在 notes 中明确写明「属测试用例」这一阻断理由。
+
+        3. 【存入证据库】
+           调用 memcache_set_state 把取证结果存为一条 JSON，key 为
+           "{{ globals.repo }}_{{ result.alert_number }}_evidence"，value 形如：
+           {
+             "source": "{{ result.path }}:<行号或 null>",
+             "sink": "{{ result.path }}:<行号或 null>",
+             "user_input_controlled": true|false,
+             "privileged_context": true|false,
+             "is_test_code": true|false,
+             "notes": "<漏洞原理、触发条件与可利用性简述；若无法利用，写明具体阻断理由>"
+           }
+           ⚠️ 严禁无依据捏造行号与利用链：无法取证的字段写 null，并在 notes 说明原因。
 
   # ---------------------------------------------------------------------------
   # 2) 审计：剔除误报（攻击者能否触发？是否特权上下文？）
