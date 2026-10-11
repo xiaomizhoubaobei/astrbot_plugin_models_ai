@@ -24,8 +24,9 @@
 - **GitHub 私密漏洞报告（推荐）**：进入仓库的
   [Security 标签页](https://github.com/xiaomizhoubaobei/astrbot_plugin_models_ai/security/advisories/new)
   → 选择「Report a vulnerability」，以私密安全公告形式提交。
-- **邮件**：发送至项目维护者（见 `metadata.yaml` 中的 `author` / `repo` 字段），
+- **邮件**：发送至维护者邮箱 **`qixiaoxin@stu.sqxy.edu.cn`**，
   邮件标题注明 `[SECURITY] astrbot_plugin_models_ai`。
+  （该地址同时登记在 `metadata.yaml` 的 `security_contact` 字段中，便于自动解析。）
 
 ### 报告内容清单
 
