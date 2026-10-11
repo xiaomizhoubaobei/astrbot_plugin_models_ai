@@ -185,19 +185,32 @@ jobs:
           "$CLI" version
 
           # ② 建库（纯离线本地操作，不联网、不上传，只需读权限即可）。
-          mkdir -p "${CODEQL_DBS_BASE_PATH:-/tmp/codeql-dbs}"
-          "$CLI" database create "${CODEQL_DBS_BASE_PATH:-/tmp/codeql-dbs}/${{ github.repository }}" \
+          # ⚠️ 【落盘路径单一来源】先把**实际使用的**基目录固化成 DBS_BASE 变量，
+          #   并写入 GITHUB_ENV（主步骤 env: 也显式引用同一变量，见下方「运行 AI
+          #   审计 taskflow」）。这样「建库」与「消费建库」两处**必然指向同一目录**：
+          #   若本步用 CODEQL_DBS_BASE_PATH 建库、而下游却把 env: 写死成 /tmp/codeql-dbs，
+          #   一旦基目录被改成非默认值，Agent 就会去错误路径找库（查不到 → 取证退化）。
+          DBS_BASE="${CODEQL_DBS_BASE_PATH:-/tmp/codeql-dbs}"
+          mkdir -p "$DBS_BASE"
+          "$CLI" database create "${DBS_BASE}/${{ github.repository }}" \
             --language=python \
             --source-root=. \
             --overwrite
           # 自检：数据库确实落盘，避免「静默建库失败」让后续 Agent 拿到空数据库。
-          test -d "${CODEQL_DBS_BASE_PATH:-/tmp/codeql-dbs}/${{ github.repository }}" \
+          test -d "${DBS_BASE}/${{ github.repository }}" \
             || { echo "ERROR: CodeQL 数据库未生成。" >&2; exit 1; }
+          # 自检：库文件确属 CodeQL 数据库（存在 codeql-database.yml 才认；防止把
+          #   空目录/半成品当成功建库放行）。
+          test -f "${DBS_BASE}/${{ github.repository }}/codeql-database.yml" \
+            || { echo "ERROR: ${DBS_BASE}/${{ github.repository }} 不是有效的 CodeQL 数据库。" >&2; exit 1; }
 
-          # ③ 再次把**实测 CLI 路径**写入 GITHUB_ENV：解析步已写过一次，这里兜底
-          #    覆盖，确保后续「运行 AI 审计 taskflow」的 Agent（codeql toolbox）
-          #    拿到的 CLI 与本步实际建库所用**完全一致**。
+          # ③ 把**实测值**写入 GITHUB_ENV，供下游按同一目录消费（单一事实来源）：
+          #    · CODEQL_CLI —— 解析步已写过一次，这里兜底覆盖，确保后续 Agent
+          #      （codeql toolbox）拿到的 CLI 与本步实际建库所用**完全一致**；
+          #    · CODEQL_DBS_BASE_PATH —— 固化本步实际使用的数据库基目录，杜绝
+          #      「建库用一个路径、下游用另一个路径」的漂移。
           echo "CODEQL_CLI=${CLI}" >> "$GITHUB_ENV"
+          echo "CODEQL_DBS_BASE_PATH=${DBS_BASE}" >> "$GITHUB_ENV"
 
       # 拉取 seclab-taskflow-agent 框架，固定到已复核发布的不可变 commit SHA
       - name: Checkout seclab-taskflow-agent 框架（固定 commit）
@@ -255,9 +268,14 @@ jobs:
           #   `$(...)` 属 shell 命令替换，在 env 里**不会被执行**——会被原样当
           #   字面量传给 Agent，指向一个根本不存在的路径。
           #   CODEQL_CLI 由前面「建库」步骤探测真值并写入 GITHUB_ENV，会原生注入
-          #   本步骤环境；这里只补 CODEQL_DBS_BASE_PATH。run: 内部再做一次兜底导出，
-          #   确保即便 GITHUB_ENV 缺失也能把有效路径传给 hatch 子进程。
-          CODEQL_DBS_BASE_PATH: /tmp/codeql-dbs
+          #   本步骤环境。
+          # ⚠️ CODEQL_DBS_BASE_PATH 必须与**建库步实际使用的**基目录一致，故这里
+          #   引用建库步写入 GITHUB_ENV 的同名变量，而**不是**硬编码 /tmp/codeql-dbs：
+          #   硬编码会在基目录被改为非默认值（如仓库变量/手动触发覆盖）时覆盖掉建库
+          #   实际路径，令 Agent 去错误目录找库（取证退化为「查不到数据库」）。
+          #   run: 内部再做一次兜底导出，确保即便 GITHUB_ENV 缺失也能把有效路径
+          #   传给 hatch 子进程。
+          CODEQL_DBS_BASE_PATH: ${{ env.CODEQL_DBS_BASE_PATH }}
         run: |
           # 兜底：确保 CODEQL_CLI 非空（正常情况下由建库步经 GITHUB_ENV 注入）
           export CODEQL_CLI="${CODEQL_CLI:-/opt/hostedtoolcache/codeql/current/codeql}"
