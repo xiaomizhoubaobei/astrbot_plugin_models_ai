@@ -36,11 +36,27 @@
         "default": true,
         "hint": "开启后由千问云自动扩写简短提示词以提升画质，会增加几秒延迟；不支持的模型会自动忽略"
     },
+    "qianwen_prompt_extend_mode": {
+        "description": "千问云提示词改写方式",
+        "type": "string",
+        "default": "direct",
+        "hint": "direct=直接提示词增强（DPE），适用于大多数场景；agent=智能体提示词增强（APE），改写更精细，适合提示词很简短时。仅 qwen-image-3.0 系列与 qwen-image-2.1-pro 生效，其余模型自动忽略",
+        "options": [
+            "direct",
+            "agent"
+        ]
+    },
+    "qianwen_enable_thinking": {
+        "description": "千问云思考模式",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后模型增强推理能力以提升出图质量，但会增加生成耗时；仅在 prompt_extend 开启且模型为 qwen-image-3.0 系列 / qwen-image-2.1-pro 时生效"
+    },
     "model": {
         "description": "使用的模型名称",
         "type": "string",
         "default": "z-image-turbo",
-        "hint": "跨服务商共用。Gitee 例如 z-image-turbo；千问云例如 z-image-turbo、qwen-image-3.0-pro、qwen-image-2.0、qwen-image-max、wan2.6-t2i、wan2.5-t2i-preview（填未登记的型号会自动回退为默认模型）"
+        "hint": "跨服务商共用。Gitee 例如 z-image-turbo；千问云例如 z-image-turbo、qwen-image-3.0-pro、qwen-image-3.0、qwen-image-2.1-pro、qwen-image-2.1-turbo、qwen-image-2.0-pro、qwen-image-2.0、qwen-image-max、wan2.6-t2i、wan2.5-t2i-preview（填未登记的型号会自动回退为默认模型）"
     },
     "size": {
         "description": "图片大小",

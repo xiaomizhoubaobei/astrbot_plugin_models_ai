@@ -183,6 +183,10 @@ class AIImage(Star):
         qianwen_base_url = config.get("qianwen_base_url", DEFAULT_QIANWEN_BASE_URL)
         qianwen_api_keys = parse_api_keys(config.get("qianwen_api_key", []))
         prompt_extend = config.get("qianwen_prompt_extend", True)
+        # 改写方式与思考模式仅 qwen-image-3.0 系列 / 2.1-pro 支持，
+        # 其余模型由客户端按能力表自动忽略，这里只负责透传配置值
+        prompt_extend_mode = config.get("qianwen_prompt_extend_mode", "direct")
+        enable_thinking = config.get("qianwen_enable_thinking", True)
 
         # 模型在千问云能力表中未登记时，回退到千问云默认模型
         if not is_supported_model(model):
@@ -196,7 +200,8 @@ class AIImage(Star):
 
         self.debug_log(
             f"千问云客户端参数: model={model}, size={qianwen_size}, "
-            f"api_keys={len(qianwen_api_keys)}, prompt_extend={prompt_extend}"
+            f"api_keys={len(qianwen_api_keys)}, prompt_extend={prompt_extend}, "
+            f"prompt_extend_mode={prompt_extend_mode}, enable_thinking={enable_thinking}"
         )
 
         return QianwenClient(
@@ -209,6 +214,8 @@ class AIImage(Star):
             debug_mode=self.debug_mode,
             allowed_image_hosts=sorted(self.image_allowed_hosts),
             allow_any_image_host=self.allow_any_image_host,
+            prompt_extend_mode=prompt_extend_mode,
+            enable_thinking=enable_thinking,
         )
 
     def debug_log(self, message: str) -> None:

@@ -42,6 +42,7 @@ from ..core import (
 )
 from .model_config import (
     ENDPOINT_TASK,
+    MAX_NEGATIVE_PROMPT_LENGTH,
     PROMPT_LIMIT_TOKENS,
     QianwenModelSpec,
     get_model_spec,
@@ -72,6 +73,8 @@ class QianwenClient:
         debug_mode: bool = False,
         allowed_image_hosts: Optional[list[str]] = None,
         allow_any_image_host: bool = False,
+        prompt_extend_mode: str = "direct",
+        enable_thinking: bool = True,
     ) -> None:
         """初始化千问云客户端.
 
@@ -85,6 +88,10 @@ class QianwenClient:
             debug_mode: 是否启用 Debug 日志
             allowed_image_hosts: 额外可信的取图主机白名单（见 core/url_guard.py）
             allow_any_image_host: 是否关闭取图主机校验（显式配置才生效）
+            prompt_extend_mode: 提示词改写方式，"direct"（DPE）或 "agent"（APE）；
+                仅 qwen-image-3.0 系列与 2.1-pro 支持，其余模型自动忽略
+            enable_thinking: 是否开启思考模式；同样仅 3.0 系列与 2.1-pro 支持，
+                且需在 prompt_extend=True 时生效
         """
         self.debug_mode = debug_mode
         self.api_keys = api_keys
@@ -93,6 +100,14 @@ class QianwenClient:
         self.negative_prompt = negative_prompt
         self.base_url = base_url.rstrip("/")
         self.prompt_extend = prompt_extend
+        # 取值收敛：官方仅接受 direct / agent，非法值一律退回默认 direct，
+        # 避免把拼错的枚举原样发给上游换来一个 400
+        self.prompt_extend_mode = (
+            prompt_extend_mode
+            if prompt_extend_mode in ("direct", "agent")
+            else "direct"
+        )
+        self.enable_thinking = enable_thinking
 
         # 供 parse_prompt_and_size 读取，使比例映射随服务商切换
         self.supported_ratios = QIANWEN_SUPPORTED_RATIOS
@@ -113,7 +128,8 @@ class QianwenClient:
         self.debug_log(
             f"初始化千问云客户端: model={model}, size={default_size}, "
             f"api_keys={len(api_keys)}, prompt_extend={prompt_extend}, "
-            f"debug_mode={debug_mode}"
+            f"prompt_extend_mode={self.prompt_extend_mode}, "
+            f"enable_thinking={enable_thinking}, debug_mode={debug_mode}"
         )
 
     def debug_log(self, message: str) -> None:
@@ -215,12 +231,26 @@ class QianwenClient:
         }
 
         # negative_prompt 仅部分模型支持，不支持的模型传参会直接报错
+        # （典型：qwen-image-2.1-pro，官方明确不支持该参数）。
+        # 官方另限制该字段最多 500 字符，本地先按上限截断再下发。
         if self.negative_prompt and spec.supports_negative_prompt:
-            parameters["negative_prompt"] = self.negative_prompt
+            negative_prompt = spec.resolve_negative_prompt(self.negative_prompt)
+            if len(negative_prompt) != len(self.negative_prompt):
+                self.debug_log(
+                    f"负面提示词超过 {MAX_NEGATIVE_PROMPT_LENGTH} 字符上限，已截断"
+                    f"（原 {len(self.negative_prompt)} 字符）"
+                )
+            parameters["negative_prompt"] = negative_prompt
 
         # prompt_extend 同样仅部分模型支持
         if self.prompt_extend and spec.supports_prompt_extend:
             parameters["prompt_extend"] = True
+            # prompt_extend_mode / enable_thinking 仅在 3.0 系列与 2.1-pro 生效，
+            # 且都必须挂在 prompt_extend=true 之下，故一并写入同一分支
+            if spec.supports_prompt_extend_mode:
+                parameters["prompt_extend_mode"] = self.prompt_extend_mode
+            if spec.supports_enable_thinking:
+                parameters["enable_thinking"] = bool(self.enable_thinking)
 
         return parameters
 

@@ -71,10 +71,10 @@ def test_resolve_size_falls_back_to_default() -> None:
 
 def test_resolve_prompt_truncates_over_limit() -> None:
     """字符口径模型：超过 max_prompt_length 时按字符精确截断；未超时原样返回."""
-    spec = mc.get_model_spec("qwen-image-3.0-pro")  # 字符口径，上限 2000
+    spec = mc.get_model_spec("wan2.6-t2i")  # 字符口径，上限 2100
     assert spec.prompt_limit_mode == mc.PROMPT_LIMIT_CHARS
     long_prompt = "字" * 2500
-    assert len(spec.resolve_prompt(long_prompt)) == 2000
+    assert len(spec.resolve_prompt(long_prompt)) == 2100
     short = "一个女孩"
     assert spec.resolve_prompt(short) == short
 
@@ -86,21 +86,27 @@ def test_prompt_limit_mode_is_declared_per_model() -> None:
     2.0 系列 / max / plus / 基础版 / z-image 按「token」计。
     """
     char_models = {
-        "qwen-image-3.0-pro": 2000,
-        "qwen-image-3.0": 2000,
-        "qwen-image-2.1-pro": 2000,
         "wan2.6-t2i": 2100,
         "wan2.5-t2i-preview": 2000,
         "wan2.2-t2i-plus": 500,
         "wan2.1-t2i-turbo": 500,
         "wanx2.0-t2i-turbo": 800,
     }
+    # 官方同步接口按 token 计并分三档：3.0 系列/2.1-pro 4500、2.0 系列 1300、其余 800
     token_models = {
-        "qwen-image-2.0-pro": 2000,
-        "qwen-image-2.0": 2000,
-        "qwen-image-max": 2000,
-        "qwen-image-plus": 2000,
-        "qwen-image": 2000,
+        "qwen-image-3.0-pro": 4500,
+        "qwen-image-3.0": 4500,
+        "qwen-image-2.1-pro": 4500,
+        "qwen-image-2.1-turbo": 1300,
+        "qwen-image-2.0-pro": 1300,
+        "qwen-image-2.0": 1300,
+        "qwen-image-2.0-pro-2026-06-22": 1300,
+        "qwen-image-2.0-pro-2026-04-22": 1300,
+        "qwen-image-2.0-pro-2026-03-03": 1300,
+        "qwen-image-2.0-2026-03-03": 1300,
+        "qwen-image-max": 800,
+        "qwen-image-plus": 800,
+        "qwen-image": 800,
         "z-image-turbo": 800,
     }
     for name, limit in char_models.items():
@@ -211,8 +217,13 @@ def test_list_supported_models_contains_known_names() -> None:
         "qwen-image-3.0-pro",
         "qwen-image-3.0",
         "qwen-image-2.1-pro",
+        "qwen-image-2.1-turbo",
         "qwen-image-2.0-pro",
         "qwen-image-2.0",
+        "qwen-image-2.0-pro-2026-06-22",
+        "qwen-image-2.0-pro-2026-04-22",
+        "qwen-image-2.0-pro-2026-03-03",
+        "qwen-image-2.0-2026-03-03",
         "qwen-image-max",
         "qwen-image-plus",
         "qwen-image",
@@ -246,20 +257,33 @@ def test_qwen_image_range_models_support_sync_and_size() -> None:
         "qwen-image-3.0-pro",
         "qwen-image-3.0",
         "qwen-image-2.1-pro",
+        "qwen-image-2.1-turbo",
         "qwen-image-2.0-pro",
         "qwen-image-2.0",
+        "qwen-image-2.0-pro-2026-06-22",
+        "qwen-image-2.0-pro-2026-04-22",
+        "qwen-image-2.0-pro-2026-03-03",
+        "qwen-image-2.0-2026-03-03",
     ):
         spec = mc.get_model_spec(name)
         assert spec.call_mode == "sync", name
         assert spec.endpoint == mc.ENDPOINT_MULTIMODAL, name
         assert spec.response_format == "choices", name
         assert spec.min_side == 512 and spec.max_side == 2048, name
-        assert spec.supports_negative_prompt is True, name
         assert spec.supports_prompt_extend is True, name
         assert spec.supports_size("512*512") is True, name
         assert spec.supports_size("2048*2048") is True, name
         assert spec.supports_size("256*256") is False, name
         assert spec.supports_size("4096*4096") is False, name
+    # 官方明确 qwen-image-2.1-pro 不支持 negative_prompt，其余范围型模型支持
+    for name in (
+        "qwen-image-3.0-pro",
+        "qwen-image-3.0",
+        "qwen-image-2.0-pro",
+        "qwen-image-2.0",
+    ):
+        assert mc.get_model_spec(name).supports_negative_prompt is True, name
+    assert mc.get_model_spec("qwen-image-2.1-pro").supports_negative_prompt is False
 
 
 def test_qwen_image_max_plus_use_fixed_sizes() -> None:
@@ -284,3 +308,50 @@ def test_qwen_image_max_plus_use_fixed_sizes() -> None:
         assert spec.supports_size("1024*1024") is False, name
         assert spec.resolve_size("1024*1024") == "1664*928", name
         assert spec.default_size == "1664*928", name
+
+
+def test_qwen_31_models_enforce_aspect_ratio_and_extras() -> None:
+    """官方同步接口：3.0 系列与 2.1-pro 额外限定宽高比 1:8~8:1，并支持 DPE / 思考模式."""
+    for name in ("qwen-image-3.0-pro", "qwen-image-3.0", "qwen-image-2.1-pro"):
+        spec = mc.get_model_spec(name)
+        assert spec.supports_aspect_ratio is True, name
+        assert spec.supports_prompt_extend_mode is True, name
+        assert spec.supports_enable_thinking is True, name
+        # 单边都在范围内，但比例越界（>8:1）仍应判否
+        assert spec.supports_size("2048*128") is False, name
+        # 8:1 与短边下限 512 同时满足才放行（512*4096 超出长边上限故仍判否）
+        assert spec.supports_size("1536*192") is False, name
+        assert spec.supports_size("2048*512") is True, name
+    # 2.0 系列不施加宽高比约束，只按单边范围判定：
+    # 2048*512 两边都在 [512, 2048] 内，比例 4:1 也合法，两代模型同样放行
+    spec2 = mc.get_model_spec("qwen-image-2.0")
+    assert spec2.supports_aspect_ratio is False
+    assert spec2.supports_prompt_extend_mode is False
+    assert spec2.supports_enable_thinking is False
+    assert spec2.supports_size("2048*512") is True
+
+
+def test_resolve_negative_prompt_truncates_at_500() -> None:
+    """官方限制 negative_prompt 最多 500 字符，本地先截断再下发."""
+    spec = mc.get_model_spec("qwen-image-3.0-pro")
+    assert mc.MAX_NEGATIVE_PROMPT_LENGTH == 500
+    long_prompt = "低" * 900
+    assert len(spec.resolve_negative_prompt(long_prompt)) == 500
+    short = "低质量, 模糊"
+    assert spec.resolve_negative_prompt(short) == short
+
+
+def test_new_qwen_snapshot_models_are_registered() -> None:
+    """官方同步接口列出的日期快照与 2.1-turbo 必须登记，否则会被回退成默认模型."""
+    for name in (
+        "qwen-image-2.1-turbo",
+        "qwen-image-2.0-pro-2026-06-22",
+        "qwen-image-2.0-pro-2026-04-22",
+        "qwen-image-2.0-pro-2026-03-03",
+        "qwen-image-2.0-2026-03-03",
+    ):
+        assert mc.is_supported_model(name) is True, name
+        spec = mc.get_model_spec(name)
+        assert spec.endpoint == mc.ENDPOINT_MULTIMODAL, name
+        assert spec.call_mode == "sync", name
+        assert spec.response_format == "choices", name

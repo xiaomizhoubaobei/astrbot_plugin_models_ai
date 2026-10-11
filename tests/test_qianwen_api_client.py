@@ -178,12 +178,15 @@ def test_qwen_image_payload_matches_official_shape() -> None:
     assert payload_input["messages"][0]["content"][0]["text"] == "画一幅海报"
     assert "prompt" not in payload_input
 
-    # parameters 带 size / n / negative_prompt / prompt_extend
+    # parameters 带 size / n / negative_prompt / prompt_extend / prompt_extend_mode / enable_thinking
     params = c._build_parameters("2048*2048", spec)
     assert params["size"] == "2048*2048"
     assert params["n"] == 1
     assert params["negative_prompt"] == "低质量"
     assert params["prompt_extend"] is True
+    # 3.0 系列额外支持改写方式与思考模式，默认 direct / True
+    assert params["prompt_extend_mode"] == "direct"
+    assert params["enable_thinking"] is True
 
     # 完整请求体结构
     payload = c._build_payload("画一幅海报", "2048*2048", spec)
@@ -244,6 +247,51 @@ def test_build_parameters_skips_empty_negative_prompt() -> None:
     c = _make_client(negative_prompt="")
     spec = ac.get_model_spec("wan2.6-t2i")
     assert "negative_prompt" not in c._build_parameters("1280*1280", spec)
+
+
+def test_build_parameters_drops_negative_prompt_for_21_pro() -> None:
+    """官方明确 qwen-image-2.1-pro 不支持 negative_prompt，配置了也不得下发."""
+    c = _make_client(model="qwen-image-2.1-pro", negative_prompt="低质量")
+    spec = ac.get_model_spec("qwen-image-2.1-pro")
+    assert "negative_prompt" not in c._build_parameters("2048*2048", spec)
+
+
+def test_build_parameters_truncates_negative_prompt() -> None:
+    """negative_prompt 超过官方 500 字符上限时先截断再下发."""
+    c = _make_client(negative_prompt="低" * 900)
+    spec = ac.get_model_spec("qwen-image-3.0-pro")
+    params = c._build_parameters("2048*2048", spec)
+    assert len(params["negative_prompt"]) == ac.MAX_NEGATIVE_PROMPT_LENGTH
+
+
+def test_build_parameters_gates_extend_mode_and_thinking() -> None:
+    """prompt_extend_mode / enable_thinking 只发给支持的模型，且随 prompt_extend 开关联动."""
+    spec_31 = ac.get_model_spec("qwen-image-3.0")
+    spec_20 = ac.get_model_spec("qwen-image-2.0")
+
+    c = _make_client(
+        prompt_extend=True, prompt_extend_mode="agent", enable_thinking=False
+    )
+    p31 = c._build_parameters("2048*2048", spec_31)
+    assert p31["prompt_extend_mode"] == "agent"
+    assert p31["enable_thinking"] is False
+    # 2.0 系列不支持这两个参数，不得出现
+    p20 = c._build_parameters("2048*2048", spec_20)
+    assert "prompt_extend_mode" not in p20
+    assert "enable_thinking" not in p20
+
+    # prompt_extend 关闭时，两个从属参数一并消失（官方：需在 prompt_extend=true 时生效）
+    c_off = _make_client(prompt_extend=False, prompt_extend_mode="agent")
+    p_off = c_off._build_parameters("2048*2048", spec_31)
+    assert "prompt_extend" not in p_off
+    assert "prompt_extend_mode" not in p_off
+    assert "enable_thinking" not in p_off
+
+
+def test_prompt_extend_mode_invalid_value_falls_back() -> None:
+    """拼错的改写方式一律收敛为 direct，避免原样发给上游换来 400."""
+    c = _make_client(prompt_extend_mode="bogus")
+    assert c.prompt_extend_mode == "direct"
 
 
 def test_resolve_size_uses_default_when_empty() -> None:

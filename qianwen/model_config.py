@@ -28,6 +28,16 @@
 提示词上限是第三个易错点：官方对「按字符计」与「按 token 计」两代模型分别给出上限，
 本表用 ``prompt_limit_mode`` + ``max_prompt_length`` 两个字段共同表达，
 禁止再用一个统一的字符数字覆盖所有模型。
+
+Qwen-Image 同步接口（本仓库 :data:`ENDPOINT_MULTIMODAL` 对应的那份文档）另有三条硬口径，
+已逐一收进本表，避免"以旧版印象写死参数"：
+
+- **提示词按 token 计**：3.0 系列与 2.1-pro 推荐不超过 4500 token；2.0 系列上限 1300 token；
+  其余（max / plus / 基础版 / z-image）为 800 token。三档均由 ``prompt_limit_mode``
+  取 ``PROMPT_LIMIT_TOKENS`` 表达。
+- **negative_prompt 上限 500 字符**，且 **qwen-image-2.1-pro 不支持该参数**（传了会 400）。
+- **尺寸**：3.0 系列 / 2.1-pro 为 512*512 ~ 2048*2048 且宽高比 1:8 ~ 8:1（不传则由模型推荐）；
+  2.0 系列为 512*512 ~ 2048*2048，默认 2048*2048；max / plus / 基础版仅接受固定预设档。
 """
 
 from dataclasses import dataclass
@@ -41,6 +51,13 @@ ENDPOINT_TASK = "/tasks/{task_id}"
 PROMPT_LIMIT_CHARS = "chars"  # 按「字符」计：可直接用 len() 精确截断
 PROMPT_LIMIT_TOKENS = "tokens"  # 按「token」计：本地仅能做保守估算
 PROMPT_LIMIT_NONE = "none"  # 无上限
+
+# negative_prompt 上限（官方：最多 500 个字符，超出部分自动截断）
+MAX_NEGATIVE_PROMPT_LENGTH = 500
+
+# Qwen-Image 3.0 系列 / 2.1-pro 的宽高比约束：1:8 ~ 8:1
+MIN_ASPECT_RATIO = 1 / 8
+MAX_ASPECT_RATIO = 8
 
 
 @dataclass(frozen=True)
@@ -66,6 +83,12 @@ class QianwenModelSpec:
             ``PROMPT_LIMIT_TOKENS`` / ``PROMPT_LIMIT_NONE``。**必须是三选一**：
             官方对两代模型分别采用「字符」与「token」两种口径，用同一个数字
             套到所有模型上必然错一边（要么误截合法提示词，要么漏放超限提示词）。
+        supports_aspect_ratio: 是否施加宽高比约束（1:8 ~ 8:1）。
+            官方仅对 qwen-image-3.0 系列与 2.1-pro 给出该约束，其余模型不校验。
+        supports_prompt_extend_mode: 是否支持 ``prompt_extend_mode``（DPE / APE）。
+            官方仅对 qwen-image-3.0 系列与 2.1-pro 开放，其余模型传了会 400。
+        supports_enable_thinking: 是否支持 ``enable_thinking``（思考模式）。
+            同样仅 3.0 系列与 2.1-pro 支持，且需在 prompt_extend=true 时生效。
     """
 
     endpoint: str
@@ -81,6 +104,12 @@ class QianwenModelSpec:
     # 上限计法：官方对 qwen-image-3.0 系列/2.1-pro 与万相 2.x 按字符计，
     # 对 qwen-image-2.0 系列/max/plus/基础版按 token 计，二者不可混用。
     prompt_limit_mode: str = PROMPT_LIMIT_CHARS
+    # 宽高比约束：仅 qwen-image-3.0 系列与 2.1-pro 由官方明确限定 1:8 ~ 8:1
+    supports_aspect_ratio: bool = False
+    # 提示词改写方式（prompt_extend_mode）与思考模式（enable_thinking）：
+    # 官方文档明确「仅 qwen-image-3.0 系列与 2.1-pro 支持」，其余模型不得下发
+    supports_prompt_extend_mode: bool = False
+    supports_enable_thinking: bool = False
 
     def supports_size(self, size: str) -> bool:
         """判断给定尺寸是否被该模型接受.
@@ -104,10 +133,20 @@ class QianwenModelSpec:
             return size in self.fixed_sizes
 
         # 范围型模型需同时满足单边上下限
-        return (
+        if not (
             self.min_side <= width <= self.max_side
             and self.min_side <= height <= self.max_side
-        )
+        ):
+            return False
+
+        # 官方对 3.0 系列 / 2.1-pro 额外限定宽高比 1:8 ~ 8:1，
+        # 极端长条（如 2048*100）虽然两边都没越界，上游仍会直接 400。
+        if self.supports_aspect_ratio:
+            ratio = width / height
+            if not (MIN_ASPECT_RATIO <= ratio <= MAX_ASPECT_RATIO):
+                return False
+
+        return True
 
     def resolve_size(self, size: str) -> str:
         """将请求尺寸收敛到模型可接受的尺寸.
@@ -188,142 +227,152 @@ class QianwenModelSpec:
             return prompt[:limit]
         return prompt
 
+    def resolve_negative_prompt(self, negative_prompt: str) -> str:
+        """按官方 500 字符上限截断负面提示词.
+
+        官方明确 negative_prompt「最多 500 个字符，超出部分自动截断」，
+        本地先截一遍可避免把明显超长的配置整段发出去（上游静默截断后
+        用户无从得知实际生效了什么）。
+
+        Args:
+            negative_prompt: 原始负面提示词
+
+        Returns:
+            未超上限时原样返回，超限时截断到 500 字符
+        """
+        if len(negative_prompt) > MAX_NEGATIVE_PROMPT_LENGTH:
+            return negative_prompt[:MAX_NEGATIVE_PROMPT_LENGTH]
+        return negative_prompt
+
+
+# 官方提示词上限（按 token 计）：3.0 系列 / 2.1-pro、2.0 系列、其余各一档
+_QWEN_3X_PROMPT_TOKENS = 4500
+_QWEN_2X_PROMPT_TOKENS = 1300
+_QWEN_BASE_PROMPT_TOKENS = 800
+
+# max / plus / 基础版共用的固定预设分辨率（官方图像模型表：最大 1664×928，共 5 档）
+_QWEN_FIXED_SIZES: tuple[str, ...] = (
+    "1664*928",
+    "1472*1104",
+    "1328*1328",
+    "1104*1472",
+    "928*1664",
+)
+
+
+def _qwen_range_spec(
+    *,
+    supports_negative_prompt: bool = True,
+    max_prompt_length: int,
+    supports_aspect_ratio: bool = False,
+    supports_prompt_extend_mode: bool = False,
+    supports_enable_thinking: bool = False,
+) -> QianwenModelSpec:
+    """构造「范围型尺寸」Qwen-Image 的能力描述（3.0 系列 / 2.1 / 2.0 共用骨架）.
+
+    官方同步接口对这几个型号的尺寸口径一致（512*512 ~ 2048*2048），
+    差异只在提示词 token 上限、是否支持 negative_prompt、
+    以及 3.0 系列 / 2.1-pro 独有的宽高比约束与两个附加参数上，
+    因此用工厂函数收口，避免同一份骨架被抄十几遍后各自漂移。
+
+    Args:
+        supports_negative_prompt: 是否支持负面提示词（2.1-pro 为 False）
+        max_prompt_length: 提示词 token 上限
+        supports_aspect_ratio: 是否施加宽高比 1:8 ~ 8:1 约束
+        supports_prompt_extend_mode: 是否支持 prompt_extend_mode（DPE / APE）
+        supports_enable_thinking: 是否支持 enable_thinking（思考模式）
+
+    Returns:
+        构造好的能力描述
+    """
+    return QianwenModelSpec(
+        endpoint=ENDPOINT_MULTIMODAL,
+        call_mode="sync",
+        response_format="choices",
+        default_size="2048*2048",
+        min_side=512,
+        max_side=2048,
+        supports_negative_prompt=supports_negative_prompt,
+        supports_prompt_extend=True,
+        max_prompt_length=max_prompt_length,
+        prompt_limit_mode=PROMPT_LIMIT_TOKENS,
+        supports_aspect_ratio=supports_aspect_ratio,
+        supports_prompt_extend_mode=supports_prompt_extend_mode,
+        supports_enable_thinking=supports_enable_thinking,
+    )
+
+
+def _qwen_fixed_spec() -> QianwenModelSpec:
+    """构造「固定档尺寸」Qwen-Image 的能力描述（max / plus / 基础版 / 2.0-max 共用）.
+
+    官方图像模型表把这几个型号同列：仅接受 5 档预设分辨率、最大输出数 1、
+    提示词上限 800 token。
+
+    Returns:
+        构造好的能力描述
+    """
+    return QianwenModelSpec(
+        endpoint=ENDPOINT_MULTIMODAL,
+        call_mode="sync",
+        response_format="choices",
+        default_size="1664*928",
+        min_side=0,
+        max_side=0,
+        supports_negative_prompt=True,
+        supports_prompt_extend=True,
+        fixed_sizes=_QWEN_FIXED_SIZES,
+        max_prompt_length=_QWEN_BASE_PROMPT_TOKENS,
+        prompt_limit_mode=PROMPT_LIMIT_TOKENS,
+    )
+
 
 # 各模型能力表：字段口径来自官方文档的「支持的模型 / 参数说明」章节
 QIANWEN_MODEL_SPECS: dict[str, QianwenModelSpec] = {
-    # ===== Qwen-Image：同步调用，messages 传参，choices 结果格式 =====
-    # 官方口径（文生图总览 → 设置输出图像分辨率 / 设置生成图片数量）：
-    # - 3.0 系列与 2.1-pro：自定义 512*512 ~ 2048*2048，默认由模型按提示词推荐，
-    #   宽高比 1:8 ~ 8:1，n 上限 6，支持 negative_prompt / prompt_extend
-    # - 2.0 系列：同为 512*512 ~ 2048*2048，默认 2048*2048(1:1)，n 上限 6
-    # - max / plus / 基础版 qwen-image：仅接受固定预设分辨率（1664*928 等 5 档），
-    #   n 仅支持 1，默认 1664*928(16:9)（官方图像模型表：最大分辨率 1664×928、最大输出数 1）
-    # 注意：3.0 系列与 2.1-pro 无独立「默认尺寸」概念（由模型按提示词推荐），这里取 2K 方图为默认值。
-    #
-    # 提示词上限不是「一个数字套所有模型」——官方对两代模型分两种口径：
-    # - 3.0 系列 / 2.1-pro：按「字符」计，2000 字符（CJK 与西文同权，直接数长度）；
-    # - 2.0 系列 / max / plus / 基础版：按「token」计（中文约 1 字 1 token，西文约 4 字 1 token），
-    #   故同样的「2000」在中文下约合 2000 token、在西文下则远不到 —— 用字符口径去卡会误截合法提示词。
-    # 两种口径由 prompt_limit_mode 显式区分，禁止再用统一字符上限。
-    "qwen-image-3.0-pro": QianwenModelSpec(
-        endpoint=ENDPOINT_MULTIMODAL,
-        call_mode="sync",
-        response_format="choices",
-        default_size="2048*2048",
-        min_side=512,
-        max_side=2048,
-        supports_negative_prompt=True,
-        supports_prompt_extend=True,
-        max_prompt_length=2000,
-        prompt_limit_mode=PROMPT_LIMIT_CHARS,
+    # --- 3.0 系列：4500 token + 宽高比 1:8~8:1 + DPE/思考模式 ---
+    "qwen-image-3.0-pro": _qwen_range_spec(
+        max_prompt_length=_QWEN_3X_PROMPT_TOKENS,
+        supports_aspect_ratio=True,
+        supports_prompt_extend_mode=True,
+        supports_enable_thinking=True,
     ),
-    "qwen-image-3.0": QianwenModelSpec(
-        endpoint=ENDPOINT_MULTIMODAL,
-        call_mode="sync",
-        response_format="choices",
-        default_size="2048*2048",
-        min_side=512,
-        max_side=2048,
-        supports_negative_prompt=True,
-        supports_prompt_extend=True,
-        max_prompt_length=2000,
-        prompt_limit_mode=PROMPT_LIMIT_CHARS,
+    "qwen-image-3.0": _qwen_range_spec(
+        max_prompt_length=_QWEN_3X_PROMPT_TOKENS,
+        supports_aspect_ratio=True,
+        supports_prompt_extend_mode=True,
+        supports_enable_thinking=True,
     ),
-    "qwen-image-2.1-pro": QianwenModelSpec(
-        endpoint=ENDPOINT_MULTIMODAL,
-        call_mode="sync",
-        response_format="choices",
-        default_size="2048*2048",
-        min_side=512,
-        max_side=2048,
-        supports_negative_prompt=True,
-        supports_prompt_extend=True,
-        max_prompt_length=2000,
-        prompt_limit_mode=PROMPT_LIMIT_CHARS,
+    # --- 2.1-pro：与 3.0 同档能力（4500 token / 宽高比 / DPE / 思考模式），
+    #     但官方明确「不支持 negative_prompt」，传了会被上游拒绝 ---
+    "qwen-image-2.1-pro": _qwen_range_spec(
+        supports_negative_prompt=False,
+        max_prompt_length=_QWEN_3X_PROMPT_TOKENS,
+        supports_aspect_ratio=True,
+        supports_prompt_extend_mode=True,
+        supports_enable_thinking=True,
     ),
-    "qwen-image-2.0-pro": QianwenModelSpec(
-        endpoint=ENDPOINT_MULTIMODAL,
-        call_mode="sync",
-        response_format="choices",
-        default_size="2048*2048",
-        min_side=512,
-        max_side=2048,
-        supports_negative_prompt=True,
-        supports_prompt_extend=True,
-        max_prompt_length=2000,
-        prompt_limit_mode=PROMPT_LIMIT_TOKENS,
+    # --- 2.1-turbo：官方同步接口列出的可选模型，尺寸口径与 2.x 同区间 ---
+    "qwen-image-2.1-turbo": _qwen_range_spec(max_prompt_length=_QWEN_2X_PROMPT_TOKENS),
+    # --- 2.0 系列（含官方列出的三个日期快照）：1300 token，无宽高比约束 ---
+    "qwen-image-2.0-pro": _qwen_range_spec(max_prompt_length=_QWEN_2X_PROMPT_TOKENS),
+    "qwen-image-2.0-pro-2026-06-22": _qwen_range_spec(
+        max_prompt_length=_QWEN_2X_PROMPT_TOKENS
     ),
-    "qwen-image-2.0": QianwenModelSpec(
-        endpoint=ENDPOINT_MULTIMODAL,
-        call_mode="sync",
-        response_format="choices",
-        default_size="2048*2048",
-        min_side=512,
-        max_side=2048,
-        supports_negative_prompt=True,
-        supports_prompt_extend=True,
-        max_prompt_length=2000,
-        prompt_limit_mode=PROMPT_LIMIT_TOKENS,
+    "qwen-image-2.0-pro-2026-04-22": _qwen_range_spec(
+        max_prompt_length=_QWEN_2X_PROMPT_TOKENS
     ),
-    # max / plus：仅支持固定预设分辨率，尺寸越界一律降级为 16:9 默认档
-    "qwen-image-max": QianwenModelSpec(
-        endpoint=ENDPOINT_MULTIMODAL,
-        call_mode="sync",
-        response_format="choices",
-        default_size="1664*928",
-        min_side=0,
-        max_side=0,
-        supports_negative_prompt=True,
-        supports_prompt_extend=True,
-        fixed_sizes=(
-            "1664*928",
-            "1472*1104",
-            "1328*1328",
-            "1104*1472",
-            "928*1664",
-        ),
-        max_prompt_length=2000,
-        prompt_limit_mode=PROMPT_LIMIT_TOKENS,
+    "qwen-image-2.0-pro-2026-03-03": _qwen_range_spec(
+        max_prompt_length=_QWEN_2X_PROMPT_TOKENS
     ),
-    "qwen-image-plus": QianwenModelSpec(
-        endpoint=ENDPOINT_MULTIMODAL,
-        call_mode="sync",
-        response_format="choices",
-        default_size="1664*928",
-        min_side=0,
-        max_side=0,
-        supports_negative_prompt=True,
-        supports_prompt_extend=True,
-        fixed_sizes=(
-            "1664*928",
-            "1472*1104",
-            "1328*1328",
-            "1104*1472",
-            "928*1664",
-        ),
-        max_prompt_length=2000,
-        prompt_limit_mode=PROMPT_LIMIT_TOKENS,
+    "qwen-image-2.0": _qwen_range_spec(max_prompt_length=_QWEN_2X_PROMPT_TOKENS),
+    "qwen-image-2.0-2026-03-03": _qwen_range_spec(
+        max_prompt_length=_QWEN_2X_PROMPT_TOKENS
     ),
-    # 基础版 qwen-image：与 max / plus 同档，仅支持固定预设分辨率，n 仅支持 1
-    "qwen-image": QianwenModelSpec(
-        endpoint=ENDPOINT_MULTIMODAL,
-        call_mode="sync",
-        response_format="choices",
-        default_size="1664*928",
-        min_side=0,
-        max_side=0,
-        supports_negative_prompt=True,
-        supports_prompt_extend=True,
-        fixed_sizes=(
-            "1664*928",
-            "1472*1104",
-            "1328*1328",
-            "1104*1472",
-            "928*1664",
-        ),
-        max_prompt_length=2000,
-        prompt_limit_mode=PROMPT_LIMIT_TOKENS,
-    ),
+    # --- max / plus / 基础版：仅接受固定预设分辨率，n 仅支持 1 ---
+    "qwen-image-max": _qwen_fixed_spec(),
+    "qwen-image-plus": _qwen_fixed_spec(),
+    "qwen-image": _qwen_fixed_spec(),
+    # 兼容别名：历史配置里的 qwen-image-2.0-max 指向同一档固定分辨率
+    "qwen-image-2.0-max": _qwen_fixed_spec(),
     # ===== Z-Image：轻量快速，同步调用，messages 传参 =====
     # 文档：分辨率范围 512x512 ~ 2048x2048，推荐 1024x1024 ~ 1536x1536，提示词上限 800
     "z-image-turbo": QianwenModelSpec(
