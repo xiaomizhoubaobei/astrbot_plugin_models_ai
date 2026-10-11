@@ -150,7 +150,8 @@ jobs:
       #   没装。旧实现只探测「单个写死路径 + PATH」，命中不了时直接 exit 1，会让
       #   整个审计在**建库之前**就中止（正是本次评审指出的缺陷）。
       #   故将探测收敛到 .github/scripts/resolve-codeql-cli.sh：多候选探测 + 兜底
-      #   下载官方固定版本 bundle，解析出的真实路径经 GITHUB_ENV 透传给后续步骤。
+      #   下载官方固定版本 bundle（**先校验 SHA-256 完整性再解压执行**），解析出的
+      #   真实路径经 GITHUB_ENV 透传给后续步骤。
       - name: 解析 CodeQL CLI（多候选探测 + 兜底安装）
         run: |
           set -euo pipefail
