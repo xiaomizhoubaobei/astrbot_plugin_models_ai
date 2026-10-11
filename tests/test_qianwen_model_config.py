@@ -331,6 +331,37 @@ def test_qwen_31_models_enforce_aspect_ratio_and_extras() -> None:
     assert spec2.supports_size("2048*512") is True
 
 
+def test_aspect_ratio_violation_returns_false() -> None:
+    """宽高比越界必须走「比例判否」分支，且该分支确实可达.
+
+    官方对 3.0 系列与 2.1-pro 限定宽高比 1:8 ~ 8:1。单边区间 512~2048
+    取值时最大比值仅 4:1，永远落不到该分支，所以这里直接改小
+    ``max_side``，构造「两边都在区间内、但比值 16:1 越界」的输入，
+    确保这条 return 不是摆设（改小上限只影响本用例的局部替身，
+    不污染线上能力表）。
+    """
+    base = mc.get_model_spec("qwen-image-3.0-pro")
+    assert base.supports_aspect_ratio is True
+    # 两边都 <= 2048，但 2048/128 = 16:1 超出 8:1，只有比例校验能拦住
+    spec = mc.QianwenModelSpec(
+        endpoint=base.endpoint,
+        call_mode=base.call_mode,
+        response_format=base.response_format,
+        default_size=base.default_size,
+        min_side=128,
+        max_side=2048,
+        supports_negative_prompt=base.supports_negative_prompt,
+        supports_prompt_extend=base.supports_prompt_extend,
+        supports_aspect_ratio=True,
+    )
+    assert spec.supports_size("2048*128") is False
+    # 对称方向（128:2048 即 1:16）同样判否
+    assert spec.supports_size("128*2048") is False
+    # 边界内侧（256*2048 = 8:1）仍应放行，确保判否不是「一律拒绝」
+    assert spec.supports_size("2048*256") is True
+    assert spec.supports_size("256*2048") is True
+
+
 def test_resolve_negative_prompt_truncates_at_500() -> None:
     """官方限制 negative_prompt 最多 500 字符，本地先截断再下发."""
     spec = mc.get_model_spec("qwen-image-3.0-pro")
