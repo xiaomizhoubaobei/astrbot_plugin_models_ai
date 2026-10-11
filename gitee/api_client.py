@@ -115,11 +115,14 @@ class GiteeAIClient:
         if not self.api_keys:
             raise ValueError("请先配置 API Key")
 
-        api_key = self.api_keys[self.current_key_index]
-        self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
+        # 先记录本次实际取用的下标，再推进游标：日志要报「用了第几把」，
+        # 而非推进后的游标减一——后者在轮转回绕时会算出 -1 这种无效下标。
+        index = self.current_key_index
+        api_key = self.api_keys[index]
+        self.current_key_index = (index + 1) % len(self.api_keys)
         # 安全约定（见 SECURITY.md）：调试日志绝不回显 API Key 内容，
         # 仅记录轮询索引，避免密钥前缀泄露到共享调试日志。
-        self.debug_log(f"轮询 API Key: index={self.current_key_index - 1}")
+        self.debug_log(f"轮询 API Key: index={index}")
         return api_key
 
     async def _download_remote_image(self, url: str, session: Any) -> tuple[bytes, str]:
