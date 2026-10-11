@@ -123,7 +123,13 @@ jobs:
       #   已合并的可信代码，而非事件携带的任意提交。
       # ⚠️ 第三方 Actions 一律锁定到已复核的不可变 commit SHA，禁用易被上游篡改的
       #   浮动 tag（如 actions/checkout@v4）；框架同样锁定到复核过的发布 commit。
+      # ⚠️ id 用于把「实际检出的修订版本」显式记录下来，供下游第 0 步按同一
+      #   修订版本过滤 CodeQL 告警：checkout action 会输出 ref/commit，其中
+      #   steps.checkout.outputs.commit 是**解析后的 40 位提交 SHA**（比 github.sha
+      #   更可靠——手动触发指定 tag/分支时 github.sha/github.ref 未必等于检出内容）。
+      #   下面「建库」「取告警」「审计」三段因此统一锚定到**同一个修订版本**上。
       - name: Checkout 本项目（仅可信 ref）
+        id: checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || github.event.repository.default_branch }}
@@ -160,6 +166,9 @@ jobs:
           echo "CODEQL_CLI=${CLI}" >> "$GITHUB_ENV"
 
       - name: 构建 CodeQL 数据库
+        # ⚠️ 【修订版本一致】本数据库基于**上一步检出的修订版本**构建；下游拉取 CodeQL
+        #   告警时会以同一 ref/commit 过滤（见「运行 AI 审计 taskflow」的 CHECKOUT_* 注入），
+        #   从而保证「用哪版代码建库，就审哪版告警」，不会拿 A 版本数据库调查 B 版本告警。
         run: |
           set -euo pipefail
           # ① 直接消费上一步解析并写入 GITHUB_ENV 的真实 CLI 路径。
@@ -212,7 +221,10 @@ jobs:
       - name: 安装 hatch（锁定版本）
         run: pip install hatch==1.14.0 "virtualenv<21"
 
-      # 运行 AI 审计 taskflow（消费最新 CodeQL 告警），产出结构化结论 artifact。
+      # 运行 AI 审计 taskflow（消费**与检出/建库修订版本一致**的 CodeQL 告警），产出结构化结论 artifact。
+      # ⚠️ 【修订版本一致】taskflow 第 0 步以 checkout 的 ref/commit 为基准过滤告警，
+      #   故必须透传检出结果（见下方 CHECKOUT_REF / CHECKOUT_COMMIT），否则会退化为
+      #   「跨分支/跨提交全量送审」，与被审计代码不是同一修订版本。
       # ⚠️ 本 job 不注入 GH_PAT；读取 CodeQL 告警所需的只读令牌用 GITHUB_TOKEN
       #   （其权限已被顶层收紧到 contents: read，且上游 CodeQL 告警读取无需写权限）。
       #   AI_* 凭据仅用于调用 LLM，不具备任何仓库写能力。
@@ -227,6 +239,15 @@ jobs:
           MCP_CONFIG: ${{ secrets.MCP_CONFIG }}
           # 审计结果落盘位置，供 publish job 消费
           AUDIT_VERDICT_FILE: /tmp/audit-verdicts.json
+          # 【修订版本一致】把上面 checkout 步骤**实际检出**的修订版本透传给 taskflow：
+          #   taskflow 第 0 步据此只保留「最近实例归属于该 ref/commit」的告警，
+          #   从源头丢弃属于其它分支/提交的告警，保证「本地建库/审计的代码」与
+          #   「拉取到的告警」处在**同一修订版本**上（否则会对着 A 版本代码建的库，
+          #   去调查 B 版本的告警，产出删除/错位的失真证据）。
+          #   CHECKOUT_REF 用于 ref 归属比对（如 refs/heads/main）；
+          #   CHECKOUT_COMMIT 用于 commit_sha 精确比对（40 位 SHA，权威无歧义）。
+          CHECKOUT_REF: ${{ steps.checkout.outputs.ref }}
+          CHECKOUT_COMMIT: ${{ steps.checkout.outputs.commit }}
           # ── CodeQL MCP（codeql toolbox）所需环境变量 ──────────────────────
           # 说明：codeql toolbox 需要一个 **CLI 可执行文件绝对路径**与一个
           #   **数据库基目录**（它会在其下按仓库名寻找数据库）。

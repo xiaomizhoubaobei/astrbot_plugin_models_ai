@@ -157,8 +157,11 @@ cp -r <本项目>/ai-audit ai_audit
 > `ai_audit` 导入；如果放进 `examples/`，会变成 `examples.ai_audit`，模块路径对不上。
 
 3. 按官方配置指南配好 LLM 模型 + GitHub PAT + MCP Server。
-   示例的 `alerts` 任务会通过 GitHub Code Scanning API 拉取**最新 CodeQL 告警**，
-   因此需要导出 `GITHUB_TOKEN`（PAT，需含 `security_events` 读权限）。
+   示例的 `alerts` 任务会通过 GitHub Code Scanning API 拉取**与检出/本地建库修订版本
+   一致的 CodeQL 告警**（先按 `CHECKOUT_REF` / `CHECKOUT_COMMIT` 过滤，只保留属于本次
+   检出 ref/commit 的 open 告警），因此需要导出 `GITHUB_TOKEN`（PAT，需含 `security_events`
+   读权限）。`CHECKOUT_REF` / `CHECKOUT_COMMIT` 由 CI 自动注入（见下文 Actions 说明），
+   手工运行时需自行导出，二者缺一会**明确失败**而不会退化成跨版本全量拉取。
    仓库统一由 `globals.repo`（owner/repo）这一个值决定：**告警拉取、memcache 状态 key
    都基于它**，workflow 通过 `-g repo=...` 把实际仓库注入进来（见下文 GitHub Actions 说明），
    因此不再需要、也不应单独设置 `GITHUB_REPOSITORY` 以免与 `globals.repo` 分裂。
@@ -229,7 +232,9 @@ hatch run main -t ai_audit.alert_triage_example \
 本仓库已内置 `.github/workflows/ai-audit-scheduled.yml`，可直接自动（或手动）运行 AI 审计：
 
 - **自动触发**：默认监听 `CodeQL.yml`（name: `代码质量分析`）的 `completed` 事件，
-  在 CodeQL 扫完后确定性地运行，保证消费最新告警；同时保留 `workflow_dispatch` 手动触发。
+  在 CodeQL 扫完后确定性地运行，并在**与检出/本地建库相同的修订版本**上消费告警
+  （按 `CHECKOUT_REF`/`CHECKOUT_COMMIT` 过滤，`workflow_run` 场景下即默认分支）；
+  同时保留 `workflow_dispatch` 手动触发。
   🔒 **fork 门禁**：仅当上游运行的 `head_repository` 为本仓库时才进入审计，fork PR 触发的
   CodeQL 运行一律跳过，从源头杜绝把 PR 源码当作不可信输入送进审计链。
 - **手动触发**：在仓库 **Actions → AI 审计（CodeQL 完成后自动分流）→ Run workflow** 手动跑一次用于验证。
@@ -269,9 +274,12 @@ hatch run main -t ai_audit.alert_triage_example \
 
 先在一个 CodeQL 告警上跑通，验证链路后再铺开到全部告警：
 
-1. 示例开头 `alerts` 任务已改为从 GitHub Code Scanning API 拉取**最新 CodeQL 告警**
-   （`state=open&tool_name=CodeQL`），并映射成下游需要的
-   `alert_number / rule / path / message` 结构，无需手动维护告警列表。
+1. 示例开头 `alerts` 任务已改为从 GitHub Code Scanning API 拉取**与检出/本地建库修订版本
+   一致的 open CodeQL 告警**（`state=open&tool_name=CodeQL`，再按 `CHECKOUT_REF`/`CHECKOUT_COMMIT`
+   过滤——**commit_sha 精确匹配为主、ref 归一化比对兜底**），并映射成下游需要的
+   `alert_number / rule / path / message / ref / commit_sha` 结构（保留版本锚点），
+   无需手动维护告警列表。这样保证「本地建库/检出的源码」与「审计的告警」处于同一修订版本，
+   避免对着 A 版本代码建的库去调查 B 版本的告警、产出失真/错位的证据。
 2. 观察各阶段输出是否符合预期，重点看**校验阶段（第 ④ 步）**是否把不完整报告驳回并写入
    `_verdict.status == REJECTED`，以及第 ⑤ 步的结论文件是否只包含 APPROVED 的告警。
 3. 确认无误后开启 `publish` job（若已注释），即可对真实漏洞自动创建 Issue。

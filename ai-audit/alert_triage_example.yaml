@@ -56,11 +56,27 @@ globals:
 
 taskflow:
   # ---------------------------------------------------------------------------
-  # 0) 准备：从 GitHub Code Scanning API 拉取「全部 open 的 CodeQL 告警」。
+  # 0) 准备：从 GitHub Code Scanning API 拉取「与**检出/建库修订版本**一致的 open CodeQL 告警」。
   #    生成待审计告警的 JSON 可迭代列表，供后续 repeat_prompt 批量循环。
   #    通过 id + outputs（JSON Schema）暴露为命名输出 outputs.alerts。
   #    （分页：Code Scanning API 单页上限 100，此处逐页拉取直到取完，
   #     避免仓库告警超过 100 条时其余告警被漏审。）
+  #
+  #    ⚖️ 【修订版本一致性】（本步的核心约束，勿削弱）
+  #    成因：Code Scanning API 的 state=open 返回的是**跨 ref、跨 commit** 的全部
+  #          告警——同一条规则在 main / PR 分支 / 历史提交上各有一份实例。工作流前序
+  #          步骤已**本地构建 CodeQL 数据库**（基于检出的修订版本）；若告警不按同一
+  #          修订版本过滤就全量送审，就会出现「用 X 版本代码建的库/检出的源码，去调查
+  #          属于 Y 版本的告警」，下游对不上号，产出删除/错位的失真证据。
+  #    对策：以 workflow 透传的 CHECKOUT_REF / CHECKOUT_COMMIT（checkout 步骤**实际**
+  #          检出的修订版本，也正是本地建库所用源码）为基准过滤：
+  #            · 【主判据】告警最近实例的 commit_sha 必须**等于**检出的提交 SHA（权威、
+  #              无歧义）——即「用哪个提交建库/分析，就审哪个提交的告警」；
+  #            · 【兜底】当告警缺 commit_sha 时，退化为按 ref 比对（对 ref 做归一化，
+  #              剥离 refs/heads|refs/tags 前缀后再比），避免因格式差异误丢。
+  #          两个基准值任一取不到即**明确失败**，绝不退化成「拉全量跨版本告警」。
+  #    元数据保留：把 ref / commit_sha 一并映射进 outputs.alerts，使下游取证与发文
+  #          都带着确定的版本锚点，不再「丢弃引用/提交元数据」。
   # ---------------------------------------------------------------------------
   - task:
       must_complete: true
@@ -71,6 +87,12 @@ taskflow:
         set -euo pipefail
         # 需要 GITHUB_TOKEN（PAT，含 security_events 读权限）来读取 CodeQL 告警
         : "${GITHUB_TOKEN:?请设置 GITHUB_TOKEN 环境变量以读取 CodeQL 告警}"
+        # 【修订版本基准】来自 workflow 的 checkout 步骤实际检出结果（亦即本地建库所用
+        #   源码版本），由 ai-audit-scheduled.yml 经 env 透传。缺任一即无法确定审计基准，
+        #   直接失败：宁可让任务明确报错，也不静默退化成「跨版本全量送审」。
+        : "${CHECKOUT_REF:?请设置 CHECKOUT_REF（检出修订版本的 ref，如 refs/heads/main）以对齐告警版本}"
+        : "${CHECKOUT_COMMIT:?请设置 CHECKOUT_COMMIT（检出修订版本的 40 位提交 SHA）以对齐告警版本}"
+        echo "INFO: 以检出修订版本为基准过滤 CodeQL 告警：ref=${CHECKOUT_REF} commit=${CHECKOUT_COMMIT}" >&2
         # 仓库路径【写死】在此处（owner/repo），不引用 {{ globals.repo }}：
         #   框架只对 user_prompt 做 Jinja 渲染，**shell 任务的 run: 原样交给 bash 执行**
         #   （见框架 runner.py：shell 分支直接 shell_tool_call(run)，不经 render_template）。
@@ -143,19 +165,50 @@ taskflow:
           echo "ERROR: 累积告警 JSON 非法（repo=${_REPO}），停止。" >&2
           exit 1
         fi
-        jq -c '
-              map({
+        # 先按「检出/建库修订版本」过滤，再映射成下游结构（判据见本步头注释）：
+        #   · 主判据：告警最近实例 commit_sha == 检出 commit（精确到提交）；
+        #   · 兜底：告警缺 commit_sha 时，按其 ref 归一化后与检出 ref 比对；
+        #   · 均不匹配 => 属于其它分支/提交 => **丢弃**（与检出/建库代码不同版本，送审只会失真）。
+        # 归一化：剥离 refs/heads/ 与 refs/tags/ 前缀，使 checkout 的 `main` 与 API 的
+        #   `refs/heads/main` 能对齐；仍不等则视为不同 ref。
+        # 过滤程序用**单引号**包裹（jq 程序内不再需要转义双引号）。
+        # 先做一次「干跑」：过滤程序本身若执行失败（如字段类型异常）立即报错退出，
+        # 避免带着坏数据继续写 outputs、把「过滤失败」伪装成「无告警」。
+        if ! jq -e --arg ref "$CHECKOUT_REF" --arg sha "$CHECKOUT_COMMIT" '
+              def norm($r): ($r // "") | sub("^refs/(heads|tags)/"; "");
+              map(. + {_mri_ref:(.most_recent_instance.ref // ""),
+                       _mri_sha:(.most_recent_instance.commit_sha // "")}
+                  | select(
+                      (if ._mri_sha != "" then (._mri_sha == $sha)
+                       else (norm(._mri_ref) == norm($ref)) end)))
+              | length >= 0
+            ' "$_ACC_FILE" > /dev/null; then
+          echo "ERROR: 按检出修订版本过滤告警失败（ref=${CHECKOUT_REF} commit=${CHECKOUT_COMMIT}）。" >&2
+          exit 1
+        fi
+        jq -c --arg ref "$CHECKOUT_REF" --arg sha "$CHECKOUT_COMMIT" '
+              def norm($r): ($r // "") | sub("^refs/(heads|tags)/"; "");
+              map(. + {_mri_ref:(.most_recent_instance.ref // ""),
+                       _mri_sha:(.most_recent_instance.commit_sha // "")}
+                  | select(
+                      (if ._mri_sha != "" then (._mri_sha == $sha)
+                       else (norm(._mri_ref) == norm($ref)) end)))
+              | map({
                 alert_number: .number,
                 rule: (.rule.id // .rule.description // "unknown"),
                 path: (.most_recent_instance.location.path // "unknown"),
-                message: (.most_recent_instance.message.text // "")
+                message: (.most_recent_instance.message.text // ""),
+                ref: (._mri_ref // ""),
+                commit_sha: (._mri_sha // "")
               })
             ' "$_ACC_FILE" > /tmp/alerts.json
         cat /tmp/alerts.json
         # 无告警时给 stderr 写一条明确提示，避免下游 repeat_prompt 反复输出空迭代告警
         # （提示写入 stderr，不污染 stdout 的纯 JSON，保证命名输出可被正确解析）
         if [ "$(jq 'length' /tmp/alerts.json)" -eq 0 ]; then
-          echo "INFO: 仓库 ${_REPO} 当前没有 open 的 CodeQL 告警，无需 AI 分流，任务提前正常结束。" >&2
+          echo "INFO: 仓库 ${_REPO} 在修订版本（ref=${CHECKOUT_REF} commit=${CHECKOUT_COMMIT}）下无 open 的 CodeQL 告警，无需 AI 分流。" >&2
+        else
+          echo "INFO: 检出修订版本（ref=${CHECKOUT_REF} commit=${CHECKOUT_COMMIT}）下匹配到 $(jq 'length' /tmp/alerts.json) 条 open CodeQL 告警，进入审计。" >&2
         fi
       outputs:
         type: array
@@ -170,7 +223,11 @@ taskflow:
               type: string
             message:
               type: string
-          required: [alert_number, rule, path, message]
+            ref:
+              type: string
+            commit_sha:
+              type: string
+          required: [alert_number, rule, path, message, ref, commit_sha]
 
   # ---------------------------------------------------------------------------
   # 1) 信息收集：调 GitHub API / MCP Server 拿告警上下文（触发点、调用链、权限），
@@ -190,7 +247,10 @@ taskflow:
         - ai_audit.personalities.python_auditer
       user_prompt: |
         你是一名严谨的 Python 安全审计专家。针对 CodeQL 告警 {{ result.alert_number }}
-        （规则：{{ result.rule }}，文件：{{ result.path }}，描述：{{ result.message }}），
+        （规则：{{ result.rule }}，文件：{{ result.path }}，描述：{{ result.message }}，
+        归属修订版本：ref={{ result.ref }}，commit={{ result.commit_sha }}），
+        ⚠️ 该告警的修订版本已与本次检出/本地建库所用的代码对齐（见上 ref/commit）——
+        请以该修订版本对应的源码为准取证，不要引用其它分支或提交上的差异代码。
         按以下三步取证（调用可用的 MCP 工具，如 GitHub API / CodeQL toolbox /
         get_file_contents / memcache_set_state）：
 
@@ -219,6 +279,8 @@ taskflow:
              "user_input_controlled": true|false,
              "privileged_context": true|false,
              "is_test_code": true|false,
+             "ref": "{{ result.ref }}",
+             "commit_sha": "{{ result.commit_sha }}",
              "notes": "<漏洞原理、触发条件与可利用性简述；若无法利用，写明具体阻断理由>"
            }
            ⚠️ 严禁无依据捏造行号与利用链：无法取证的字段写 null，并在 notes 说明原因。
