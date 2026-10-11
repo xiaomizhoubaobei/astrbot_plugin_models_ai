@@ -44,8 +44,9 @@ LLM + Taskflow Agent 逐个审计
 
 > 🔒 **安全设计：审计与创建 Issue 分离（pwn-request 防护）**
 > `ai-audit-scheduled.yml` 把流程拆成**两个 job**，中间只以 **artifact（纯数据）** 传信：
-> - `triage` job：**不持有任何仓库写凭据**（无 `GH_PAT`），仅在**可信 ref**（手动触发的本次 ref
->   或默认分支）上检出源码，产出结论文件 `audit-verdicts.json`；
+> - `triage` job：**不持有任何仓库写凭据**（无 `GH_PAT`），仅在**可信提交**（`workflow_run`
+>   场景下为本次 CodeQL 实际分析的提交 `head_sha`，手动触发时为本次 ref）上检出源码，
+>   产出结论文件 `audit-verdicts.json`；
 > - `publish` job：**唯一持有 `GH_PAT` 的 job**，**不检出/不执行任何源码**，只消费 artifact 里
 >   的结构化结论按白名单字段建 Issue。
 >
@@ -260,7 +261,9 @@ hatch run main -t ai_audit.alert_triage_example \
 
 - **自动触发**：默认监听 `CodeQL.yml`（name: `代码质量分析`）的 `completed` 事件，
   在 CodeQL 扫完后确定性地运行，并在**与检出/本地建库相同的修订版本**上消费告警
-  （按 `CHECKOUT_REF`/`CHECKOUT_COMMIT` 过滤，`workflow_run` 场景下即默认分支）；
+  （按 `CHECKOUT_REF`/`CHECKOUT_COMMIT` 过滤；`workflow_run` 场景下检出**锁定到本次
+  CodeQL 实际分析的提交 `head_sha`**，与告警的 `commit_sha` 严格同源，避免默认分支在
+  分析完成后又前移导致告警被版本比对丢弃）；
   同时保留 `workflow_dispatch` 手动触发。
   🔒 **fork 门禁**：仅当上游运行的 `head_repository` 为本仓库时才进入审计，fork PR 触发的
   CodeQL 运行一律跳过，从源头杜绝把 PR 源码当作不可信输入送进审计链。

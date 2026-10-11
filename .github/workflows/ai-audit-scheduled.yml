@@ -14,7 +14,8 @@
 # 对策：把流程劈成两段，中间只以 artifact（纯数据）传信，令牌与不可信源码
 #       物理隔离：
 #       ┌─ triage  job（无任何 Secret / 无写权限）──────────────────────────┐
-#       │  仅在**可信 ref**（默认分支或手动触发的本次 ref）上检出源码；      │
+#       │  仅在**可信提交**（本次 CodeQL 分析的提交 / 手动触发的本次 ref）上  │
+#       │  检出源码；                                                        │
 #       │  只给 content-free 的只读审计能力；产出结构化审计结论 artifact。   │
 #       └──────────────────────────────────────────────────────────────────┘
 #                              ↓ audit-verdicts.json（数据）
@@ -119,8 +120,9 @@ jobs:
 
       # 拉取源码：只认**可信 ref**，绝不用 workflow_run 事件里的 PR head。
       #   手动触发 -> 当前 ref（由有写权限的维护者手动发起，可信）；
-      #   workflow_run -> 本仓库默认分支（上游已在 if 中排除 fork），确保检出的是
-      #   已合并的可信代码，而非事件携带的任意提交。
+      #   workflow_run -> 触发本次审计的那次 CodeQL 运行**实际分析的提交**
+      #   （github.event.workflow_run.head_sha）。上游已在 if 中排除 fork，故该
+      #   head_sha 必属本仓库既有提交，是可信代码，而非事件携带的任意提交。
       # ⚠️ 第三方 Actions 一律锁定到已复核的不可变 commit SHA，禁用易被上游篡改的
       #   浮动 tag（如 actions/checkout@v4）；框架同样锁定到复核过的发布 commit。
       # ⚠️ id 用于把「实际检出的修订版本」显式记录下来，供下游第 0 步按同一
@@ -128,19 +130,41 @@ jobs:
       #   steps.checkout.outputs.commit 是**解析后的 40 位提交 SHA**（比 github.sha
       #   更可靠——手动触发指定 tag/分支时 github.sha/github.ref 未必等于检出内容）。
       #   下面「建库」「取告警」「审计」三段因此统一锚定到**同一个修订版本**上。
-      - name: Checkout 本项目（仅可信 ref）
+      #
+      # ⚠️⚠️ 【修订版本锚定，勿改回 default_branch】════════════════════════════════
+      #   成因：workflow_run 场景若检出的 ref 写 `github.event.repository.default_
+      #   branch`，取到的是**移动中的默认分支 tip**，而非「触发本次审计的那次 CodeQL
+      #   运行所分析的提交」。二者在下列窗口里必然错位：
+      #     CodeQL 分析提交 A 完成 → 审计被拉起，但在 checkout 之前，默认分支被别人
+      #     （或 CI）推了一个**不影响 CodeQL 触发**的新提交 B（如仅改文档 / 非 `**.py`
+      #     路径）→ 默认分支 tip 已是 B。
+      #   此时 checkout 检出 B，CHECKOUT_COMMIT=B；而 CodeQL 告警的
+      #   most_recent_instance.commit_sha 仍是 A（B 未触发新的 CodeQL 分析，故告警
+      #   不会在 B 上重建）。下游第 0 步以 commit_sha **精确等于** CHECKOUT_COMMIT
+      #   为主判据过滤，A≠B → 本次扫描的全部告警被**静默丢弃**，审计报「无告警」，
+      #   真实漏洞被漏审；且 CodeQL.yml 的 push 触发仅匹配 `**.py`，文档类推送
+      #   **不会**补跑一次扫描，故不存在「稍后自愈」的兜底。
+      #   对策：把检出**绑定到触发运行实际分析的 SHA**（head_sha），使检出的提交与
+      #   告警的 commit_sha 天然同源（同一提交 A），消除漂移窗口——既修掉漏审，也
+      #   让「建库/审计的代码」与「拉取到的告警」严格同版本。
+      #   head_sha 由 workflow_run 事件在**触发时即冻结**，不随默认分支移动而变，
+      #   故不受上述窗口影响；且上游经 head_repository 门禁已排除 fork，安全性不变。
+      - name: Checkout 本项目（锚定触发运行实际分析的提交）
         id: checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || github.event.repository.default_branch }}
+          # workflow_run -> head_sha（本次扫描分析的提交，权威无歧义）；
+          # workflow_dispatch -> 当前 ref（维护者手动指定的可信 ref）。
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
           persist-credentials: false
 
       # ── 初始化 CodeQL CLI 并构建数据库（供 MCP codeql toolbox 读取）───────────
       # 说明：审计人格挂了 seclab_taskflow_agent.toolboxes.codeql，Agent 会用
       #   `codeql` 工具对源码做 AST/数据流取证来精确定位行号，因此这里先本地建库。
       # 关键取舍：
-      #   - 建库对象是**本步已检出的可信源码**（workflow_run 场景下即默认分支），
-      #     与「只认可信 ref」的安全模型一致，不引入任何不可信输入。
+      #   - 建库对象是**本步已检出的可信源码**（workflow_run 场景下即本次 CodeQL
+      #     实际分析的提交 head_sha），与「只认可信提交」的安全模型一致，不引入
+      #     任何不可信输入，且与下游过滤告警所用的 commit 严格同源。
       #   - 数据库落在 /tmp 下（而非仓库工作区），避免污染检出树、也不会被
       #     upload-artifact 误打包；后续用环境变量把路径透传给 Agent。
       #
@@ -280,7 +304,15 @@ jobs:
           #   去调查 B 版本的告警，产出删除/错位的失真证据）。
           #   CHECKOUT_REF 用于 ref 归属比对（如 refs/heads/main）；
           #   CHECKOUT_COMMIT 用于 commit_sha 精确比对（40 位 SHA，权威无歧义）。
-          CHECKOUT_REF: ${{ steps.checkout.outputs.ref }}
+          # ⚠️【勿用 steps.checkout.outputs.ref 作 CHECKOUT_REF】：workflow_run 场景下
+          #   检出的 ref 已是**提交 SHA**（见上方 checkout 的 ref 表达式），checkout 的
+          #   outputs.ref 会**原样回显该 SHA** 而非 `refs/heads/...`；拿它去做 ref 兜底
+          #   比对本就永远不匹配，等于废掉兜底。故这里显式从**事件语义**取 ref：
+          #     · workflow_run -> head_branch 补成 refs/heads/<branch>（扫描所属分支）；
+          #     · workflow_dispatch -> github.ref（维护者选定的完整 ref）。
+          #   主判据（CHECKOUT_COMMIT 的 commit_sha 精确比对）不受影响、且为权威路径；
+          #   此处仅保证「缺 commit_sha 的告警」也能靠 ref 兜底正确归属。
+          CHECKOUT_REF: ${{ github.event_name == 'workflow_run' && format('refs/heads/{0}', github.event.workflow_run.head_branch) || github.ref }}
           CHECKOUT_COMMIT: ${{ steps.checkout.outputs.commit }}
           # ── CodeQL MCP（codeql toolbox）所需环境变量 ──────────────────────
           # 说明：codeql toolbox 需要一个 **CLI 可执行文件绝对路径**与一个
