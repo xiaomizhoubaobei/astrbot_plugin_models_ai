@@ -44,8 +44,9 @@ LLM + Taskflow Agent 逐个审计
 
 > 🔒 **安全设计：审计与创建 Issue 分离（pwn-request 防护）**
 > `ai-audit-scheduled.yml` 把流程拆成**两个 job**，中间只以 **artifact（纯数据）** 传信：
-> - `triage` job：**不持有任何仓库写凭据**（无 `GH_PAT`），仅在**可信 ref**（手动触发的本次 ref
->   或默认分支）上检出源码，产出结论文件 `audit-verdicts.json`；
+> - `triage` job：**不持有任何仓库写凭据**（无 `GH_PAT`），仅在**可信提交**（`workflow_run`
+>   场景下为本次 CodeQL 实际分析的提交 `head_sha`，手动触发时为本次 ref）上检出源码，
+>   产出结论文件 `audit-verdicts.json`；
 > - `publish` job：**唯一持有 `GH_PAT` 的 job**，**不检出/不执行任何源码**，只消费 artifact 里
 >   的结构化结论按白名单字段建 Issue。
 >
@@ -157,19 +158,49 @@ cp -r <本项目>/ai-audit ai_audit
 > `ai_audit` 导入；如果放进 `examples/`，会变成 `examples.ai_audit`，模块路径对不上。
 
 3. 按官方配置指南配好 LLM 模型 + GitHub PAT + MCP Server。
-   示例的 `alerts` 任务会通过 GitHub Code Scanning API 拉取**最新 CodeQL 告警**，
-   因此需要导出 `GITHUB_TOKEN`（PAT，需含 `security_events` 读权限）。
+   示例的 `alerts` 任务会通过 GitHub Code Scanning API 拉取**与检出/本地建库修订版本
+   一致的 CodeQL 告警**（先按 `CHECKOUT_REF` / `CHECKOUT_COMMIT` 过滤，只保留属于本次
+   检出 ref/commit 的 open 告警），因此需要导出 `GITHUB_TOKEN`（PAT，需含 `security_events`
+   读权限）。`CHECKOUT_REF` / `CHECKOUT_COMMIT` 由 CI 自动注入（见下文 Actions 说明），
+   手工运行时需自行导出，二者缺一会**明确失败**而不会退化成跨版本全量拉取。
    仓库统一由 `globals.repo`（owner/repo）这一个值决定：**告警拉取、memcache 状态 key
    都基于它**，workflow 通过 `-g repo=...` 把实际仓库注入进来（见下文 GitHub Actions 说明），
    因此不再需要、也不应单独设置 `GITHUB_REPOSITORY` 以免与 `globals.repo` 分裂。
 
    > 各审计阶段经 memcache 按告警贯通：第 ① 步写取证 `_evidence`，第 ② 步写判定 `_triage`，
    > 第 ③ 步对 TP 写报告 `_report`，第 ④ 步写校验结论 `_verdict`（APPROVED/REJECTED，
-   > 且**自包含** `alert_number/rule/path/status/reason/report`，供第 ⑤ 步直接消费）。
+   > 且**自包含** `alert_number/rule/path/source/sink/status/reason/report`，供第 ⑤ 步直接消费）。
    > 其中第 ④ 步校验**必须同时读取 `_report` 与 `_evidence`**，基于取证核对报告的文件/行号；
    > 若 `_evidence` 缺失则一律驳回（`no_evidence`），避免放行未经验证的行号。
+   >
+   > ⚠️ **端点坐标必须 source/sink 各自记录（勿退回单个 `result.path`）**：CodeQL 数据流
+   > 是跨文件/跨函数的，source 与 sink **常常不在同一个文件**里。`_evidence` 因此把两端写成
+   > **各自独立**的 `{path, line}`（而非「用告警位置 `result.path` 拼上两个行号」）：
+   >
+   > ```json
+   > { "source": {"path": "<相对仓库根的文件>", "line": <行号>},
+   >   "sink":   {"path": "<相对仓库根的文件>", "line": <行号>} }
+   > ```
+   >
+   > 否则跨文件数据流会**保存错误的端点位置**（把 source 的文件也写成 sink 的文件），
+   > 报告与私密公告随之写下错误坐标，令人工复核被误导。若某一端点确实无法定位，
+   > 就写 `null` 并由 notes 说明——**不得**用另一端或告警位置顶替充数。
+   > 该坐标经 `_verdict` 自包含下传，第 ⑤ 步原样落进 `AUDIT_VERDICT_FILE`，
+   > publish job 再分别渲染为「source（来源点）」「sink（汇点）」两行；确实缺失时
+   > 会回落到告警位置并显式标注「未定位」，绝不静默冒充。
+   >
+   > ⚠️ **取证工具可用性边界（勿把可选工具写成必经步骤）**：本审计人格**只确定挂载**
+   > `memcache` + `codeql` 两个 toolbox（工作流已本地建库并注入 `CODEQL_CLI` /
+   > `CODEQL_DBS_BASE_PATH`，故 CodeQL 取证**必然可用**）；而 `get_file_contents` 等
+   > **GitHub API 类工具属可选能力**——只有配置了 `MCP_CONFIG`（**可选** Secret）且其中
+   > 提供了该工具时才存在，**不保证可用**。因此第 ① 步的取证 prompt 以 **CodeQL toolbox
+   > 为主路径**，把 `get_file_contents` 降级为「若可用则用」，并明确纪律：**一旦某可选
+   > 工具不可用，须立即改用已确定可用的工具（CodeQL toolbox / 直接读工作区源码），
+   > 绝不允许因工具缺失而中止取证或跳过本步**——否则未配 MCP 时取证会失败或退化成残缺
+   > 证据，令第 ④ 步的校验无从核对行号。
+   >
    > 第 ⑤ 步（**纯 shell**）**仅当 status==APPROVED 且报告非空**时，把
-   > `{alert_number, rule, path, status, report}` 追加写进 `AUDIT_VERDICT_FILE`
+   > `{alert_number, rule, path, source, sink, status, report}` 追加写进 `AUDIT_VERDICT_FILE`
    > （默认 `/tmp/audit-verdicts.json`）。
    >
    > ⚠️ **第 ⑤ 步的写法有硬约束（本示例最容易踩的坑，勿改回去）**：框架只把 MCP 工具
@@ -201,9 +232,15 @@ cp -r <本项目>/ai-audit ai_audit
 
 ```bash
 # 方式 A：仅设环境变量（端点与密钥来自 AI_API_ENDPOINT / AI_API_TOKEN，模型用框架默认）
+# 【必填】CHECKOUT_REF / CHECKOUT_COMMIT 是 alerts 任务的修订版本基准（CI 自动注入，
+# 手工运行必须自行提供，否则 alerts 任务会在拉取告警前直接失败）：
+#   CHECKOUT_REF    检出修订版本的 ref（如 refs/heads/main，或 refs/tags/<tag>）
+#   CHECKOUT_COMMIT 检出修订版本的 40 位提交 SHA（须与检出的源码一致）
 AI_API_ENDPOINT=https://api.deepseek.com/v1 \
 AI_API_TOKEN=<你的APIKey> \
 GITHUB_TOKEN=<只读 PAT，含 security_events 读权限即可> \
+CHECKOUT_REF=refs/heads/main \
+CHECKOUT_COMMIT=<40 位提交 SHA，须与检出的源码一致> \
 hatch run main -t ai_audit.alert_triage_example
 
 # 方式 B：显式指定 model_config（推荐，声明 api_type: chat_completions，更稳）
@@ -212,6 +249,8 @@ COPILOT_DEFAULT_MODEL=<你的模型名，如 deepseek-v4-flash> \
 AI_API_ENDPOINT=https://api.deepseek.com/v1 \
 AI_API_TOKEN=<你的APIKey> \
 GITHUB_TOKEN=<只读 PAT，含 security_events 读权限即可> \
+CHECKOUT_REF=refs/heads/main \
+CHECKOUT_COMMIT=<40 位提交 SHA，须与检出的源码一致> \
 hatch run main -t ai_audit.alert_triage_example \
     -m ai_audit.model_config
 # 结论落在 $AUDIT_VERDICT_FILE（默认 /tmp/audit-verdicts.json），本命令不创建 Issue
@@ -229,7 +268,11 @@ hatch run main -t ai_audit.alert_triage_example \
 本仓库已内置 `.github/workflows/ai-audit-scheduled.yml`，可直接自动（或手动）运行 AI 审计：
 
 - **自动触发**：默认监听 `CodeQL.yml`（name: `代码质量分析`）的 `completed` 事件，
-  在 CodeQL 扫完后确定性地运行，保证消费最新告警；同时保留 `workflow_dispatch` 手动触发。
+  在 CodeQL 扫完后确定性地运行，并在**与检出/本地建库相同的修订版本**上消费告警
+  （按 `CHECKOUT_REF`/`CHECKOUT_COMMIT` 过滤；`workflow_run` 场景下检出**锁定到本次
+  CodeQL 实际分析的提交 `head_sha`**，与告警的 `commit_sha` 严格同源，避免默认分支在
+  分析完成后又前移导致告警被版本比对丢弃）；
+  同时保留 `workflow_dispatch` 手动触发。
   🔒 **fork 门禁**：仅当上游运行的 `head_repository` 为本仓库时才进入审计，fork PR 触发的
   CodeQL 运行一律跳过，从源头杜绝把 PR 源码当作不可信输入送进审计链。
 - **手动触发**：在仓库 **Actions → AI 审计（CodeQL 完成后自动分流）→ Run workflow** 手动跑一次用于验证。
@@ -269,9 +312,12 @@ hatch run main -t ai_audit.alert_triage_example \
 
 先在一个 CodeQL 告警上跑通，验证链路后再铺开到全部告警：
 
-1. 示例开头 `alerts` 任务已改为从 GitHub Code Scanning API 拉取**最新 CodeQL 告警**
-   （`state=open&tool_name=CodeQL`），并映射成下游需要的
-   `alert_number / rule / path / message` 结构，无需手动维护告警列表。
+1. 示例开头 `alerts` 任务已改为从 GitHub Code Scanning API 拉取**与检出/本地建库修订版本
+   一致的 open CodeQL 告警**（`state=open&tool_name=CodeQL`，再按 `CHECKOUT_REF`/`CHECKOUT_COMMIT`
+   过滤——**commit_sha 精确匹配为主、ref 归一化比对兜底**），并映射成下游需要的
+   `alert_number / rule / path / message / ref / commit_sha` 结构（保留版本锚点），
+   无需手动维护告警列表。这样保证「本地建库/检出的源码」与「审计的告警」处于同一修订版本，
+   避免对着 A 版本代码建的库去调查 B 版本的告警、产出失真/错位的证据。
 2. 观察各阶段输出是否符合预期，重点看**校验阶段（第 ④ 步）**是否把不完整报告驳回并写入
    `_verdict.status == REJECTED`，以及第 ⑤ 步的结论文件是否只包含 APPROVED 的告警。
 3. 确认无误后开启 `publish` job（若已注释），即可对真实漏洞自动创建 Issue。
@@ -287,6 +333,9 @@ hatch run main -t ai_audit.alert_triage_example \
   （不能在 shell 里调 MCP 工具、也不能用 `{{ result.* }}`，详见第三节）。
 - **分页拉取**：`alerts` 任务逐页拉取全部 open 的 CodeQL 告警，仓库告警超过 100 条也不会漏审。
 - **防幻觉校验**：报告不完整/不一致直接驳回（`_verdict=REJECTED`），避免 LLM 编造漏洞。
+- **端点坐标各自独立**：`_evidence` 的 source/sink 分别记录 `{path, line}`（跨文件数据流
+  两端常不在同一文件），报告、私密公告据此**分别**标注两端坐标，不再拿告警位置顶替两端；
+  定位不到时显式写 `null` / 标注「未定位」，而不是写出一个看似精确的错误位置。
 - **审计与发文隔离**：taskflow 只产出结论文件；Issue 由独立持令牌 job 消费结论创建
   （标题带 `[AI审计]` 前缀，并打 `bug`/`security`/`ai-audit` 标签），且仅对
   `_verdict.status == APPROVED` 的告警执行——不可信输入与高权限动作分处两个 job。
