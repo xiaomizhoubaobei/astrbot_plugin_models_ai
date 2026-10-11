@@ -600,3 +600,26 @@ def test_debug_log_never_echoes_api_key(monkeypatch) -> None:
     assert c._get_next_api_key() == secret
     assert secret not in cap.text()
     assert secret[:10] not in cap.text()
+
+
+def test_key_rotation_log_index_covers_all_keys(monkeypatch) -> None:
+    """轮询日志报出的 index 必须是本次实际取用的下标，回绕时不得出现 -1."""
+    c = _make_client(api_keys=["key-a", "key-b"], debug_mode=True)
+    cap = _CaptureLogger()
+    monkeypatch.setattr(ac, "logger", cap)
+    c._get_next_api_key()
+    c._get_next_api_key()
+    assert "index=0" in cap.text()
+    assert "index=1" in cap.text()
+    assert "index=-1" not in cap.text()
+
+
+def test_single_key_rotation_log_index_never_negative(monkeypatch) -> None:
+    """单 Key 场景下 index 恒为 0，绝不出现 -1."""
+    c = _make_client(api_keys=["only-key"], debug_mode=True)
+    cap = _CaptureLogger()
+    monkeypatch.setattr(ac, "logger", cap)
+    for _ in range(3):
+        c._get_next_api_key()
+    assert "index=-1" not in cap.text()
+    assert cap.text().count("index=0") == 3
