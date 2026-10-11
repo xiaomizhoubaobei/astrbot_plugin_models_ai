@@ -137,17 +137,41 @@ jobs:
       #     与「只认可信 ref」的安全模型一致，不引入任何不可信输入。
       #   - 数据库落在 /tmp 下（而非仓库工作区），避免污染检出树、也不会被
       #     upload-artifact 误打包；后续用环境变量把路径透传给 Agent。
-      - name: 初始化 CodeQL CLI 并构建数据库
+      #
+      # ⚠️ CLI 定位与建库**拆成两步**：CLI 的安装位置随 runner 而异——托管 runner
+      #   常装在**带版本号的 tool-cache 路径**（如 /opt/hostedtoolcache/codeql/
+      #   3.19.0/x64/codeql），自托管 runner 可能在 /opt/codeql 或仅 PATH，甚至
+      #   没装。旧实现只探测「单个写死路径 + PATH」，命中不了时直接 exit 1，会让
+      #   整个审计在**建库之前**就中止（正是本次评审指出的缺陷）。
+      #   故将探测收敛到 .github/scripts/resolve-codeql-cli.sh：多候选探测 + 兜底
+      #   下载官方固定版本 bundle，解析出的真实路径经 GITHUB_ENV 透传给后续步骤。
+      - name: 解析 CodeQL CLI（多候选探测 + 兜底安装）
         run: |
           set -euo pipefail
-          # ① 定位 CodeQL CLI：优先用托管 runner 预装的固定位置，找不到再退回 PATH。
-          #    （GitHub 托管 runner 预装 CodeQL；回退 PATH 兼容自托管 runner。）
-          CLI="${CODEQL_CLI:-/opt/hostedtoolcache/codeql/current/codeql}"
-          if [ ! -x "$CLI" ]; then
-            CLI="$(command -v codeql || true)"
+          # shellcheck source=.github/scripts/resolve-codeql-cli.sh
+          source .github/scripts/resolve-codeql-cli.sh
+          if ! CLI="$(resolve_codeql_cli)"; then
+            echo "ERROR: 无法获得可执行的 CodeQL CLI（已知位置未命中且兜底安装失败）。" >&2
+            exit 1
           fi
-          [ -n "$CLI" ] && [ -x "$CLI" ] \
-            || { echo "ERROR: 未找到可执行的 CodeQL CLI，无法建库。" >&2; exit 1; }
+          echo "CodeQL CLI: $CLI"
+          "$CLI" version
+          # 把实测路径写入 GITHUB_ENV，供建库步骤与后续 Agent（codeql toolbox）复用
+          echo "CODEQL_CLI=${CLI}" >> "$GITHUB_ENV"
+
+      - name: 构建 CodeQL 数据库
+        run: |
+          set -euo pipefail
+          # ① 直接消费上一步解析并写入 GITHUB_ENV 的真实 CLI 路径。
+          #    若因异常未注入，则回落到同一解析脚本重新探测（保证幂等自愈）。
+          if [ ! -x "${CODEQL_CLI:-}" ]; then
+            # shellcheck source=.github/scripts/resolve-codeql-cli.sh
+            source .github/scripts/resolve-codeql-cli.sh
+            CODEQL_CLI="$(resolve_codeql_cli)" \
+              || { echo "ERROR: 未找到可执行的 CodeQL CLI，无法建库。" >&2; exit 1; }
+            echo "CODEQL_CLI=${CODEQL_CLI}" >> "$GITHUB_ENV"
+          fi
+          CLI="$CODEQL_CLI"
           echo "CodeQL CLI: $CLI"
           "$CLI" version
 
@@ -161,9 +185,9 @@ jobs:
           test -d "${CODEQL_DBS_BASE_PATH:-/tmp/codeql-dbs}/${{ github.repository }}" \
             || { echo "ERROR: CodeQL 数据库未生成。" >&2; exit 1; }
 
-          # ③ 把探测到的**真实 CLI 路径**导出到 GITHUB_ENV：后续步骤的 env 是静态
-          #    YAML，无法执行 `$(which codeql)`，这里用环境文件把实测值传给 Agent，
-          #    避免「路径写死但 runner 镜像变动」导致 codeql toolbox 拿不到 CLI。
+          # ③ 再次把**实测 CLI 路径**写入 GITHUB_ENV：解析步已写过一次，这里兜底
+          #    覆盖，确保后续「运行 AI 审计 taskflow」的 Agent（codeql toolbox）
+          #    拿到的 CLI 与本步实际建库所用**完全一致**。
           echo "CODEQL_CLI=${CLI}" >> "$GITHUB_ENV"
 
       # 拉取 seclab-taskflow-agent 框架，固定到已复核发布的不可变 commit SHA
