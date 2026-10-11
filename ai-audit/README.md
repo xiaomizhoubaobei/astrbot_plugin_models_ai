@@ -232,9 +232,15 @@ cp -r <本项目>/ai-audit ai_audit
 
 ```bash
 # 方式 A：仅设环境变量（端点与密钥来自 AI_API_ENDPOINT / AI_API_TOKEN，模型用框架默认）
+# 【必填】CHECKOUT_REF / CHECKOUT_COMMIT 是 alerts 任务的修订版本基准（CI 自动注入，
+# 手工运行必须自行提供，否则 alerts 任务会在拉取告警前直接失败）：
+#   CHECKOUT_REF    检出修订版本的 ref（如 refs/heads/main，或 refs/tags/<tag>）
+#   CHECKOUT_COMMIT 检出修订版本的 40 位提交 SHA（须与检出的源码一致）
 AI_API_ENDPOINT=https://api.deepseek.com/v1 \
 AI_API_TOKEN=<你的APIKey> \
 GITHUB_TOKEN=<只读 PAT，含 security_events 读权限即可> \
+CHECKOUT_REF=refs/heads/main \
+CHECKOUT_COMMIT=<40 位提交 SHA，须与检出的源码一致> \
 hatch run main -t ai_audit.alert_triage_example
 
 # 方式 B：显式指定 model_config（推荐，声明 api_type: chat_completions，更稳）
@@ -243,6 +249,8 @@ COPILOT_DEFAULT_MODEL=<你的模型名，如 deepseek-v4-flash> \
 AI_API_ENDPOINT=https://api.deepseek.com/v1 \
 AI_API_TOKEN=<你的APIKey> \
 GITHUB_TOKEN=<只读 PAT，含 security_events 读权限即可> \
+CHECKOUT_REF=refs/heads/main \
+CHECKOUT_COMMIT=<40 位提交 SHA，须与检出的源码一致> \
 hatch run main -t ai_audit.alert_triage_example \
     -m ai_audit.model_config
 # 结论落在 $AUDIT_VERDICT_FILE（默认 /tmp/audit-verdicts.json），本命令不创建 Issue
