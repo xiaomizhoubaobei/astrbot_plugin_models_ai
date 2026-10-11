@@ -188,6 +188,16 @@ cp -r <本项目>/ai-audit ai_audit
    > publish job 再分别渲染为「source（来源点）」「sink（汇点）」两行；确实缺失时
    > 会回落到告警位置并显式标注「未定位」，绝不静默冒充。
    >
+   > ⚠️ **取证工具可用性边界（勿把可选工具写成必经步骤）**：本审计人格**只确定挂载**
+   > `memcache` + `codeql` 两个 toolbox（工作流已本地建库并注入 `CODEQL_CLI` /
+   > `CODEQL_DBS_BASE_PATH`，故 CodeQL 取证**必然可用**）；而 `get_file_contents` 等
+   > **GitHub API 类工具属可选能力**——只有配置了 `MCP_CONFIG`（**可选** Secret）且其中
+   > 提供了该工具时才存在，**不保证可用**。因此第 ① 步的取证 prompt 以 **CodeQL toolbox
+   > 为主路径**，把 `get_file_contents` 降级为「若可用则用」，并明确纪律：**一旦某可选
+   > 工具不可用，须立即改用已确定可用的工具（CodeQL toolbox / 直接读工作区源码），
+   > 绝不允许因工具缺失而中止取证或跳过本步**——否则未配 MCP 时取证会失败或退化成残缺
+   > 证据，令第 ④ 步的校验无从核对行号。
+   >
    > 第 ⑤ 步（**纯 shell**）**仅当 status==APPROVED 且报告非空**时，把
    > `{alert_number, rule, path, source, sink, status, report}` 追加写进 `AUDIT_VERDICT_FILE`
    > （默认 `/tmp/audit-verdicts.json`）。

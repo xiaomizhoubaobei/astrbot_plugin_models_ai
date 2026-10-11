@@ -237,6 +237,14 @@ taskflow:
   #    前提：工作流已在调用本 taskflow 前**本地构建 CodeQL 数据库**并注入
   #      CODEQL_CLI（CLI 绝对路径）与 CODEQL_DBS_BASE_PATH（数据库基目录），
   #      供本步的 codeql toolbox 读取——缺少这两个变量时，精确行号/数据流取证会退化。
+  #    ⚖️ 工具可用性边界（本步的硬约束，勿把可选工具写成必经步骤）：
+  #      人格仅**确定挂载** memcache + codeql 两个 toolbox；`get_file_contents` 属
+  #      **GitHub API 类可选工具**——只有配置了 MCP_CONFIG（可选 Secret）且其中提供
+  #      该工具时才存在，**不保证可用**。故 prompt 必须：
+  #        · 以 codeql toolbox（已本地建库）为主路径取证；
+  #        · 把 get_file_contents 降级为「若可用则用」，并写明不可用时的降级路径；
+  #        · 明确禁止「因某可选工具缺失而中止取证/跳过本步」——否则一旦未配 MCP，
+  #          取证会失败或退化成残缺证据，令下游校验无从核对行号。
   # ---------------------------------------------------------------------------
   - task:
       must_complete: true
@@ -251,11 +259,21 @@ taskflow:
         归属修订版本：ref={{ result.ref }}，commit={{ result.commit_sha }}），
         ⚠️ 该告警的修订版本已与本次检出/本地建库所用的代码对齐（见上 ref/commit）——
         请以该修订版本对应的源码为准取证，不要引用其它分支或提交上的差异代码。
-        按以下三步取证（调用可用的 MCP 工具，如 GitHub API / CodeQL toolbox /
-        get_file_contents / memcache_set_state）：
+        ⚠️ 工具可用性纪律（务必遵守，避免取证因“某个工具不存在”而失败）：
+        - 本任务**只保证**具备 `CodeQL toolbox` 与 `memcache` 两组工具（人格已挂载、
+          工作流已本地建库并注入 CODEQL_CLI / CODEQL_DBS_BASE_PATH）；
+        - `get_file_contents` 等 **GitHub API 类工具属可选能力**——仅当 MCP_CONFIG
+          被配置且提供了该工具时才存在，**不保证可用**；
+        - 因此**禁止**把任何可选工具当作必经步骤：若某工具不可用（报“未找到工具/未知
+          工具”），**立即改用已确定可用的工具**——优先用 CodeQL toolbox 定位源码与数据流，
+          或直接读取工作区内的源文件；**绝不允许**因工具缺失而中止取证或跳过本步。
+
+        按以下三步取证（优先使用已挂载的 CodeQL toolbox / memcache；GitHub API 类工具
+        如 `get_file_contents` **若可用**则可用于读取源文件，不可用则按上面纪律降级）：
 
         1. 【源码与上下文定位】
-           - 调用 `get_file_contents` 查看 {{ result.path }} 及其调用链相关代码；
+           - 读取 {{ result.path }} 及其调用链相关代码（优先用 CodeQL toolbox 查询/定位，
+             `get_file_contents` 若可用亦可；二者都不可用时直接读取工作区内的对应源文件）；
            - 准确定位 source（外部输入点）与 sink（危险调用汇点）的**精确行号**；
            ⚠️ source 与 sink **可能不在同一个文件**（CodeQL 数据流是跨文件/跨函数的）：
              两者必须**各自独立**确定「文件路径 + 行号」，不得默认沿用告警位置
