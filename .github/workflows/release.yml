@@ -86,6 +86,7 @@ jobs:
           cp -r core "$PLUGIN_NAME/" || true
           cp -r gitee "$PLUGIN_NAME/" || true
           cp -r llm_tools "$PLUGIN_NAME/" || true
+          cp -r qianwen "$PLUGIN_NAME/" || true
           # 复制 logo 文件（如果存在）
           cp logo.png "$PLUGIN_NAME/" || true
 
