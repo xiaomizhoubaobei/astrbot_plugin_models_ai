@@ -161,9 +161,26 @@ jobs:
             echo "ERROR: 无法获得可执行的 CodeQL CLI（已知位置未命中且兜底安装失败）。" >&2
             exit 1
           fi
+          # ⚠️ 【写 GITHUB_ENV 前必须归一化为绝对路径】
+          #   resolve_codeql_cli 已在内部归一化（见脚本内 _canonicalize），此处再兜一层，
+          #   保证无论解析脚本怎么改，写入 GITHUB_ENV 的都**永不是相对路径**。
+          #   成因：PATH 里含相对条目时 `command -v codeql` 会返回 `bin/codeql` 这类相对
+          #   路径——它只在当前 cwd 成立；而消费该变量的后续步骤（建库步、以及
+          #   `working-directory: seclab-taskflow-agent` 的审计步 / codeql toolbox）
+          #   cwd 各不相同，相对路径在那边解析不到 → CLI 静默失效、取证退化。
+          if ! CLI_ABS="$(canonicalize_path "$CLI")"; then
+            echo "ERROR: CodeQL CLI 路径无法归一化为绝对路径：$CLI" >&2
+            exit 1
+          fi
+          # 归一化后必须仍可执行，避免把「规范化成不存在的路径」当成功放行
+          if [ ! -x "$CLI_ABS" ]; then
+            echo "ERROR: 归一化后的 CodeQL CLI 不可执行：$CLI_ABS" >&2
+            exit 1
+          fi
+          CLI="$CLI_ABS"
           echo "CodeQL CLI: $CLI"
           "$CLI" version
-          # 把实测路径写入 GITHUB_ENV，供建库步骤与后续 Agent（codeql toolbox）复用
+          # 把实测的**绝对**路径写入 GITHUB_ENV，供建库步骤与后续 Agent（codeql toolbox）复用
           echo "CODEQL_CLI=${CLI}" >> "$GITHUB_ENV"
 
       - name: 构建 CodeQL 数据库
@@ -174,14 +191,17 @@ jobs:
           set -euo pipefail
           # ① 直接消费上一步解析并写入 GITHUB_ENV 的真实 CLI 路径。
           #    若因异常未注入，则回落到同一解析脚本重新探测（保证幂等自愈）。
+          # shellcheck source=.github/scripts/resolve-codeql-cli.sh
+          source .github/scripts/resolve-codeql-cli.sh
           if [ ! -x "${CODEQL_CLI:-}" ]; then
-            # shellcheck source=.github/scripts/resolve-codeql-cli.sh
-            source .github/scripts/resolve-codeql-cli.sh
             CODEQL_CLI="$(resolve_codeql_cli)" \
               || { echo "ERROR: 未找到可执行的 CodeQL CLI，无法建库。" >&2; exit 1; }
             echo "CODEQL_CLI=${CODEQL_CLI}" >> "$GITHUB_ENV"
           fi
-          CLI="$CODEQL_CLI"
+          # ⚠️ 建库步同样强制绝对路径：即便 GITHUB_ENV 里的值被人改成相对路径，
+          #   这里也先归一化再用，杜绝「同一台机器上换 cwd 就找不到 CLI」的漂移。
+          CLI="$(canonicalize_path "$CODEQL_CLI")" \
+            || { echo "ERROR: CODEQL_CLI 无法归一化为绝对路径：$CODEQL_CLI" >&2; exit 1; }
           echo "CodeQL CLI: $CLI"
           "$CLI" version
 

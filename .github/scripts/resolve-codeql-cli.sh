@@ -15,6 +15,14 @@
 #       ④ 都没有时，下载官方固定版本的 CodeQL bundle，**先做 SHA-256 完整性校验**
 #          再解压到临时目录（校验不通过即拒绝执行，防止「解压即执行」供应链风险）。
 #
+# ⚠️ 【路径规范化】凡是经 `command -v` 得到的路径，**必须**转成绝对路径再返回：
+#       PATH 中若含**相对条目**（如 `bin`、`./tools`——登录 shell / 自托管 runner
+#       的常见配置），`command -v codeql` 会原样返回 `bin/codeql` 这种**相对路径**。
+#       该相对路径只在「当前工作目录」下成立，而工作流后续步骤（如
+#       `working-directory: seclab-taskflow-agent` 的审计步与 codeql toolbox）
+#       的 cwd 与本脚本不同，同一个相对字符串在那边解析不到 → CLI 失效。
+#       故统一用 _canonicalize 归一化为绝对路径后再对外返回、再写入 GITHUB_ENV。
+#
 # 用法：source 本脚本后调用 resolve_codeql_cli，结果写入全局变量 CODEQL_CLI
 #       （同时打印到 stdout，便于调用方直接捕获）。
 # 退出码：0 = 解析成功；1 = 全部候选与兜底均失败（调用方应据此失败退出）。
@@ -32,6 +40,37 @@ CODEQL_BUNDLE_SHA256_DEFAULT="af1d57cac9b91afcc36604ca4d5bb4ac477a32ff9ee7e1ee2c
 # 判断给定路径是否为可执行的 CodeQL CLI（文件存在且可执行）
 _is_codeql_cli() {
   [ -n "${1:-}" ] && [ -x "$1" ] && [ -f "$1" ]
+}
+
+# 把路径归一化为**绝对路径**（相对路径按当前工作目录展开）。
+# 依赖 readlink -f（GNU coreutils 提供，runner 上必有）；不可用时回落到
+# `cd "$(dirname)" && pwd` 手工拼接，二者都失败则原样返回（由调用方兜底）。
+# $1 = 待归一化的路径（可为相对或绝对）
+_canonicalize() {
+  local p="${1:-}" abs
+  [ -n "$p" ] || return 1
+  # 已是绝对路径且能直接解析时，优先用 readlink -f 消解符号链接与 `..`
+  if abs="$(readlink -f -- "$p" 2>/dev/null)" && [ -n "$abs" ]; then
+    printf '%s\n' "$abs"
+    return 0
+  fi
+  # 回落：拼绝对路径（不消解符号链接，但至少锚定到 cwd，避免相对路径漂移）
+  if [ -e "$p" ]; then
+    case "$p" in
+      /*) printf '%s\n' "$p" ;;
+      *) printf '%s\n' "$(pwd)/$p" ;;
+    esac
+    return 0
+  fi
+  return 1
+}
+
+# 对外公开的路径归一化入口：把（可能是相对的）路径转成**绝对路径**。
+# 供调用方在写入 GITHUB_ENV 等「跨 cwd 传递」的场景前显式调用，
+# 即使不经过 resolve_codeql_cli 也能拿到规范化结果。
+# $1 = 待归一化的路径；成功打印绝对路径并返回 0，失败返回非零。
+canonicalize_path() {
+  _canonicalize "${1:-}"
 }
 
 # 校验给定文件的 SHA-256 是否与期望摘要一致（大小写不敏感）
@@ -63,15 +102,18 @@ _verify_sha256() {
 }
 
 # 在候选列表中返回第一个可用的 CLI 路径（找不到则返回非零）
+# ⚠️ 返回前一律经 _canonicalize 归一化为绝对路径（理由见文件头注释）。
 _probe_known_locations() {
+  local cand abs
   # ① 显式指定优先
   if _is_codeql_cli "${CODEQL_CLI:-}"; then
-    printf '%s\n' "$CODEQL_CLI"
-    return 0
+    if abs="$(_canonicalize "$CODEQL_CLI")"; then
+      printf '%s\n' "$abs"
+      return 0
+    fi
   fi
 
   # ② 已知安装位置（含带版本号的 tool-cache 路径，逐项探测）
-  local cand
   for cand in \
     /opt/hostedtoolcache/codeql/current/codeql \
     /opt/hostedtoolcache/codeql/*/x64/codeql/codeql \
@@ -82,16 +124,24 @@ _probe_known_locations() {
     /usr/bin/codeql ; do
     # 通配符未匹配时，cand 会保留字面量；交由 _is_codeql_cli 判定即可
     if _is_codeql_cli "$cand"; then
-      printf '%s\n' "$cand"
-      return 0
+      if abs="$(_canonicalize "$cand")"; then
+        printf '%s\n' "$abs"
+        return 0
+      fi
     fi
   done
 
   # ③ PATH 上的 codeql
+  # ⚠️ 【务必规范化】PATH 含相对条目时，command -v 会返回相对路径（如 bin/codeql）；
+  #    直接返回会让下游步骤（cwd 不同）解析不到，故此处强制转绝对路径。
   cand="$(command -v codeql 2>/dev/null || true)"
   if _is_codeql_cli "$cand"; then
-    printf '%s\n' "$cand"
-    return 0
+    if abs="$(_canonicalize "$cand")"; then
+      printf '%s\n' "$abs"
+      return 0
+    fi
+    # 规范化失败时宁可**不返回**相对路径（返回它等于埋雷），继续往下找兜底
+    echo "WARN: 命中的 codeql（${cand}）无法归一化为绝对路径，忽略该候选。" >&2
   fi
 
   return 1
@@ -99,17 +149,19 @@ _probe_known_locations() {
 
 # 兜底：下载并解压官方 CodeQL bundle，返回解压后的 CLI 路径
 _install_codeql_fallback() {
-  local dest url sha256
+  local dest url sha256 abs
   dest="${CODEQL_HOME:-/tmp/codeql-bundle}"
   url="${CODEQL_BUNDLE_URL:-$CODEQL_BUNDLE_URL_DEFAULT}"
   # 期望摘要：默认取自与固定版本绑定的常量；仅当人工显式指定 bundle 时，
   # 才允许通过 CODEQL_BUNDLE_SHA256 覆盖，二者必须配套使用。
   sha256="${CODEQL_BUNDLE_SHA256:-$CODEQL_BUNDLE_SHA256_DEFAULT}"
 
-  # 已解压过则直接复用（幂等，便于重跑）
+  # 已解压过则直接复用（幂等，便于重跑）；同样归一化为绝对路径
   if _is_codeql_cli "${dest}/codeql/codeql"; then
-    printf '%s\n' "${dest}/codeql/codeql"
-    return 0
+    if abs="$(_canonicalize "${dest}/codeql/codeql")"; then
+      printf '%s\n' "$abs"
+      return 0
+    fi
   fi
 
   echo "未在已知位置找到 CodeQL CLI，尝试下载固定版本 bundle：${url}" >&2
@@ -129,6 +181,11 @@ _install_codeql_fallback() {
     return 1
   }
   if _is_codeql_cli "${dest}/codeql/codeql"; then
+    if abs="$(_canonicalize "${dest}/codeql/codeql")"; then
+      printf '%s\n' "$abs"
+      return 0
+    fi
+    # 兜底的 dest 默认是 /tmp 下的绝对路径；走到这里说明 dest 被人为改成相对路径
     printf '%s\n' "${dest}/codeql/codeql"
     return 0
   fi
@@ -137,7 +194,7 @@ _install_codeql_fallback() {
   return 1
 }
 
-# 主入口：按「已知位置 → 兜底安装」顺序解析，成功时导出 CODEQL_CLI
+# 主入口：按「已知位置 → 兜底安装」顺序解析，成功时导出**绝对路径**的 CODEQL_CLI
 resolve_codeql_cli() {
   local cli
   if cli="$(_probe_known_locations)"; then
