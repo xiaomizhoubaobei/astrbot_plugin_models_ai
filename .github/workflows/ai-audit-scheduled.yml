@@ -19,8 +19,10 @@
 #       └──────────────────────────────────────────────────────────────────┘
 #                              ↓ audit-verdicts.json（数据）
 #       ┌─ publish job（唯一持 GH_PAT 的 job）──────────────────────────────┐
-#       │  不检出/不执行任何不可信源码；只消费 artifact 里的结构化结论，     │
-#       │  按白名单字段创建 Issue。输入已被上游 schema 约束，无法注入。      │
+#       │  不检出/不执行任何不可信源码；只消费 artifact 里的结构化结论。     │
+#       │  【协调披露】漏洞细节走**私密 security advisory**，公开 Issue 只   │
+#       │  留脱敏占位（指纹 + 告警编号），不在修复前暴露可利用细节。        │
+#       │  输入已被上游 schema 约束，无法注入。                              │
 #       └──────────────────────────────────────────────────────────────────┘
 #
 # 触发设计：
@@ -37,15 +39,20 @@
 #                     工作流运行时将本 Secret 透传过去，从而免改代码即可切换模型。
 #   - GH_PAT          必填，GitHub PAT，需同时含以下权限：
 #                     · security_events 读权限 —— 读取本仓库 CodeQL 告警
-#                     · repo / issues 写权限   —— 为确认的漏洞创建真实 Issue
+#                     · repo / issues 写权限   —— 创建公开跟踪 Issue 与私密安全公告
 #                     ⚠️ 仅注入 publish job（见下），triage job 绝不接触该 Secret。
 #   - MCP_CONFIG      可选，MCP Server（GitHub API）配置
 #
 # ⚠️ 注意：
 #   - 首次使用前请先用 workflow_dispatch 手动跑一次，确认链路正常。
-#   - ⚠️ 本示例会**真实创建 Issue**（仅对判定为真实漏洞、且经校验 APPROVED 的告警）。
-#     发文为**幂等**操作：正文首部写入 `<!-- ai-audit-alert:<编号> -->` 指纹，去重按指纹
-#     全量翻页检索；并叠加工作流级 concurrency 串行化 + 创建后自愈，杜绝并发重复。
+#   - ⚠️ 本示例会**真实创建 Issue 与私密安全公告**（仅对判定为真实漏洞、且经校验
+#     APPROVED 的告警）。为遵守 SECURITY.md 的**协调披露**原则：
+#       · 公开 Issue 仅作**脱敏占位**（标题不含 rule/path，正文只有告警编号），
+#         不在修复发布前暴露漏洞细节；
+#       · 规则名 / 文件路径 / 报告全文写进 **私密 security advisory**，仅维护者可见。
+#     发文为**幂等**操作：公开 Issue 正文首部写入 `<!-- ai-audit-alert:<编号> -->` 指纹，
+#     去重按指纹全量翻页检索；私密公告按「标题含告警编号」去重。
+#     并叠加工作流级 concurrency 串行化 + 创建后自愈，杜绝并发重复。
 #     如只想看分流结果、不修改仓库，可把 jobs.publish 整体注释掉。
 # =============================================================================
 
@@ -239,18 +246,21 @@ jobs:
           AUTH_HEADER="Authorization: Bearer ${GH_PAT}"
           ACCEPT_HEADER="Accept: application/vnd.github+json"
 
-          # ── 幂等判据：用 Issue 正文里的「告警指纹」而非 Issue 标题 ────────────
-          # 标题为 `[AI审计] <rule> - <path>`，同一 rule+path 的不同告警会撞标题，
-          # 导致「不同漏洞被误判为重复」；而同一告警若标题里的 rule/path 表述微调，
-          # 又会漏判重复。故改以 **alert_number**（CodeQL 告警的唯一编号）作指纹，
-          # 并在正文里固定写入一行 `<!-- ai-audit-alert:<alert_number> -->` 标记，
-          # 检索时按该标记精确匹配——既不会误合并，也不会漏合并。
+          # ── 协调披露（coordinated disclosure）── 本 job 的核心约束 ───────────────
+          # ⚠️ 未修复漏洞的**可利用细节**（规则名、文件路径、PoC/报告全文）**严禁**写进
+          #    公开 Issue：那会在上游修复前把所有使用者暴露于风险之中，直接违背 SECURITY.md
+          #    的协调披露约定。
+          # 因此本 step 把交付劈成两条通道：
+          #   ① 公开 Issue —— 仅作**占位跟踪**：标题不含 rule/path，正文只有告警编号 +
+          #      「详情见私密公告」，不泄露任何可利用细节；
+          #   ② 私密安全公告（security advisory）—— 承载 rule/path/report 全文，仅
+          #      仓库维护者可见；修复发布后再由人工按需公开（或直接随 Release 致谢）。
+          # 幂等指纹仍写在**公开 Issue**正文里（HTML 注释），保证去重逻辑不变。
           FINGERPRINT_PREFIX="<!-- ai-audit-alert:"
 
           # 是否存在「带该指纹」的 Issue：**须翻页遍历全部 open Issue**。
-          # ⚠️ 旧实现只取 `?per_page=100` 的首页：仓库 open Issue 超 100 条时，
-          #    排在 100 名之后的既有 Issue 查不到 → 误判「不存在」→ 重复创建。
-          #    这里逐页拉取直到取空，彻底消除翻页缺口。
+          # ⚠️ 只取 `?per_page=100` 首页会漏判：open Issue 超 100 条时，排在 100 名
+          #    之后的既有 Issue 查不到 → 误判「不存在」→ 重复创建。这里逐页拉取直到取空。
           find_issue_by_fingerprint() {
             local fp="$1" page=1 found=""
             while : ; do
@@ -275,24 +285,80 @@ jobs:
             return 0
           }
 
+          # ── 私密公告的去重判据：用 advisory 标题里的告警指纹 ──────────────────────
+          # 公告标题固定为 `AI审计：CodeQL 告警 #<alert_number>`，先查是否已建同号公告，
+          # 命中则跳过，避免同一条告警重复开公告（公告写接口非幂等）。
+          find_advisory_by_alert() {
+            local alert="$1" page=1 found=""
+            while : ; do
+              local batch
+              batch="$(curl -fsSL -H "${AUTH_HEADER}" -H "${ACCEPT_HEADER}" \
+                "${API}/repos/${REPO}/security-advisories?per_page=100&page=${page}")" \
+                || { echo "拉取 security advisory 第 ${page} 页失败" >&2; return 2; }
+              jq -e 'type == "array"' <<<"$batch" >/dev/null \
+                || { echo "security advisory 第 ${page} 页非 JSON 数组，拒绝继续" >&2; return 2; }
+              local n
+              n="$(jq 'length' <<<"$batch")"
+              [ "$n" -eq 0 ] && break
+              found="$(jq -r --arg a "告警 #${alert}" \
+                '[.[] | select((.summary // "") | contains($a))]
+                 | if length > 0 then (.[0].ghsa_id // "") else "" end' <<<"$batch")"
+              [ -n "$found" ] && { printf '%s' "$found"; return 0; }
+              [ "$n" -lt 100 ] && break
+              page=$((page + 1))
+            done
+            return 0
+          }
+
           # 只处理校验通过（APPROVED）且必备字段齐全的条目；字段全部按字符串使用，
           # 经 jq 转义后写入 JSON body，杜绝命令/JSON 注入。
           COUNT="$(jq '[.[] | select(.status=="APPROVED")
                              | select((.rule//"")!="" and (.path//"")!=""
                                       and (.alert_number//"")!="")]
                         | length' "$FILE")"
-          echo "待创建 Issue 数：$COUNT"
+          echo "待处理结论数：$COUNT"
           if [ "$COUNT" -eq 0 ]; then echo "无可发布结论，跳过"; exit 0; fi
 
           CREATED=0
           SKIPPED=0
+          ADVISORY=0
           while IFS= read -r item; do
               RULE="$(jq -r '.rule' <<<"$item")"
               PATH_="$(jq -r '.path' <<<"$item")"
               ALERT="$(jq -r '.alert_number' <<<"$item")"
               REPORT="$(jq -r '.report // ""' <<<"$item")"
-              TITLE="[AI审计] ${RULE} - ${PATH_}"
+              # ⚠️ 公开标题**不含** rule/path（二者属可利用细节），仅以告警编号区分；
+              #    维护者可凭编号到私密公告里查看对应的规则与文件。
+              TITLE="[AI审计] CodeQL 告警 #${ALERT}"
               FINGERPRINT="${FINGERPRINT_PREFIX}${ALERT} -->"
+
+              # ── ① 先投私密公告（承载细节），未成功则**不建公开 Issue** ─────────────
+              # 顺序很关键：先确保细节有私密落点，再建公开占位；否则一旦公告写入失败
+              # 而公开 Issue 已建，就会出现「公开无细节、私密无记录」的悬空跟踪项。
+              ADVISORY_ID="$(find_advisory_by_alert "$ALERT" || true)"
+              if [ -z "$ADVISORY_ID" ]; then
+                # 说明：一次成型成 payload，**不要**先把 description 单独 jq 成字符串再
+                #      用 --arg 传入——那会把已是 JSON 字符串的中转值再包一层引号，
+                #      导致公告正文出现多余的双引号。故这里把字段直接内联进同一 jq 程序。
+                ADVISORY_PAYLOAD="$(jq -n \
+                  --arg summary "AI审计：CodeQL 告警 #${ALERT}" \
+                  --arg r "$REPORT" --arg a "$ALERT" \
+                  --arg ru "$RULE" --arg p "$PATH_" \
+                  '{summary:$summary,
+                    description:("## 漏洞概述\n\n\($r)\n\n## 关联 CodeQL 告警\n\n- 告警编号：\($a)\n- 规则：\($ru)\n- 文件：\($p)\n\n## 处置约定\n\n- 本公告为 AI 审计自动创建的**私密**安全公告，仅维护者可见，用于在协调披露期内跟踪未修复漏洞。\n- 修复发布后，请按 SECURITY.md 的协调披露约定致谢并公开必要信息。"),
+                    severity:"medium", vulnerabilities:[]}')"
+                ADVISORY_ID="$(curl -fsSL -X POST -H "${AUTH_HEADER}" \
+                  -H "${ACCEPT_HEADER}" \
+                  "${API}/repos/${REPO}/security-advisories" \
+                  -d "$ADVISORY_PAYLOAD" | jq -r '.ghsa_id // ""')"
+                if [ -z "$ADVISORY_ID" ] || [ "$ADVISORY_ID" = "null" ]; then
+                  echo "私密公告创建失败，跳过该告警（不建公开 Issue）：#${ALERT}" >&2
+                  SKIPPED=$((SKIPPED + 1))
+                  continue
+                fi
+                ADVISORY=$((ADVISORY + 1))
+                echo "已创建私密公告：${ADVISORY_ID}（告警 #${ALERT}）"
+              fi
 
               # 第一道去重（乐观预检）：命中即跳过，省下一次创建调用。
               # 注意：并发窗口下这一步只是「快速路径」，**不是**正确性保证，
@@ -304,13 +370,20 @@ jobs:
                 continue
               fi
 
-              # 用 jq 组装 body，确保报告全文被正确转义（不拼接裸字符串）。
+              # ── ② 公开 Issue：仅占位，不含任何可利用细节 ─────────────────────────
+              # 用 jq 组装 body，确保内容被正确转义（不拼接裸字符串）。
               # 指纹标记置于正文首部（HTML 注释，用户不可见），供后续精确去重。
-              BODY="$(jq -n --arg r "$REPORT" --arg a "$ALERT" --arg ru "$RULE" \
-                --arg p "$PATH_" --arg fp "$FINGERPRINT" \
-                '($fp + "\n> 由 AI 审计自动创建（CodeQL 告警分流）。\n\n## 漏洞概述\n\n\($r)\n\n## 关联 CodeQL 告警\n\n- 告警编号：\($a)\n- 规则：\($ru)\n- 文件：\($p)\n\n## 修复建议\n\n- 请参考上方报告中给出的修复建议，在对应文件中修复后关闭本 Issue。")')"
+              BODY="$(jq -n --arg a "$ALERT" --arg g "$ADVISORY_ID" --arg fp "$FINGERPRINT" \
+                '($fp + "\n> 由 AI 审计自动创建（CodeQL 告警分流）。\n\n"
+                  + "本 Issue 仅作**跟踪占位**：为遵守 SECURITY.md 的协调披露原则，"
+                  + "漏洞的可利用细节（规则、文件、报告）**不在公开渠道披露**。\n\n"
+                  + "- 关联 CodeQL 告警编号：" + $a + "\n"
+                  + "- 私密详情：安全公告 `" + $g + "`（仅维护者可见）\n\n"
+                  + "## 处置约定\n\n"
+                  + "- 修复发布前，请勿在公开 Issue / PR / 讨论区披露漏洞细节。\n"
+                  + "- 修复完成后关闭本 Issue，并按 SECURITY.md 致谢。")')"
               PAYLOAD="$(jq -n --arg t "$TITLE" --arg b "$BODY" \
-                '{title:$t, body:$b, labels:["bug","security","ai-audit"]}')"
+                '{title:$t, body:$b, labels:["security","ai-audit"]}')"
 
               NEW_ID="$(curl -fsSL -X POST -H "${AUTH_HEADER}" \
                 -H "${ACCEPT_HEADER}" \
@@ -343,7 +416,8 @@ jobs:
                              | select((.rule//"")!="" and (.path//"")!=""
                                       and (.alert_number//"")!="")' "$FILE")
 
-          echo "发布完成：新建 ${CREATED} 条，跳过 ${SKIPPED} 条"
+          echo "发布完成：新建公开 Issue ${CREATED} 条，私密公告 ${ADVISORY} 条，跳过 ${SKIPPED} 条"
+
 
 # ---------------------------------------------------------------------------
 # 说明：本工作流已由 schedule（cron 时间差）改为 workflow_run 触发，
