@@ -156,7 +156,9 @@ def test_url_component_still_downloads(monkeypatch):
     """URL 组件仍走下载分支（此处用桩替换下载函数，只验证路由）."""
     import astrbot_plugin_models_ai.core.command_utils as cu
 
-    async def _fake_download(url: str):
+    async def _fake_download(
+        url: str, allowed_hosts=None, *, allow_any_host: bool = False
+    ) -> str:
         return f"/tmp/downloaded-{url.rsplit('/', 1)[-1]}"
 
     monkeypatch.setattr(cu, "download_image", _fake_download)

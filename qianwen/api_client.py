@@ -19,7 +19,7 @@
 import asyncio
 import json
 import time
-from typing import Any
+from typing import Any, Optional
 
 import aiohttp
 from astrbot.api import logger
@@ -70,6 +70,8 @@ class QianwenClient:
         base_url: str,
         prompt_extend: bool = True,
         debug_mode: bool = False,
+        allowed_image_hosts: Optional[list[str]] = None,
+        allow_any_image_host: bool = False,
     ) -> None:
         """初始化千问云客户端.
 
@@ -81,6 +83,8 @@ class QianwenClient:
             base_url: API 基础 URL
             prompt_extend: 是否启用提示词自动改写
             debug_mode: 是否启用 Debug 日志
+            allowed_image_hosts: 额外可信的取图主机白名单（见 core/url_guard.py）
+            allow_any_image_host: 是否关闭取图主机校验（显式配置才生效）
         """
         self.debug_mode = debug_mode
         self.api_keys = api_keys
@@ -94,7 +98,13 @@ class QianwenClient:
         self.supported_ratios = QIANWEN_SUPPORTED_RATIOS
 
         self.client_manager = ClientManager(base_url, debug_mode=debug_mode)
-        self.image_manager = ImageManager(debug_mode=debug_mode)
+        # 取图（服务商返回的结果 URL）同样受出站白名单约束：端点主机自动可信
+        self.image_manager = ImageManager(
+            debug_mode=debug_mode,
+            allowed_image_hosts=allowed_image_hosts,
+            provider_base_url=base_url,
+            allow_any_image_host=allow_any_image_host,
+        )
 
         self.current_key_index = 0
         self._generation_count = 0

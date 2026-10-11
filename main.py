@@ -34,10 +34,34 @@ from .core import (
     parse_api_keys,
     resolve_provider,
 )
+from .core.url_guard import build_allowed_hosts, extract_host
 from .gitee import GiteeAIClient, ModelLister
 from .llm_tools import draw_image_tool
 from .qianwen import QianwenClient
 from .qianwen.model_config import is_supported_model
+
+
+def _parse_allowed_hosts(raw: Any) -> list[str]:
+    """解析 allowed_image_hosts 配置项，兼容字符串与列表两种写法.
+
+    Args:
+        raw: 原始配置值，可为逗号 / 换行分隔的字符串，或字符串列表
+
+    Returns:
+        去空、去重后的主机名列表
+    """
+    if isinstance(raw, str):
+        items = raw.replace("\n", ",").split(",")
+    elif isinstance(raw, list):
+        items = [str(item) for item in raw]
+    else:
+        items = []
+    seen: list[str] = []
+    for item in items:
+        host = item.strip()
+        if host and host not in seen:
+            seen.append(host)
+    return seen
 
 
 class AIImage(Star):
@@ -77,10 +101,32 @@ class AIImage(Star):
         num_inference_steps = config.get("num_inference_steps", DEFAULT_INFERENCE_STEPS)
         negative_prompt = config.get("negative_prompt", DEFAULT_NEGATIVE_PROMPT)
 
+        # 取图出站白名单：消息图片 URL 与上游返回的结果 URL 都必须是可信主机，
+        # 否则插件可能被当作访问内网的跳板（详见 core/url_guard.py）。
+        # 当前服务商的 API 端点主机自动纳入，避免自身端点反被拒；
+        # 其余主机需经 allowed_image_hosts 显式追加。
+        effective_base_url = (
+            config.get("qianwen_base_url", DEFAULT_QIANWEN_BASE_URL)
+            if provider == PROVIDER_QIANWEN
+            else base_url
+        )
+        self.image_allowed_hosts = build_allowed_hosts(
+            provider_hosts=[extract_host(effective_base_url)],
+            extra_hosts=_parse_allowed_hosts(config.get("allowed_image_hosts", "")),
+        )
+        self.allow_any_image_host = bool(config.get("allow_any_image_host", False))
+        if self.allow_any_image_host:
+            logger.warning(
+                "[AstrBot-GiteeAI] 已关闭图片出站主机校验（allow_any_image_host=true），"
+                "远程图片地址将不做白名单限制，请确认部署环境可信。"
+            )
+
         self.debug_log(
             f"配置解析完成: provider={provider}, model={model}, size={default_size}, "
             f"api_keys_count={len(api_keys)}, debug_mode={self.debug_mode}, "
-            f"download_image_urls={self.download_image_urls}"
+            f"download_image_urls={self.download_image_urls}, "
+            f"image_allowed_hosts={sorted(self.image_allowed_hosts)}, "
+            f"allow_any_image_host={self.allow_any_image_host}"
         )
 
         # 初始化组件：按 provider 装配对应服务商的客户端
@@ -100,6 +146,8 @@ class AIImage(Star):
                 negative_prompt=negative_prompt,
                 base_url=base_url,
                 debug_mode=self.debug_mode,
+                allowed_image_hosts=sorted(self.image_allowed_hosts),
+                allow_any_image_host=self.allow_any_image_host,
             )
         self.rate_limiter = RateLimiter(debug_mode=self.debug_mode)
         self.model_lister = ModelLister(
@@ -159,6 +207,8 @@ class AIImage(Star):
             base_url=qianwen_base_url,
             prompt_extend=prompt_extend,
             debug_mode=self.debug_mode,
+            allowed_image_hosts=sorted(self.image_allowed_hosts),
+            allow_any_image_host=self.allow_any_image_host,
         )
 
     def debug_log(self, message: str) -> None:

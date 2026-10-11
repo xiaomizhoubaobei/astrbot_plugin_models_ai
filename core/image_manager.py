@@ -17,6 +17,7 @@ from astrbot.api.star import StarTools
 
 from .config import MAX_CACHED_IMAGES, PLUGIN_NAME
 from .net_errors import DEFAULT_MAX_RETRIES, mask_text, to_user_message, with_retry
+from .url_guard import build_allowed_hosts, check_image_url, extract_host
 
 
 class ImageManager:
@@ -25,15 +26,42 @@ class ImageManager:
     提供图片下载、保存和自动清理功能，支持多种图片格式。
     """
 
-    def __init__(self, debug_mode: bool = False) -> None:
+    def __init__(
+        self,
+        debug_mode: bool = False,
+        allowed_image_hosts: Optional[list[str]] = None,
+        provider_base_url: str = "",
+        allow_any_image_host: bool = False,
+    ) -> None:
         """初始化图片管理器.
 
         Args:
             debug_mode: 是否启用 Debug 日志
+            allowed_image_hosts: 用户额外追加的可信取图主机白名单
+            provider_base_url: 当前服务商 API 端点地址，其主机会被自动纳入白名单
+            allow_any_image_host: 是否关闭出站主机校验（显式配置才生效）
+
+        Note:
+            取图出站目标收敛为「服务商端点主机 + 用户白名单」，详见
+            ``core/url_guard.py``；默认拒绝未知主机，越界须显式配置。
         """
         self.debug_mode = debug_mode
         self._image_dir: Optional[Path] = None
-        self.debug_log(f"初始化图片管理器: debug_mode={debug_mode}")
+        # 服务商自身的 API 端点主机天然可信，与用户白名单合并成一份只读集合
+        self._allowed_hosts = build_allowed_hosts(
+            provider_hosts=[extract_host(provider_base_url)],
+            extra_hosts=allowed_image_hosts or [],
+        )
+        # 仅当调用方提供了任一可信主机（服务商端点或白名单）时才启用校验；
+        # 两者皆空表示调用方未装配该策略（如单测直接构造），保持旧行为不拦截。
+        self._enforce_host_check = bool(self._allowed_hosts)
+        self._allow_any_image_host = allow_any_image_host
+        self.debug_log(
+            f"初始化图片管理器: debug_mode={debug_mode}, "
+            f"allowed_hosts={sorted(self._allowed_hosts)}, "
+            f"enforce={self._enforce_host_check}, "
+            f"allow_any={allow_any_image_host}"
+        )
 
     def debug_log(self, message: str) -> None:
         """输出 Debug 日志.
@@ -150,6 +178,15 @@ class ImageManager:
         Raises:
             RuntimeError: HTTP 状态异常或网络故障时抛出，文案已分类脱敏
         """
+        if self._enforce_host_check:
+            allowed, reason = check_image_url(
+                url, self._allowed_hosts, allow_any=self._allow_any_image_host
+            )
+            if not allowed:
+                # 白名单拒绝属确定性失败：不重试，直接以可操作中文回给用户
+                self.debug_log(f"取图被出站白名单拒绝: host={extract_host(url)}")
+                raise RuntimeError(f"下载图片失败：{reason}")
+
         self.debug_log(f"开始下载图片: url={mask_text(url[:50])}...")
 
         async def _fetch() -> tuple[bytes, Optional[str]]:

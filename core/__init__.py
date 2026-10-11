@@ -51,6 +51,12 @@ from .net_errors import (
 )
 from .protocols import ImageGenerationClient
 from .rate_limiter import RateLimiter
+from .url_guard import (
+    build_allowed_hosts,
+    check_image_url,
+    extract_host,
+    is_private_host,
+)
 
 __all__ = [
     "CLEANUP_INTERVAL",
@@ -98,4 +104,8 @@ __all__ = [
     "with_retry",
     "check_rate_limit",
     "parse_prompt_and_size",
+    "build_allowed_hosts",
+    "check_image_url",
+    "extract_host",
+    "is_private_host",
 ]

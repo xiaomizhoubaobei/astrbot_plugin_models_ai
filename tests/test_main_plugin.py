@@ -238,3 +238,29 @@ def test_draw_wrapper_forwards() -> None:
 
     out = _drive(plugin.draw(Event(), "   "))
     assert out  # 空提示词 -> 参数错误文本
+
+
+def test_provider_host_auto_whitelisted_for_image_fetch() -> None:
+    """服务商端点主机必须自动进入取图白名单，否则自身结果图会被误拒."""
+    plugin = _make_plugin({"api_key": "k1", "debug_mode": False})
+    assert "ai.gitee.com" in plugin.image_allowed_hosts
+    # 客户端内部的白名单应与插件层一致
+    assert "ai.gitee.com" in plugin.api_client.image_manager._allowed_hosts
+
+
+def test_extra_allowed_hosts_from_config() -> None:
+    """allowed_image_hosts 配置项应追加进白名单（逗号 / 换行分隔、去重）."""
+    plugin = _make_plugin(
+        {
+            "api_key": "k1",
+            "allowed_image_hosts": "cdn.example.com, img.example.com\ncdn.example.com",
+        }
+    )
+    assert "cdn.example.com" in plugin.image_allowed_hosts
+    assert "img.example.com" in plugin.image_allowed_hosts
+
+
+def test_allow_any_image_host_flag_propagates() -> None:
+    """allow_any_image_host 应贯通到客户端的 ImageManager."""
+    plugin = _make_plugin({"api_key": "k1", "allow_any_image_host": True})
+    assert plugin.allow_any_image_host is True

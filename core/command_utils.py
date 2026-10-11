@@ -6,7 +6,7 @@
 import os
 import uuid
 from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Iterable, Optional
 from urllib.parse import unquote, urlparse
 
 import aiohttp
@@ -15,6 +15,7 @@ from astrbot.api.event import AstrMessageEvent
 from astrbot.api.message_components import Image
 
 from .net_errors import build_timeout, mask_text, to_user_message, with_retry
+from .url_guard import check_image_url, extract_host
 
 
 async def check_rate_limit(
@@ -167,15 +168,26 @@ def _file_uri_to_path(value: str) -> str:
     return str(Path(prefix + path)) if prefix else str(Path(path))
 
 
-async def _resolve_image_component(component: Any) -> str | None:
+async def _resolve_image_component(
+    component: Any,
+    allowed_hosts: Optional[Iterable[str]] = None,
+    *,
+    allow_any_host: bool = False,
+) -> str | None:
     """把单个图片组件解析成本地可读路径.
 
     优先使用上游官方提供的 ``convert_to_file_path()``：它内部走
     ``MediaResolver``，统一支持本地路径、``file://`` URI、http(s) URL 与
-    base64，并自带下载与落盘，是各版本间最稳的适配方式。
+    base64，并自带下载与落盘，是各版本间最稳的适配方式。该路径由 AstrBot
+    宿主完成下载，不在本插件可控范围内，故不做白名单校验，仅记日志提示。
+
+    兜底分支（宿主未提供该方法时）自行抓取消息中的远程 URL，此类出站目标
+    由消息发送方控制，**必须**经 ``core/url_guard.py`` 的主机白名单校验。
 
     Args:
         component: 消息中的图片组件
+        allowed_hosts: 取图出站主机白名单；``None`` 表示不启用校验（保持旧行为）
+        allow_any_host: 是否关闭白名单（对应配置 ``allow_any_image_host``）
 
     Returns:
         本地文件路径；无法解析时返回 ``None``
@@ -192,7 +204,9 @@ async def _resolve_image_component(component: Any) -> str | None:
     # 兜底：旧宿主或测试桩件没有该异步方法时，按字段优先级手工解析
     raw_url = getattr(component, "url", "") or ""
     if raw_url:
-        return await download_image(raw_url)
+        return await download_image(
+            raw_url, allowed_hosts, allow_any_host=allow_any_host
+        )
 
     # path 是真实本地路径，优先于可能是 file:// URI 的 file 字段
     raw_path = getattr(component, "path", "") or ""
@@ -202,21 +216,33 @@ async def _resolve_image_component(component: Any) -> str | None:
     raw_file = getattr(component, "file", "") or ""
     if raw_file:
         if str(raw_file).startswith(("http://", "https://")):
-            return await download_image(str(raw_file))
+            return await download_image(
+                str(raw_file), allowed_hosts, allow_any_host=allow_any_host
+            )
         return _file_uri_to_path(str(raw_file))
 
     return None
 
 
-async def extract_images_from_message(event: AstrMessageEvent) -> list[str]:
+async def extract_images_from_message(
+    event: AstrMessageEvent,
+    allowed_hosts: Optional[Iterable[str]] = None,
+    *,
+    allow_any_host: bool = False,
+) -> list[str]:
     """从消息中提取所有图片的本地路径.
 
     兼容 AstrBot v4 的图片组件形态：无论组件持有的是本地路径、``file://``
     URI 还是 http(s) URL，都统一解析为可直接读取的本地文件路径，供上游
     图生图 / 图片编辑接口以 multipart 方式上传。
 
+    消息中的远程图片 URL 主机由发送方控制，属潜在 SSRF 面，故当传入
+    ``allowed_hosts`` 时，仅白名单内的主机允许出站下载。
+
     Args:
         event: 消息事件对象
+        allowed_hosts: 取图出站主机白名单；``None`` 表示不启用校验（保持旧行为）
+        allow_any_host: 是否关闭白名单（对应配置 ``allow_any_image_host``）
 
     Returns:
         图片本地路径列表（无法解析的组件会被跳过）
@@ -231,26 +257,47 @@ async def extract_images_from_message(event: AstrMessageEvent) -> list[str]:
     for component in message_obj.message:
         if not isinstance(component, Image):
             continue
-        path = await _resolve_image_component(component)
+        path = await _resolve_image_component(
+            component, allowed_hosts, allow_any_host=allow_any_host
+        )
         if path:
             image_paths.append(path)
 
     return image_paths
 
 
-async def download_image(url: str) -> str | None:
+async def download_image(
+    url: str,
+    allowed_hosts: Optional[Iterable[str]] = None,
+    *,
+    allow_any_host: bool = False,
+) -> str | None:
     """下载图片到本地（带指数退避重试与分类日志）.
 
     用于把用户消息里的远程图片取回本地再上传给上游，属于「链路上的辅助请求」，
     失败不影响主流程，因此这里只记录分类后的日志并返回 ``None``，
     由调用方决定后续降级策略。
 
+    该出站目标来自用户消息，主机由发送方控制，是 SSRF 的主要入口。因此当
+    传入 ``allowed_hosts`` 时，先经 ``core/url_guard.py`` 校验主机；命中白名单
+    之外的地址直接拒绝（含内网地址提示），避免插件被当作探测内网的跳板。
+
     Args:
         url: 图片 URL
+        allowed_hosts: 取图出站主机白名单；``None`` 表示不启用校验（保持旧行为）
+        allow_any_host: 是否关闭白名单（对应配置 ``allow_any_image_host``）
 
     Returns:
-        本地文件路径；下载失败时返回 ``None``
+        本地文件路径；下载失败或主机不在白名单时返回 ``None``
     """
+    if allowed_hosts is not None:
+        allowed, reason = check_image_url(url, allowed_hosts, allow_any=allow_any_host)
+        if not allowed:
+            logger.warning(
+                f"图片取图被出站白名单拒绝: host={extract_host(url)}，原因: {reason}"
+            )
+            return None
+
     logger.debug(f"开始下载图片: {mask_text(url, limit=80)}")
 
     async def _fetch() -> bytes | None:

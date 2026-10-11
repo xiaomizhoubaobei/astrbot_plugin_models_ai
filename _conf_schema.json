@@ -71,5 +71,17 @@
         "type": "bool",
         "default": false,
         "hint": "为 false 时直接将图片 URL 传递给 API（推荐）；为 true 时先下载图片再上传"
+    },
+    "allowed_image_hosts": {
+        "description": "允许拉取图片的可信主机白名单",
+        "type": "string",
+        "hint": "除服务商 API 端点外，额外允许下载图片的主机。逗号或换行分隔，支持子域（如 cdn.example.com 同时放行 a.sub.cdn.example.com）。留空表示只信任服务商端点。",
+        "default": ""
+    },
+    "allow_any_image_host": {
+        "description": "关闭图片出站主机校验",
+        "type": "bool",
+        "hint": "开启后将不做主机白名单校验，允许下载任意主机的图片。存在 SSRF 风险，仅在完全可信的部署环境中使用。",
+        "default": false
     }
 }

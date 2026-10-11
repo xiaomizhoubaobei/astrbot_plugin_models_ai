@@ -133,7 +133,7 @@ def test_file_field_http_url_downloads(monkeypatch) -> None:
 
     called = []
 
-    async def _fake_download(url):
+    async def _fake_download(url, allowed_hosts=None, *, allow_any_host=False):
         called.append(url)
         return "/tmp/dl.png"
 
