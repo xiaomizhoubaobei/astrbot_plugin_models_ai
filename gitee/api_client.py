@@ -107,9 +107,9 @@ class GiteeAIClient:
 
         api_key = self.api_keys[self.current_key_index]
         self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
-        self.debug_log(
-            f"轮询 API Key: index={self.current_key_index - 1}, api_key={api_key[:10]}..."
-        )
+        # 安全约定（见 SECURITY.md）：调试日志绝不回显 API Key 内容，
+        # 仅记录轮询索引，避免密钥前缀泄露到共享调试日志。
+        self.debug_log(f"轮询 API Key: index={self.current_key_index - 1}")
         return api_key
 
     async def _download_remote_image(self, url: str, session: Any) -> tuple[bytes, str]:

@@ -626,3 +626,38 @@ def test_close_releases_resources() -> None:
     c.client_manager.close = _close  # type: ignore[assignment]
     run(c.close())
     assert closed == [True]
+
+
+# ===== 安全回归：调试日志不得回显 API Key 内容 =====
+
+
+class _CaptureLogger:
+    """捕获日志文本，供断言密钥未泄露."""
+
+    def __init__(self) -> None:
+        """初始化空日志缓冲."""
+        self.messages: list[str] = []
+
+    def __getattr__(self, _k):
+        """把任意日志级别方法收敛为「记录参数文本」."""
+
+        def _record(*args, **_kw):
+            self.messages.extend(str(a) for a in args)
+
+        return _record
+
+    def text(self) -> str:
+        """返回拼接后的全量日志文本."""
+        return "\n".join(self.messages)
+
+
+def test_debug_log_never_echoes_api_key(monkeypatch) -> None:
+    """debug_mode 轮的轮询日志只含索引，绝不回显密钥内容."""
+    secret = "sk-supersecret-abcdef0123456789"
+    c = _make_client(api_keys=[secret], debug_mode=True)
+    cap = _CaptureLogger()
+    monkeypatch.setattr(ac, "logger", cap)
+    assert c._get_next_api_key() == secret
+    # 密钥前 10 个字符亦不得出现（历史实现会打印 api_key[:10]）
+    assert secret not in cap.text()
+    assert secret[:10] not in cap.text()
