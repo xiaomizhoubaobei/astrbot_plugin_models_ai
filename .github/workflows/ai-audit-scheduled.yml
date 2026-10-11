@@ -422,6 +422,14 @@ jobs:
               PATH_="$(jq -r '.path' <<<"$item")"
               ALERT="$(jq -r '.alert_number' <<<"$item")"
               REPORT="$(jq -r '.report // ""' <<<"$item")"
+              # ── 端点坐标：source 与 sink **各自独立**，可能不在同一文件 ──────────
+              # 取不到时回落到告警位置 PATH_，并标注「未定位」——绝不在跨文件数据流上
+              # 把告警位置当成两端坐标（那会写出错误的端点位置，误导维护者排查）。
+              # 展开为 `<文件>:<行号>`；line 为 null 时只保留文件路径。
+              SRC="$(jq -r '(.source.path // "") as $p | (.source.line // "") as $l | if $p != "" then (if $l != "" then "\($p):\($l)" else $p end) else "" end' <<<"$item")"
+              SNK="$(jq -r '(.sink.path // "") as $p | (.sink.line // "") as $l | if $p != "" then (if $l != "" then "\($p):\($l)" else $p end) else "" end' <<<"$item")"
+              [ -n "$SRC" ] || SRC="${PATH_}（source 未定位）"
+              [ -n "$SNK" ] || SNK="${PATH_}（sink 未定位）"
               # ⚠️ 公开标题**不含** rule/path（二者属可利用细节），仅以告警编号区分；
               #    维护者可凭编号到私密公告里查看对应的规则与文件。
               TITLE="[AI审计] CodeQL 告警 #${ALERT}"
@@ -439,8 +447,9 @@ jobs:
                   --arg summary "AI审计：CodeQL 告警 #${ALERT}" \
                   --arg r "$REPORT" --arg a "$ALERT" \
                   --arg ru "$RULE" --arg p "$PATH_" \
+                  --arg src "$SRC" --arg snk "$SNK" \
                   '{summary:$summary,
-                    description:("## 漏洞概述\n\n\($r)\n\n## 关联 CodeQL 告警\n\n- 告警编号：\($a)\n- 规则：\($ru)\n- 文件：\($p)\n\n## 处置约定\n\n- 本公告为 AI 审计自动创建的**私密**安全公告，仅维护者可见，用于在协调披露期内跟踪未修复漏洞。\n- 修复发布后，请按 SECURITY.md 的协调披露约定致谢并公开必要信息。"),
+                    description:("## 漏洞概述\n\n\($r)\n\n## 关联 CodeQL 告警\n\n- 告警编号：\($a)\n- 规则：\($ru)\n- 告警位置：\($p)\n- source（来源点）：\($src)\n- sink（汇点）：\($snk)\n\n## 处置约定\n\n- 本公告为 AI 审计自动创建的**私密**安全公告，仅维护者可见，用于在协调披露期内跟踪未修复漏洞。\n- 修复发布后，请按 SECURITY.md 的协调披露约定致谢并公开必要信息。"),
                     severity:"medium", vulnerabilities:[]}')"
                 ADVISORY_ID="$(curl -fsSL -X POST -H "${AUTH_HEADER}" \
                   -H "${ACCEPT_HEADER}" \

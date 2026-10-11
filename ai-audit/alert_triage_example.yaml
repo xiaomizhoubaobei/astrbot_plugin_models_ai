@@ -257,6 +257,12 @@ taskflow:
         1. 【源码与上下文定位】
            - 调用 `get_file_contents` 查看 {{ result.path }} 及其调用链相关代码；
            - 准确定位 source（外部输入点）与 sink（危险调用汇点）的**精确行号**；
+           ⚠️ source 与 sink **可能不在同一个文件**（CodeQL 数据流是跨文件/跨函数的）：
+             两者必须**各自独立**确定「文件路径 + 行号」，不得默认沿用告警位置
+             {{ result.path }}。只有当某端点确实落在 {{ result.path }} 时，其路径才写作
+             {{ result.path }}；否则写实际命中的文件路径（相对仓库根）。
+             若跨文件而无法确定某一端点的精确位置，就把对应的路径/行号字段写 null，
+             并在 notes 说明阻塞原因——**不得**用另一端的路径或告警位置顶替充数。
            - 检查 sink 前是否存在充分的过滤/校验/参数化防护（如 URL 白名单、参数清洗、
              使用参数化查询而非字符串拼接、路径规范化后再拼接）。
 
@@ -274,8 +280,10 @@ taskflow:
            调用 memcache_set_state 把取证结果存为一条 JSON，key 为
            "{{ globals.repo }}_{{ result.alert_number }}_evidence"，value 形如：
            {
-             "source": "{{ result.path }}:<行号或 null>",
-             "sink": "{{ result.path }}:<行号或 null>",
+             "source": {"path": "<source 所在文件（相对仓库根）；无法确定则 null>",
+                        "line": <source 精确行号；无法确定则 null>},
+             "sink": {"path": "<sink 所在文件（相对仓库根）；无法确定则 null>",
+                      "line": <sink 精确行号；无法确定则 null>},
              "user_input_controlled": true|false,
              "privileged_context": true|false,
              "is_test_code": true|false,
@@ -330,6 +338,10 @@ taskflow:
            与 "{{ globals.repo }}_{{ result.alert_number }}_triage"，确认 decision 是否为 TP。
         2. 仅当 decision==TP 时，基于取证结果生成完整漏洞报告（含漏洞类型、严重程度、
            精确 source/sink 文件+行号、攻击路径、修复建议）。
+           ⚠️ source 与 sink 可能跨文件：报告须**分别**写明二者的文件路径与行号
+           （直接取自 _evidence 的 source.path/source.line 与 sink.path/sink.line），
+           **不得**把告警位置 {{ result.path }} 同时充当两端——那会在跨文件数据流上
+           写下错误的端点坐标，令下游校验与报告读者被误导。
         3. 调用 memcache_set_state 把报告写入 key "{{ globals.repo }}_{{ result.alert_number }}_report"，
            value 为报告全文（Markdown）。
         若为误报(FP)或证据不足，则调用 memcache_delete_state 删除该 _report key
@@ -368,7 +380,10 @@ taskflow:
            value 形如 {"status":"REJECTED","reason":"test_code_not_production_risk"} 并结束。
            测试代码中的告警不是生产运行时风险，**不得**放行至建 Issue / 发布流程。
         4. 否则基于 _evidence 逐项校验报告：
-           - 报告中的文件/行号是否与 _evidence 的 source/sink 一致？
+           - 报告中的文件/行号是否与 _evidence 的 source/sink 一致？注意 source 与 sink
+             是**各自独立**的 {path, line}，可能位于不同文件：报告里任一端的文件路径
+             与行号都必须与该端 _evidence 的取值对应，**不得**出现「两端写成同一文件或
+             同一行、而 _evidence 显示跨文件」的不一致（即幻觉，一律驳回）。
            - 是否缺少关键字段（漏洞类型/位置/攻击路径/修复建议）？
            - 是否含未渲染的模板变量占位（以左双大括号开头的 Jinja 残留）？
            只要任一不满足即判定幻觉/不完整。
@@ -376,12 +391,18 @@ taskflow:
            key "{{ globals.repo }}_{{ result.alert_number }}_verdict"，
            value 必须**自包含**（含下游落盘所需的全部字段，勿只写 status/reason）：
            {"alert_number": {{ result.alert_number }}, "rule": {{ result.rule | tojson }},
-            "path": {{ result.path | tojson }}, "status": "APPROVED"|"REJECTED",
+            "path": {{ result.path | tojson }},
+            "source": {"path": <_evidence.source.path>, "line": <_evidence.source.line>},
+            "sink": {"path": <_evidence.sink.path>, "line": <_evidence.sink.line>},
+            "status": "APPROVED"|"REJECTED",
             "reason": "<简短原因>",
             "report": "<该告警的报告全文；被驳回或报告为空时填空字符串 \"\">"}
            其中 report 若为 APPROVED 必须是第 3 步报告的**原文全文**（Markdown）。
            ⚠️ 必须把 rule/path 也写进来：第 5 步是纯 shell、拿不到上游的 `{{ result.* }}`
            （shell 任务不做模板渲染），只能依赖本键里的自包含字段。
+           ⚠️ source/sink 也要写进来（**原样取自 _evidence**，勿用告警位置填充）：下游
+           报告与私密公告需要**分别**标注两端文件+行号，缺了它们就只能退回到告警位置，
+           跨文件数据流的端点坐标会失真。
         本步只写 _verdict，不创建任何 Issue。
 
   # ---------------------------------------------------------------------------
@@ -473,6 +494,10 @@ taskflow:
             | { alert_number: (.alert_number // null),
                 rule: (.rule // ""),
                 path: (.path // ""),
+                # source/sink 为**各自独立**的 {path, line}；缺失时落为 null，
+                # 下游据此**分别**标注端点坐标，绝不用告警位置 path 顶替。
+                source: ({ path: (.source.path // null), line: (.source.line // null) }),
+                sink: ({ path: (.sink.path // null), line: (.sink.line // null) }),
                 status: .status,
                 report: .report }
           ]')"

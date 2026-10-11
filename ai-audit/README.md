@@ -168,11 +168,28 @@ cp -r <本项目>/ai-audit ai_audit
 
    > 各审计阶段经 memcache 按告警贯通：第 ① 步写取证 `_evidence`，第 ② 步写判定 `_triage`，
    > 第 ③ 步对 TP 写报告 `_report`，第 ④ 步写校验结论 `_verdict`（APPROVED/REJECTED，
-   > 且**自包含** `alert_number/rule/path/status/reason/report`，供第 ⑤ 步直接消费）。
+   > 且**自包含** `alert_number/rule/path/source/sink/status/reason/report`，供第 ⑤ 步直接消费）。
    > 其中第 ④ 步校验**必须同时读取 `_report` 与 `_evidence`**，基于取证核对报告的文件/行号；
    > 若 `_evidence` 缺失则一律驳回（`no_evidence`），避免放行未经验证的行号。
+   >
+   > ⚠️ **端点坐标必须 source/sink 各自记录（勿退回单个 `result.path`）**：CodeQL 数据流
+   > 是跨文件/跨函数的，source 与 sink **常常不在同一个文件**里。`_evidence` 因此把两端写成
+   > **各自独立**的 `{path, line}`（而非「用告警位置 `result.path` 拼上两个行号」）：
+   >
+   > ```json
+   > { "source": {"path": "<相对仓库根的文件>", "line": <行号>},
+   >   "sink":   {"path": "<相对仓库根的文件>", "line": <行号>} }
+   > ```
+   >
+   > 否则跨文件数据流会**保存错误的端点位置**（把 source 的文件也写成 sink 的文件），
+   > 报告与私密公告随之写下错误坐标，令人工复核被误导。若某一端点确实无法定位，
+   > 就写 `null` 并由 notes 说明——**不得**用另一端或告警位置顶替充数。
+   > 该坐标经 `_verdict` 自包含下传，第 ⑤ 步原样落进 `AUDIT_VERDICT_FILE`，
+   > publish job 再分别渲染为「source（来源点）」「sink（汇点）」两行；确实缺失时
+   > 会回落到告警位置并显式标注「未定位」，绝不静默冒充。
+   >
    > 第 ⑤ 步（**纯 shell**）**仅当 status==APPROVED 且报告非空**时，把
-   > `{alert_number, rule, path, status, report}` 追加写进 `AUDIT_VERDICT_FILE`
+   > `{alert_number, rule, path, source, sink, status, report}` 追加写进 `AUDIT_VERDICT_FILE`
    > （默认 `/tmp/audit-verdicts.json`）。
    >
    > ⚠️ **第 ⑤ 步的写法有硬约束（本示例最容易踩的坑，勿改回去）**：框架只把 MCP 工具
@@ -295,6 +312,9 @@ hatch run main -t ai_audit.alert_triage_example \
   （不能在 shell 里调 MCP 工具、也不能用 `{{ result.* }}`，详见第三节）。
 - **分页拉取**：`alerts` 任务逐页拉取全部 open 的 CodeQL 告警，仓库告警超过 100 条也不会漏审。
 - **防幻觉校验**：报告不完整/不一致直接驳回（`_verdict=REJECTED`），避免 LLM 编造漏洞。
+- **端点坐标各自独立**：`_evidence` 的 source/sink 分别记录 `{path, line}`（跨文件数据流
+  两端常不在同一文件），报告、私密公告据此**分别**标注两端坐标，不再拿告警位置顶替两端；
+  定位不到时显式写 `null` / 标注「未定位」，而不是写出一个看似精确的错误位置。
 - **审计与发文隔离**：taskflow 只产出结论文件；Issue 由独立持令牌 job 消费结论创建
   （标题带 `[AI审计]` 前缀，并打 `bug`/`security`/`ai-audit` 标签），且仅对
   `_verdict.status == APPROVED` 的告警执行——不可信输入与高权限动作分处两个 job。
