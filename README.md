@@ -16,7 +16,7 @@
 ![Repo Size](https://img.shields.io/github/repo-size/xiaomizhoubaobei/astrbot_plugin_models_ai.svg)
 
 
-> **当前版本**: v0.0.7
+> **当前版本**: v0.0.8
 
 本插件为 AstrBot 接入多家模型服务提供商AI的图像生成能力，支持通过自然语言或指令调用，支持多 Key 轮询。
 

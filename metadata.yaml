@@ -1,7 +1,7 @@
 name: astrbot_plugin_models_ai
 desc: 可以使用来自多家模型服务提供商的模型生成图片或通过自然语言让 LLM 生成，让bot自拍给你看。
 short_desc: 接入 Gitee AI / 千问云，支持文生图、风格转换、图片编辑与 LLM 生图工具。
-version: v0.0.7
+version: v0.0.8
 author: 祁筱欣
 repo: https://github.com/xiaomizhoubaobei/astrbot_plugin_models_ai
 # 安全漏洞私密报告联系邮箱（见 SECURITY.md「报告漏洞」）。
