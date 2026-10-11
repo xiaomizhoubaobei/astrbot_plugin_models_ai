@@ -121,7 +121,12 @@ async def style_command(
             return
 
         # 获取消息中的图片
-        image_paths = await extract_images_from_message(event)
+        # 消息图片 URL 主机由发送方控制，按插件白名单校验出站，防 SSRF
+        image_paths = await extract_images_from_message(
+            event,
+            plugin.image_allowed_hosts,
+            allow_any_host=plugin.allow_any_image_host,
+        )
         plugin.debug_log(f"[风格转换命令] 检测到 {len(image_paths)} 张图片")
 
         # 获取风格提示词

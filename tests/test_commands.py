@@ -94,6 +94,9 @@ class Plugin:
         self.model_lister = model_lister or ModelLister()
         self.config = config or {}
         self.download_image_urls = False
+        # 与真实插件契约对齐：取图出站白名单（此处留空 + 不收紧，避免测试被拦）
+        self.image_allowed_hosts = frozenset()
+        self.allow_any_image_host = False
         self.logs = []
 
     def debug_log(self, msg):

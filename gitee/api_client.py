@@ -14,7 +14,7 @@ import asyncio
 import json
 import mimetypes
 import os
-from typing import Any
+from typing import Any, Optional
 
 import aiohttp
 from astrbot.api import logger
@@ -48,6 +48,8 @@ class GiteeAIClient:
         negative_prompt: str,
         base_url: str,
         debug_mode: bool = False,
+        allowed_image_hosts: Optional[list[str]] = None,
+        allow_any_image_host: bool = False,
     ) -> None:
         """初始化 Gitee AI 客户端.
 
@@ -59,6 +61,8 @@ class GiteeAIClient:
             negative_prompt: 负面提示词
             base_url: API 基础 URL
             debug_mode: 是否启用 Debug 日志
+            allowed_image_hosts: 额外可信的取图主机白名单（见 core/url_guard.py）
+            allow_any_image_host: 是否关闭取图主机校验（显式配置才生效）
         """
         self.debug_mode = debug_mode
         self.api_keys = api_keys
@@ -72,7 +76,13 @@ class GiteeAIClient:
         self.supported_ratios = SUPPORTED_RATIOS
 
         self.client_manager = ClientManager(base_url, debug_mode=debug_mode)
-        self.image_manager = ImageManager(debug_mode=debug_mode)
+        # 取图（服务商返回的结果 URL）同样受出站白名单约束：端点主机自动可信
+        self.image_manager = ImageManager(
+            debug_mode=debug_mode,
+            allowed_image_hosts=allowed_image_hosts,
+            provider_base_url=base_url,
+            allow_any_image_host=allow_any_image_host,
+        )
 
         # 记录已创建的 Background Task，避免任务被 GC 提前回收
         self.current_key_index = 0
