@@ -25,7 +25,6 @@
 """
 
 import ipaddress
-import socket
 from typing import Iterable, Optional
 from urllib.parse import urlparse
 

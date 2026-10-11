@@ -4,6 +4,9 @@ short_desc: 接入 Gitee AI / 千问云，支持文生图、风格转换、图�
 version: v0.0.7
 author: 祁筱欣
 repo: https://github.com/xiaomizhoubaobei/astrbot_plugin_models_ai
+# 安全漏洞私密报告联系邮箱（见 SECURITY.md「报告漏洞」）。
+# AstrBot 元数据校验只强校验必填字段，未知字段会被忽略，故该扩展字段安全。
+security_contact: qixiaoxin@stu.sqxy.edu.cn
 # AstrBot 版本范围（PEP 440，不带 v 前缀）。上游会对该字段做校验，
 # 声明本插件适配 AstrBot 4.x，避免在不兼容的大版本上被加载。
 astrbot_version: ">=4.16,<5"
