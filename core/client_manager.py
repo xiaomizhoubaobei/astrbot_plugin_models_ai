@@ -88,14 +88,20 @@ class ClientManager:
             )
 
         if api_key not in self._openai_clients:
-            self.debug_log(f"创建新的 OpenAI 客户端: api_key={api_key[:10]}...")
+            # 安全约定（见 SECURITY.md）：不打印 API Key 内容，仅记录缓存的 key 数量。
+            self.debug_log(
+                f"创建新的 OpenAI 客户端: 缓存 key 数={len(self._openai_clients) + 1}"
+            )
             self._openai_clients[api_key] = AsyncOpenAI(
                 base_url=self.base_url,
                 api_key=api_key,
                 http_client=self._httpx_client,  # 使用共享的 httpx.AsyncClient
             )
         else:
-            self.debug_log(f"复用 OpenAI 客户端: api_key={api_key[:10]}...")
+            # 安全约定（见 SECURITY.md）：不打印 API Key 内容，仅记录缓存的 key 数量。
+            self.debug_log(
+                f"复用 OpenAI 客户端: 缓存 key 数={len(self._openai_clients)}"
+            )
 
         return self._openai_clients[api_key]
 

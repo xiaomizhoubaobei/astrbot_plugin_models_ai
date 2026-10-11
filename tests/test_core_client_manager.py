@@ -12,6 +12,7 @@ from _plugin_harness import ensure_host, run  # noqa: E402
 
 ensure_host()
 
+from astrbot_plugin_models_ai.core import client_manager as cm  # noqa: E402
 from astrbot_plugin_models_ai.core.client_manager import ClientManager  # noqa: E402
 
 
@@ -98,3 +99,39 @@ def test_debug_log_branch() -> None:
     """debug 模式日志分支可执行."""
     m = ClientManager("https://example.invalid/v1", debug_mode=True)
     m.debug_log("hello")
+
+
+# ===== 安全回归：调试日志不得回显 API Key 内容 =====
+
+
+class _CaptureLogger:
+    """捕获日志文本，供断言密钥未泄露."""
+
+    def __init__(self) -> None:
+        """初始化空日志缓冲."""
+        self.messages: list[str] = []
+
+    def __getattr__(self, _k):
+        """把任意日志级别方法收敛为「记录参数文本」."""
+
+        def _record(*args, **_kw):
+            self.messages.extend(str(a) for a in args)
+
+        return _record
+
+    def text(self) -> str:
+        """返回拼接后的全量日志文本."""
+        return "\n".join(self.messages)
+
+
+def test_debug_log_never_echoes_api_key(monkeypatch) -> None:
+    """创建 / 复用客户端日志不得回显 API Key 内容."""
+    secret = "sk-supersecret-abcdef0123456789"
+    m = ClientManager("https://example.invalid/v1", debug_mode=True)
+    cap = _CaptureLogger()
+    monkeypatch.setattr(cm, "logger", cap)
+    m.get_openai_client(secret)  # 创建分支
+    m.get_openai_client(secret)  # 复用分支
+    assert secret not in cap.text()
+    assert secret[:10] not in cap.text()
+    run(m.close())
