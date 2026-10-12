@@ -16,7 +16,7 @@ repos:
   - id: mixed-line-ending
     args: ['--fix=lf']
 - repo: https://github.com/psf/black-pre-commit-mirror
-  rev: 26.10.0
+  rev: 26.10.1
   hooks:
   - id: black
     # 不绑定 language_version：仅要求本机具备任意受支持的 Python，跨版本可跑通
