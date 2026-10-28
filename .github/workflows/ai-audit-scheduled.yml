@@ -341,10 +341,36 @@ jobs:
           #   ⚠️ globals.repo 只进 user_prompt（会渲染）；shell 任务的 run: 不做渲染，
           #   故第 0 步拉取告警的仓库路径在 taskflow 里**写死**——
           #   该写死值与这里的 github.repository 必须保持一致（同为本仓库）。
+          #
+          # ── -g memcache_prefix：把仓库 slug **正则清洗**成合法工具名字符集 ──────
+          # 成因（真实事故，勿改回去）：memcache 的 key 会出现在 user_prompt 里，模型是
+          #   **照抄** key 来拼工具名的。原先 key 内联 `{{ globals.repo }}`（含 `/`），
+          #   渲染出的 key 带斜杠，模型据此拼出的**工具名**形如
+          #   `7ff9e676e031memcache_set_state_xiaomizhoubaobei/astrbot_..._evidence`，
+          #   既夹带 `/` 这种非法字符、又超出 64 字符的工具名上限，openai-agents 直接抛
+          #   `ModelBehaviorError: Tool <...> not found in agent ...`，整条审计链中止。
+          # 对策：`tr -c 'A-Za-z0-9_-' '_'` 把每个非 `[A-Za-z0-9_-]` 的字符（`/`、`.` 等）
+          #   **逐个**替换为 `_`，把任意仓主/仓库名收敛成合法工具名字符集。
+          #   ⚠️ 不用 `sed 's/[^A-Za-z0-9_-]\+/_/g'`：那是**贪婪**替换，会把连续的非法
+          #   字符压成一个 `_`，与 taskflow 侧按「逐字符」描述的规则不一致（两条链的
+          #   前缀必须逐字符相同，否则第 ⑤ 步读不到前面写入的 key）。
+          #   `head -c 16` 把前缀裁到 16 字符，为「`_<alert_number>_<后缀>`」腾出空间：
+          #   最长后缀 `verdict`（7 字符）下，即便编号长到 19 位（极端长尾），
+          #   key 也只有 16+1+19+1+7 = 44 字符，稳在 64 上限之内。
+          #   ⚠️ 不要让前缀再变长：事故现场就是「前缀过长 + 带斜杠」双重犯规，
+          #   把 key 顶到 54 字符、拼成工具名后 73 字符，直接越过 64 上限。
+          #   ⚠️ 这里刻意用 `printf '%s'`（**不带** `\n`）而不是 `echo`：`tr` 会连
+          #   结尾换行符一起转成 `_`，凭空多出一个字符，让结果与 taskflow 侧对不上。
+          MEMCACHE_PREFIX="$(
+            printf '%s' "${{ github.repository }}" | tr -c 'A-Za-z0-9_-' '_' | head -c 16
+          )"
+          : "${MEMCACHE_PREFIX:?无法从 github.repository 派生 memcache_prefix}"
+          echo "memcache key 前缀（已正则清洗）：${MEMCACHE_PREFIX}"
           # -m 显式指定 model_config（声明 api_type: chat_completions；模型由上面的
           #   COPILOT_DEFAULT_MODEL 环境变量决定，见 ai-audit/model_config.yaml）
           hatch run main -t ai_audit.alert_triage_example \
               -g repo="${{ github.repository }}" \
+              -g memcache_prefix="$MEMCACHE_PREFIX" \
               -m ai_audit.model_config
           # 兜底：若 taskflow 未产出结论文件，写一个空数组，保证后续步骤有输入
           [ -f "$AUDIT_VERDICT_FILE" ] || echo '[]' > "$AUDIT_VERDICT_FILE"

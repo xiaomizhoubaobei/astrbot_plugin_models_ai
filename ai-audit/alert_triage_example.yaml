@@ -52,6 +52,26 @@ seclab-taskflow-agent:
 #    仓库路径改为在该步 run 里**写死**；两处值必须保持一致（见该步注释）。
 globals:
   repo: xiaomizhoubaobei/astrbot_plugin_models_ai
+  # ── memcache key 前缀：**必须**是「模型可直接当工具名说出来」的字符集 ──────────
+  # 成因（真实事故）：模型调用 MCP 工具时，是从 prompt 里**照抄**工具名拼出调用的。
+  #   原先 key 直接内联 `{{ globals.repo }}`（含 `/`），渲染出的 key 形如
+  #   `xiaomizhoubaobei/astrbot_plugin_models_ai_139_evidence`，模型据此拼出的
+  #   **工具名**变成 `7ff9e676e031memcache_set_state_xiaomizhoubaobei/astrbot_..._evidence`，
+  #   既不匹配 64 字符上限、也不匹配 `^[a-zA-Z0-9_-]+$` 的工具名规则 → openai-agents
+  #   抛 `ModelBehaviorError: Tool <所拼工具名> not found in agent ...`，整条审计链失败。
+  # 对策（正则清洗）：把仓库 slug 里所有非 `[A-Za-z0-9_-]` 的字符（`/`、`.` 等）
+  #   **逐个**替换为 `_`，并把结果裁到 **16 字符**上限，为「`_<alert_number>_<后缀>`」
+  #   腾出空间。本仓库派生结果为 `xiaomizhoubaobei`（截断后仍全局唯一）。
+  #   16 这个数不是拍脑袋：key 里最长的后缀是 `verdict`（7 字符），拼成
+  #   `<prefix>_<编号>_verdict`；前缀取 16 时，即便编号长到 19 位（极端长尾），
+  #   key 也只有 16+1+19+1+7 = 44 字符，**远在 OpenAI 工具名 64 字符上限之内**。
+  #   ⚠️ 不要图省事改大（如 60）：前缀越长，越容易把 key 顶到 64 上限之外，
+  #   事故现场那个 `..._139_evidence` 就是「前缀过长 + 带斜杠」双重犯规的结果。
+  # ⚠️ 该值必须与工作流 `-g memcache_prefix=...` 的派生结果**逐字符一致**：
+  #   `.github/workflows/ai-audit-scheduled.yml` 用
+  #   `printf '%s' "$repo" | tr -c 'A-Za-z0-9_-' '_' | head -c 16` 复刻同一条规则
+  #   （用 `printf` 而非 `echo`，避免结尾换行被 `tr` 转成多余的 `_`）。
+  memcache_prefix: xiaomizhoubaobei
 
 taskflow:
   # ---------------------------------------------------------------------------
@@ -198,7 +218,7 @@ taskflow:
         - 该代码路径是否在特权/高权限上下文（如服务端处理、凭证处理、文件系统操作、子进程调用）中执行；
         - 该告警触发的输入是否真的可被外部攻击者控制。
         调用 memcache_set_state 把取证结果存为一条 JSON，key 为
-        "{{ globals.repo }}_{{ result.alert_number }}_evidence"，value 形如：
+        "{{ globals.memcache_prefix }}_{{ result.alert_number }}_evidence"，value 形如：
         {"source":"文件:行号","sink":"文件:行号","user_input_controlled":true|false,
          "privileged_context":true|false,"notes":"..."}
         不得编造，无法取证的字段写 null 并在 notes 说明。
@@ -216,12 +236,12 @@ taskflow:
         - ai_audit.personalities.python_auditer
       user_prompt: |
         针对告警 {{ result.alert_number }}（规则：{{ result.rule }}，文件：{{ result.path }}）：
-        1. 调用 memcache_get_state 读取 key "{{ globals.repo }}_{{ result.alert_number }}_evidence"
+        1. 调用 memcache_get_state 读取 key "{{ globals.memcache_prefix }}_{{ result.alert_number }}_evidence"
            取得第 1 步的取证结果（若不存在则直接判定为证据不足，输出 FP）。
         2. 基于取证结果判定是否真实漏洞：
            - 攻击者无法触发该路径，或输入不可控 => 误报 FP；
            - 在特权上下文执行且输入可控 => 潜在漏洞 TP。
-        3. 调用 memcache_set_state 把判定写入 key "{{ globals.repo }}_{{ result.alert_number }}_triage"，
+        3. 调用 memcache_set_state 把判定写入 key "{{ globals.memcache_prefix }}_{{ result.alert_number }}_triage"，
            value 形如 {"decision":"FP"|"TP","reasons":["...","..."]}。
         若证据不存在或无法支撑 TP，一律判 FP，防止凭空/幻觉升级。
 
@@ -238,11 +258,11 @@ taskflow:
         - ai_audit.personalities.python_auditer
       user_prompt: |
         针对告警 {{ result.alert_number }}（规则：{{ result.rule }}，文件：{{ result.path }}）：
-        1. 调用 memcache_get_state 读取 key "{{ globals.repo }}_{{ result.alert_number }}_evidence"
-           与 "{{ globals.repo }}_{{ result.alert_number }}_triage"，确认 decision 是否为 TP。
+        1. 调用 memcache_get_state 读取 key "{{ globals.memcache_prefix }}_{{ result.alert_number }}_evidence"
+           与 "{{ globals.memcache_prefix }}_{{ result.alert_number }}_triage"，确认 decision 是否为 TP。
         2. 仅当 decision==TP 时，基于取证结果生成完整漏洞报告（含漏洞类型、严重程度、
            精确 source/sink 文件+行号、攻击路径、修复建议）。
-        3. 调用 memcache_set_state 把报告写入 key "{{ globals.repo }}_{{ result.alert_number }}_report"，
+        3. 调用 memcache_set_state 把报告写入 key "{{ globals.memcache_prefix }}_{{ result.alert_number }}_report"，
            value 为报告全文（Markdown）。
         若为误报(FP)或证据不足，则调用 memcache_delete_state 删除该 _report key
         （确保后续创建 Issue 时读不到任何报告，从而被跳过）。
@@ -267,11 +287,11 @@ taskflow:
       user_prompt: |
         针对告警 {{ result.alert_number }}（规则：{{ result.rule }}，文件：{{ result.path }}）：
         1. 调用 memcache_get_state 同时读取两个 key：
-           - "{{ globals.repo }}_{{ result.alert_number }}_report"（第 3 步报告）；
-           - "{{ globals.repo }}_{{ result.alert_number }}_evidence"（第 1 步取证）。
+           - "{{ globals.memcache_prefix }}_{{ result.alert_number }}_report"（第 3 步报告）；
+           - "{{ globals.memcache_prefix }}_{{ result.alert_number }}_evidence"（第 1 步取证）。
            ⚠️ 校验必须基于 _evidence，否则无从核对报告里的文件/行号，等于放行未验证的行号。
         2. 若报告不存在或为空（FP / 未写报告），直接写入校验结论
-           key "{{ globals.repo }}_{{ result.alert_number }}_verdict"，
+           key "{{ globals.memcache_prefix }}_{{ result.alert_number }}_verdict"，
            value 形如 {"alert_number": {{ result.alert_number }},
             "rule": {{ result.rule | tojson }}, "path": {{ result.path | tojson }},
             "status":"REJECTED","reason":"no_report","report":""} 并结束。
@@ -289,7 +309,7 @@ taskflow:
            - 是否含未渲染的模板变量占位（以左双大括号开头的 Jinja 残留）？
            只要任一不满足即判定幻觉/不完整。
         5. 调用 memcache_set_state 写入校验结论
-           key "{{ globals.repo }}_{{ result.alert_number }}_verdict"，
+           key "{{ globals.memcache_prefix }}_{{ result.alert_number }}_verdict"，
            value 必须**自包含**（含下游落盘所需的全部字段，勿只写 status/reason）：
            {"alert_number": {{ result.alert_number }}, "rule": {{ result.rule | tojson }},
             "path": {{ result.path | tojson }}, "status": "APPROVED"|"REJECTED",

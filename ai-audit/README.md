@@ -176,6 +176,29 @@ cp -r <本项目>/ai-audit ai_audit
    都基于它**，workflow 通过 `-g repo=...` 把实际仓库注入进来（见下文 GitHub Actions 说明），
    因此不再需要、也不应单独设置 `GITHUB_REPOSITORY` 以免与 `globals.repo` 分裂。
 
+   > ⚠️ **memcache key 前缀必须做正则清洗（真实事故，勿改回去）**
+   > `globals.repo` 是 `owner/repo` 形态，**含 `/`**，**不能**直接拼进 memcache key：
+   > key 会原样出现在 `user_prompt` 里，而模型是**照抄** key 去拼工具名的。事故现场：
+   > key 被拼成 `xiaomizhoubaobei/astrbot_plugin_models_ai_139_evidence`，模型据此
+   > 说出的**工具名**变成
+   > `7ff9e676e031memcache_set_state_xiaomizhoubaobei/astrbot_..._evidence`
+   > —— 既夹带非法字符 `/`、又超出 OpenAI 的 64 字符工具名上限，openai-agents 直接抛
+   > `ModelBehaviorError: Tool <...> not found in agent ai_audit.personalities.python_auditer`，
+   > 整条审计链在第一个任务就中止。
+   >
+   > 因此 key 前缀**只认 `globals.memcache_prefix`**（不再内联 `globals.repo`），它由
+   > `repo` 经**同一条正则规则**派生：把每个非 `[A-Za-z0-9_-]` 的字符逐个换成 `_`，
+   > 再裁到 **16 字符**上限（为 `_<alert_number>_<后缀>` 腾位；最长后缀 `verdict`
+   > 下即便编号 19 位，key 也只有 44 字符）。
+   >
+   > 两条链必须**逐字符一致**，否则第 ⑤ 步读不到前面写入的 key：
+   > - taskflow 默认值：`globals.memcache_prefix`；
+   > - 工作流：`printf '%s' "${{ github.repository }}" | tr -c 'A-Za-z0-9_-' '_' | head -c 16`，
+   >   再以 `-g memcache_prefix=...` 注入。
+   >
+   > ⚠️ 别用 `echo`（会多转出一个换行 → 前缀凭空长一位），也别用 `sed` 的贪婪替换
+   > （会把连续非法字符压成一个，与「逐个替换」不一致）。
+
    > 各审计阶段经 memcache 按告警贯通：第 ① 步写取证 `_evidence`，第 ② 步写判定 `_triage`，
    > 第 ③ 步对 TP 写报告 `_report`，第 ④ 步写校验结论 `_verdict`（APPROVED/REJECTED，
    > 且**自包含** `alert_number/rule/path/status/reason/report`，供第 ⑤ 步直接消费）。
