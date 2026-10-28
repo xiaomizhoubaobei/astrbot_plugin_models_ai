@@ -361,11 +361,9 @@ triage 侧：jq 'length' == 0
 > 💡 **配对自检**（无需跑整条流水线）：用公钥加密一段探针、再用私钥解回，
 > 能解回即说明配对正确：
 > ```bash
-> # ⚠️ 必须 `set -e`：片段末尾已经**没有**任何会「顺带把它救回来」的命令，但
-> #    失败仍可能被悄悄吞掉——只要解码之后还跟着一条会成功的 `echo`（本片段就有），
-> #    不加 `-e` 时 `openssl pkeyutl -decrypt` 的非零退出不会中止脚本，末尾那条
-> #    `echo "✅ 配对自检通过"` 照样执行，于是「解密失败」被印成「自检通过」。
-> #    开启 `-e` 后解密一失败即退出，`echo` 根本没机会跑。
+> # ⚠️ 必须 `set -e`（或显式检查解密退出码）：末尾的 `shred` 是清理命令，
+> #    若不开启 `-e`，它会**掩盖** `openssl pkeyutl -decrypt` 的非零退出状态——
+> #    即使解密失败（公私钥不配对），脚本整体仍会「成功」返回，自检形同虚设。
 > set -euo pipefail
 > # ⚠️ 私钥一律经 `mktemp` 落到**私有**临时文件（默认 0600、随机名）：
 > #    · 不能写固定路径（如 `/tmp/priv.pem`）——`/tmp` 是全局可写的共享目录，
@@ -389,8 +387,7 @@ triage 侧：jq 'length' == 0
 > printf 'probe' > "$PROBE"
 > openssl pkeyutl -encrypt -pubin -inkey ai-audit/handoff-public-key.pem \
 >   -in "$PROBE" -out "$PROBE_ENC" -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256
-> # 私钥用**重定向**写入上面 mktemp 建好的私有临时文件（不是从 stdin 喂给进程）；
-> # 之所以不用 `-passin`/命令行参数，是为了不让 Secret 出现在进程列表里。
+> # 私钥经变量从 stdin 写入（不把 Secret 放进命令行，避免进程列表泄漏）；
 > # 落盘文件由 mktemp 创建，权限已是 0600，无需再赌环境 umask。
 > printf '%s' "$AUDIT_HANDOFF_PRIVATE_KEY" > "$PRIV"
 > # 解密失败即中止（`set -e` 生效），此时由上面的 EXIT 钩子收尾清理、不留私钥残骸

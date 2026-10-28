@@ -127,17 +127,13 @@ jobs:
   triage:
     name: 审计分流（无仓库写凭据）
     runs-on: ubuntu-latest
-    # 外化「本次有无待发布内容」，供 publish job 在**job 级门禁之前**判空跳过，
-    # 避免 0 条结论的空跑也要占用受保护环境的人工审批（见 publish 的 if 注释）。
-    outputs:
-      empty: ${{ steps.emptiness.outputs.empty }}
     permissions:
       # 只读：足够读取 CodeQL 告警与仓库内容；本 job 不持有任何仓库写凭据。
       contents: read
       security-events: read
     # 门禁：
-    #   1) 手动触发需落在**默认分支**上才放行（配合下方 checkout 取 github.ref，
-    #      确保手动触发只会检出维护者显式选定的这一条 ref）；
+    #   1) 手动触发需落在**默认分支**上才放行（配合下方 checkout 固定默认分支，
+    #      即便手选其它分支，执行的 triage 源码仍是已合并的可信代码）；
     #   2) workflow_run 需上游 CodeQL 成功完成（避免失败/取消的过期扫描状态）；
     #   3) 【安全关键】上游运行的 head 仓库必须是本仓库，即 fork PR 触发的
     #      CodeQL 运行**一律不进入本工作流**，杜绝 PR 源码充当不可信输入。
@@ -154,144 +150,17 @@ jobs:
         with:
           egress-policy: audit
 
-      # 拉取源码：只认**可信提交**，绝不用 workflow_run 事件里的 PR head。
-      #   手动触发 -> 当前 ref（由有写权限的维护者手动发起，可信）；
-      #   workflow_run -> 触发本次审计的那次 CodeQL 运行**实际分析的提交**
-      #   （github.event.workflow_run.head_sha）。上游已在 if 中排除 fork，故该
-      #   head_sha 必属本仓库既有提交，是可信代码，而非事件携带的任意提交。
+      # 拉取源码：**一律默认分支**，绝不用 workflow_run 事件里的 PR head，
+      #   也**不用** `github.ref`（手动触发时它指向所选分支，会把未审分支的源码送进
+      #   下游持 GH_PAT 的 publish 链）。上游已在 if 中排除 fork，故默认分支恒为
+      #   已合并的可信代码。
       # ⚠️ 第三方 Actions 一律锁定到已复核的不可变 commit SHA，禁用易被上游篡改的
       #   浮动 tag（如 actions/checkout@v4）；框架同样锁定到复核过的发布 commit。
-      # ⚠️ id 用于把「实际检出的修订版本」显式记录下来，供下游第 0 步按同一
-      #   修订版本过滤 CodeQL 告警：checkout action 会输出 ref/commit，其中
-      #   steps.checkout.outputs.commit 是**解析后的 40 位提交 SHA**（比 github.sha
-      #   更可靠——手动触发指定 tag/分支时 github.sha/github.ref 未必等于检出内容）。
-      #   下面「建库」「取告警」「审计」三段因此统一锚定到**同一个修订版本**上。
-      #
-      # ⚠️⚠️ 【修订版本锚定，勿改回 default_branch】════════════════════════════════
-      #   成因：workflow_run 场景若检出的 ref 写 `github.event.repository.default_
-      #   branch`，取到的是**移动中的默认分支 tip**，而非「触发本次审计的那次 CodeQL
-      #   运行所分析的提交」。二者在下列窗口里必然错位：
-      #     CodeQL 分析提交 A 完成 → 审计被拉起，但在 checkout 之前，默认分支被别人
-      #     （或 CI）推了一个**不影响 CodeQL 触发**的新提交 B（如仅改文档 / 非 `**.py`
-      #     路径）→ 默认分支 tip 已是 B。
-      #   此时 checkout 检出 B，CHECKOUT_COMMIT=B；而 CodeQL 告警的
-      #   most_recent_instance.commit_sha 仍是 A（B 未触发新的 CodeQL 分析，故告警
-      #   不会在 B 上重建）。下游第 0 步以 commit_sha **精确等于** CHECKOUT_COMMIT
-      #   为主判据过滤，A≠B → 本次扫描的全部告警被**静默丢弃**，审计报「无告警」，
-      #   真实漏洞被漏审；且 CodeQL.yml 的 push 触发仅匹配 `**.py`，文档类推送
-      #   **不会**补跑一次扫描，故不存在「稍后自愈」的兜底。
-      #   对策：把检出**绑定到触发运行实际分析的 SHA**（head_sha），使检出的提交与
-      #   告警的 commit_sha 天然同源（同一提交 A），消除漂移窗口——既修掉漏审，也
-      #   让「建库/审计的代码」与「拉取到的告警」严格同版本。
-      #   head_sha 由 workflow_run 事件在**触发时即冻结**，不随默认分支移动而变，
-      #   故不受上述窗口影响；且上游经 head_repository 门禁已排除 fork，安全性不变。
-      - name: Checkout 本项目（锚定触发运行实际分析的提交）
-        id: checkout
+      - name: Checkout 本项目（仅可信 ref：默认分支）
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # workflow_run -> head_sha（本次扫描分析的提交，权威无歧义）；
-          # workflow_dispatch -> 当前 ref（维护者手动指定的可信 ref）。
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-
-      # ── 初始化 CodeQL CLI 并构建数据库（供 MCP codeql toolbox 读取）───────────
-      # 说明：审计人格挂了 seclab_taskflow_agent.toolboxes.codeql，Agent 会用
-      #   `codeql` 工具对源码做 AST/数据流取证来精确定位行号，因此这里先本地建库。
-      # 关键取舍：
-      #   - 建库对象是**本步已检出的可信源码**（workflow_run 场景下即本次 CodeQL
-      #     实际分析的提交 head_sha），与「只认可信提交」的安全模型一致，不引入
-      #     任何不可信输入，且与下游过滤告警所用的 commit 严格同源。
-      #   - 数据库落在 /tmp 下（而非仓库工作区），避免污染检出树、也不会被
-      #     upload-artifact 误打包；后续用环境变量把路径透传给 Agent。
-      #
-      # ⚠️ CLI 定位与建库**拆成两步**：CLI 的安装位置随 runner 而异——托管 runner
-      #   常装在**带版本号的 tool-cache 路径**（如 /opt/hostedtoolcache/codeql/
-      #   3.19.0/x64/codeql），自托管 runner 可能在 /opt/codeql 或仅 PATH，甚至
-      #   没装。旧实现只探测「单个写死路径 + PATH」，命中不了时直接 exit 1，会让
-      #   整个审计在**建库之前**就中止。
-      #   故将探测收敛到 .github/scripts/resolve-codeql-cli.sh：多候选探测 + 兜底
-      #   下载官方固定版本 bundle（**先校验 SHA-256 完整性再解压执行**），解析出的
-      #   真实路径经 GITHUB_ENV 透传给后续步骤。
-      - name: 解析 CodeQL CLI（多候选探测 + 兜底安装）
-        run: |
-          set -euo pipefail
-          # shellcheck source=.github/scripts/resolve-codeql-cli.sh
-          source .github/scripts/resolve-codeql-cli.sh
-          if ! CLI="$(resolve_codeql_cli)"; then
-            echo "ERROR: 无法获得可执行的 CodeQL CLI（已知位置未命中且兜底安装失败）。" >&2
-            exit 1
-          fi
-          # ⚠️ 【写 GITHUB_ENV 前必须归一化为绝对路径】
-          #   resolve_codeql_cli 已在内部归一化（见脚本内 _canonicalize），此处再兜一层，
-          #   保证无论解析脚本怎么改，写入 GITHUB_ENV 的都**永不是相对路径**。
-          #   成因：PATH 里含相对条目时 `command -v codeql` 会返回 `bin/codeql` 这类相对
-          #   路径——它只在当前 cwd 成立；而消费该变量的后续步骤（建库步、以及
-          #   `working-directory: seclab-taskflow-agent` 的审计步 / codeql toolbox）
-          #   cwd 各不相同，相对路径在那边解析不到 → CLI 静默失效、取证退化。
-          if ! CLI_ABS="$(canonicalize_path "$CLI")"; then
-            echo "ERROR: CodeQL CLI 路径无法归一化为绝对路径：$CLI" >&2
-            exit 1
-          fi
-          # 归一化后必须仍可执行，避免把「规范化成不存在的路径」当成功放行
-          if [ ! -x "$CLI_ABS" ]; then
-            echo "ERROR: 归一化后的 CodeQL CLI 不可执行：$CLI_ABS" >&2
-            exit 1
-          fi
-          CLI="$CLI_ABS"
-          echo "CodeQL CLI: $CLI"
-          "$CLI" version
-          # 把实测的**绝对**路径写入 GITHUB_ENV，供建库步骤与后续 Agent（codeql toolbox）复用
-          echo "CODEQL_CLI=${CLI}" >> "$GITHUB_ENV"
-
-      - name: 构建 CodeQL 数据库
-        # ⚠️ 【修订版本一致】本数据库基于**上一步检出的修订版本**构建；下游拉取 CodeQL
-        #   告警时会以同一 ref/commit 过滤（见「运行 AI 审计 taskflow」的 CHECKOUT_* 注入），
-        #   从而保证「用哪版代码建库，就审哪版告警」，不会拿 A 版本数据库调查 B 版本告警。
-        run: |
-          set -euo pipefail
-          # ① 直接消费上一步解析并写入 GITHUB_ENV 的真实 CLI 路径。
-          #    若因异常未注入，则回落到同一解析脚本重新探测（保证幂等自愈）。
-          # shellcheck source=.github/scripts/resolve-codeql-cli.sh
-          source .github/scripts/resolve-codeql-cli.sh
-          if [ ! -x "${CODEQL_CLI:-}" ]; then
-            CODEQL_CLI="$(resolve_codeql_cli)" \
-              || { echo "ERROR: 未找到可执行的 CodeQL CLI，无法建库。" >&2; exit 1; }
-            echo "CODEQL_CLI=${CODEQL_CLI}" >> "$GITHUB_ENV"
-          fi
-          # ⚠️ 建库步同样强制绝对路径：即便 GITHUB_ENV 里的值被人改成相对路径，
-          #   这里也先归一化再用，杜绝「同一台机器上换 cwd 就找不到 CLI」的漂移。
-          CLI="$(canonicalize_path "$CODEQL_CLI")" \
-            || { echo "ERROR: CODEQL_CLI 无法归一化为绝对路径：$CODEQL_CLI" >&2; exit 1; }
-          echo "CodeQL CLI: $CLI"
-          "$CLI" version
-
-          # ② 建库（纯离线本地操作，不联网、不上传，只需读权限即可）。
-          # ⚠️ 【落盘路径单一来源】先把**实际使用的**基目录固化成 DBS_BASE 变量，
-          #   并写入 GITHUB_ENV（审计步 env: 也显式引用同一变量）。这样「建库」与
-          #   「消费建库」两处**必然指向同一目录**：若本步用 CODEQL_DBS_BASE_PATH 建库、
-          #   而下游却把 env: 写死成 /tmp/codeql-dbs，一旦基目录被改成非默认值，
-          #   Agent 就会去错误路径找库（查不到 → 取证退化）。
-          DBS_BASE="${CODEQL_DBS_BASE_PATH:-/tmp/codeql-dbs}"
-          mkdir -p "$DBS_BASE"
-          "$CLI" database create "${DBS_BASE}/${{ github.repository }}" \
-            --language=python \
-            --source-root=. \
-            --overwrite
-          # 自检：数据库确实落盘，避免「静默建库失败」让后续 Agent 拿到空数据库。
-          test -d "${DBS_BASE}/${{ github.repository }}" \
-            || { echo "ERROR: CodeQL 数据库未生成。" >&2; exit 1; }
-          # 自检：库文件确属 CodeQL 数据库（存在 codeql-database.yml 才认；防止把
-          #   空目录/半成品当成功建库放行）。
-          test -f "${DBS_BASE}/${{ github.repository }}/codeql-database.yml" \
-            || { echo "ERROR: ${DBS_BASE}/${{ github.repository }} 不是有效的 CodeQL 数据库。" >&2; exit 1; }
-
-          # ③ 把**实测值**写入 GITHUB_ENV，供下游按同一目录消费（单一事实来源）：
-          #    · CODEQL_CLI —— 解析步已写过一次，这里兜底覆盖，确保后续 Agent
-          #      （codeql toolbox）拿到的 CLI 与本步实际建库所用**完全一致**；
-          #    · CODEQL_DBS_BASE_PATH —— 固化本步实际使用的数据库基目录，杜绝
-          #      「建库用一个路径、下游用另一个路径」的漂移。
-          echo "CODEQL_CLI=${CLI}" >> "$GITHUB_ENV"
-          echo "CODEQL_DBS_BASE_PATH=${DBS_BASE}" >> "$GITHUB_ENV"
 
       # 拉取 seclab-taskflow-agent 框架，固定到已复核发布的不可变 commit SHA
       - name: Checkout seclab-taskflow-agent 框架（固定 commit）
@@ -330,49 +199,11 @@ jobs:
           MCP_CONFIG: ${{ secrets.MCP_CONFIG }}
           # 审计结果落盘位置，供 publish job 消费
           AUDIT_VERDICT_FILE: /tmp/audit-verdicts.json
-          # 【修订版本一致】把上面 checkout 步骤**实际检出**的修订版本透传给 taskflow：
-          #   taskflow 第 0 步据此只保留「最近实例归属于该 ref/commit」的告警，
-          #   从源头丢弃属于其它分支/提交的告警，保证「本地建库/审计的代码」与
-          #   「拉取到的告警」处在**同一修订版本**上（否则会对着 A 版本代码建的库，
-          #   去调查 B 版本的告警，产出删除/错位的失真证据）。
-          #   CHECKOUT_REF 用于 ref 归属比对（如 refs/heads/main）；
-          #   CHECKOUT_COMMIT 用于 commit_sha 精确比对（40 位 SHA，权威无歧义）。
-          # ⚠️【勿用 steps.checkout.outputs.ref 作 CHECKOUT_REF】：workflow_run 场景下
-          #   检出的 ref 已是**提交 SHA**（见上方 checkout 的 ref 表达式），checkout 的
-          #   outputs.ref 会**原样回显该 SHA** 而非 `refs/heads/...`；拿它去做 ref 兜底
-          #   比对本就永远不匹配，等于废掉兜底。故这里显式从**事件语义**取 ref：
-          #     · workflow_run -> head_branch 补成 refs/heads/<branch>（扫描所属分支）；
-          #     · workflow_dispatch -> github.ref（维护者选定的完整 ref）。
-          #   主判据（CHECKOUT_COMMIT 的 commit_sha 精确比对）不受影响、且为权威路径；
-          #   此处仅保证「缺 commit_sha 的告警」也能靠 ref 兜底正确归属。
-          CHECKOUT_REF: ${{ github.event_name == 'workflow_run' && format('refs/heads/{0}', github.event.workflow_run.head_branch) || github.ref }}
-          CHECKOUT_COMMIT: ${{ steps.checkout.outputs.commit }}
-          # ── CodeQL MCP（codeql toolbox）所需环境变量 ──────────────────────
-          # 说明：codeql toolbox 需要一个 **CLI 可执行文件绝对路径**与一个
-          #   **数据库基目录**（它会在其下按仓库名寻找数据库）。
-          # ⚠️ 为什么不在 env: 里写 `$(which codeql)`：env: 是**静态 YAML**，
-          #   `$(...)` 属 shell 命令替换，在 env 里**不会被执行**——会被原样当
-          #   字面量传给 Agent，指向一个根本不存在的路径。
-          #   CODEQL_CLI 由前面「解析 CLI」「建库」两步写入 GITHUB_ENV，会原生注入
-          #   本步骤环境。
-          # ⚠️ CODEQL_DBS_BASE_PATH 必须与**建库步实际使用的**基目录一致，故这里
-          #   引用建库步写入 GITHUB_ENV 的同名变量，而**不是**硬编码 /tmp/codeql-dbs：
-          #   硬编码会在基目录被改为非默认值（如仓库变量/手动触发覆盖）时覆盖掉建库
-          #   实际路径，令 Agent 去错误目录找库（取证退化为「查不到数据库」）。
-          CODEQL_DBS_BASE_PATH: ${{ env.CODEQL_DBS_BASE_PATH }}
           # 仓库路径（owner/repo）：与下方 `-g repo=` **同源**（都取 github.repository），
           # 供 shell 任务的第 0 步拉取告警端点使用，杜绝「拉 A 仓库告警、却按 B 仓库 key
           # 审计」的仓库分裂（shell 的 run: 不做模板渲染，拿不到 globals.repo）。
           AUDIT_REPO: ${{ github.repository }}
         run: |
-          # 兜底：确保 CodeQL CLI / 数据库基目录非空。正常情况下二者由「解析 CLI」
-          #   与「建库」两步经 GITHUB_ENV 注入；这里再兜一层，保证即便 GITHUB_ENV
-          #   传递异常，codeql toolbox 也不会拿到空路径（空路径 = 取证静默退化）。
-          export CODEQL_CLI="${CODEQL_CLI:?缺少 CODEQL_CLI（应由建库步注入）}"
-          export CODEQL_DBS_BASE_PATH="${CODEQL_DBS_BASE_PATH:-/tmp/codeql-dbs}"
-          # 修订版本基准：第 0 步据此过滤告警，缺失即无法对齐版本，必须硬失败。
-          : "${CHECKOUT_REF:?缺少 CHECKOUT_REF，无法对齐告警修订版本}"
-          : "${CHECKOUT_COMMIT:?缺少 CHECKOUT_COMMIT，无法对齐告警修订版本}"
           # 模型从仓库 Secret AI_MODEL_NAME 经 COPILOT_DEFAULT_MODEL 传入框架，
           # 因此调用前必须确保其非空（GitHub Actions 未配置的 Secret 会解析成空串）
           : "${AI_MODEL_NAME:?请配置仓库 Secret AI_MODEL_NAME 以指定 AI 审计所用模型}"
@@ -511,17 +342,8 @@ jobs:
     name: 创建 Issue（持令牌）
     needs: triage
     runs-on: ubuntu-latest
-    # 仅当上游 triage 成功，且**确实产出了待发布结论**时才跑。
-    # ⚠️ 为什么把「有内容」也提到 job 级 if，而不是只在 job 内用 precheck 短路：
-    #   `environment` 的门禁（required reviewers / 部署分支规则）在 **job 启动时**就
-    #   生效，job 内的 precheck 跑得再早也已越过门禁。于是「本次 0 条结论」的空跑
-    #   也会白等一次人工审批，审批人还得点进去才发现无事可做。
-    #   triage 侧已把「有无内容」外化为 job 输出 empty（true/false），这里直接消费：
-    #     · empty == 'false' -> 有密文待发布，正常进受保护环境；
-    #     · empty == 'true'  -> 空结论，**整个 job 跳过**，既不占审批、也不碰私钥。
-    #   判空仍只看「条数」，不解析密文、不放宽任何完整性要求；job 内的 precheck
-    #   短路**保留**作为纵深防御（防止 empty 输出异常为真而误放行）。
-    if: needs.triage.result == 'success' && needs.triage.outputs.empty == 'false'
+    # 仅当上游确实产出了结论时才跑
+    if: needs.triage.result == 'success'
     # 🔒 受保护环境（人工审批门禁）：这是「持 GH_PAT 发真实 Issue/公告」的唯一出口，
     #    绑定 environment 后，未获批的运行会在此 job **暂停等待审批**，
     #    把高权限动作收窄到经授权的主体（尤其对手动触发场景）。

@@ -1,8 +1,7 @@
 # =============================================================================
 # AI 审计 Taskflow 测试示例 — Python 仓库（已按官方 GRAMMAR 语法适配）
 # =============================================================================
-# 用途：对 CodeQL 静态扫描在本仓库（main.py / core/ / commands/ / gitee/ /
-#       llm_tools/ / qianwen/ / tests/**）产生的安全告警做 AI 分流。
+# 用途：对 CodeQL 静态扫描在本仓库（main.py / core/ / commands/ / gitee/ / llm_tools/ / qianwen/ / tests/**）产生的安全告警做 AI 分流。
 # 框架：GitHubSecurityLab/seclab-taskflow-agent
 # 说明：
 #   - 本文件是一个“测试用示例”，用于验证 AI 审计链路能跑通
@@ -50,34 +49,17 @@ seclab-taskflow-agent:
 # 仓库名（owner/repo）：用于**智能体任务**（user_prompt 会做 Jinja 渲染）里的
 # memcache key 前缀，标识审计对象；也可通过 -g repo=... 覆盖。
 # ⚠️ 它**不会**注入 shell 任务的 run:（框架不渲染 run:），故第 0 步拉取告警的
-#    仓库路径从环境变量 AUDIT_REPO 取值（workflow 注入 ${{ github.repository }}，
-#    与 -g repo 同源）；未注入时回落到下方 globals.repo 的默认值。
+#    仓库路径改为在该步 run 里**写死**；两处值必须保持一致（见该步注释）。
 globals:
   repo: xiaomizhoubaobei/astrbot_plugin_models_ai
 
 taskflow:
   # ---------------------------------------------------------------------------
-  # 0) 准备：从 GitHub Code Scanning API 拉取「与**检出/建库修订版本**一致的 open CodeQL 告警」。
+  # 0) 准备：从 GitHub Code Scanning API 拉取「全部 open 的 CodeQL 告警」。
   #    生成待审计告警的 JSON 可迭代列表，供后续 repeat_prompt 批量循环。
   #    通过 id + outputs（JSON Schema）暴露为命名输出 outputs.alerts。
   #    （分页：Code Scanning API 单页上限 100，此处逐页拉取直到取完，
   #     避免仓库告警超过 100 条时其余告警被漏审。）
-  #
-  #    ⚖️ 【修订版本一致性】（本步的核心约束，勿削弱）
-  #    成因：Code Scanning API 的 state=open 返回的是**跨 ref、跨 commit** 的全部
-  #          告警——同一条规则在 main / PR 分支 / 历史提交上各有一份实例。工作流前序
-  #          步骤已**本地构建 CodeQL 数据库**（基于检出的修订版本）；若告警不按同一
-  #          修订版本过滤就全量送审，就会出现「用 X 版本代码建的库/检出的源码，去调查
-  #          属于 Y 版本的告警」，下游对不上号，产出删除/错位的失真证据。
-  #    对策：以 workflow 透传的 CHECKOUT_REF / CHECKOUT_COMMIT（checkout 步骤**实际**
-  #          检出的修订版本，也正是本地建库所用源码）为基准过滤：
-  #            · 【主判据】告警最近实例的 commit_sha 必须**等于**检出的提交 SHA（权威、
-  #              无歧义）——即「用哪个提交建库/分析，就审哪个提交的告警」；
-  #            · 【兜底】当告警缺 commit_sha 时，退化为按 ref 比对（对 ref 做归一化，
-  #              剥离 refs/heads|refs/tags 前缀后再比），避免因格式差异误丢。
-  #          两个基准值任一取不到即**明确失败**，绝不退化成「拉全量跨版本告警」。
-  #    元数据保留：把 ref / commit_sha 一并映射进 outputs.alerts，使下游取证与发文
-  #          都带着确定的版本锚点，不再「丢弃引用/提交元数据」。
   # ---------------------------------------------------------------------------
   - task:
       must_complete: true
@@ -85,20 +67,9 @@ taskflow:
       run: |
         # 失败即停：curl 拉取/JSON 解析一旦出错，宁可让本任务明确失败（must_complete 会
         # 阻断后续），也不要「静默继续」——静默继续会让累积 JSON 残缺、告警被漏审。
-        # 注意保护「拉取失败」的不是 `set -e`：下面的 `if ! _BODY="$(curl ...)"; then`
-        #    分支是**显式**处理失败的，`!` 让 curl 非零退出变成「条件为真」，随后立刻
-        #    `exit 1` 中止本步。即便没有 `set -e`，这条路也照样会失败退出。
-        #    `set -euo pipefail` 在此的作用是兜住**其余**未显式检查的命令（如 jq、
-        #    mv、重定向），让它们出错时也直接停，而不是带着坏数据往下走。
         set -euo pipefail
         # 需要 GITHUB_TOKEN（PAT，含 security_events 读权限）来读取 CodeQL 告警
         : "${GITHUB_TOKEN:?请设置 GITHUB_TOKEN 环境变量以读取 CodeQL 告警}"
-        # 【修订版本基准】来自 workflow 的 checkout 步骤实际检出结果（亦即本地建库所用
-        #   源码版本），由 ai-audit-scheduled.yml 经 env 透传。缺任一即无法确定审计基准，
-        #   直接失败：宁可让任务明确报错，也不静默退化成「跨版本全量送审」。
-        : "${CHECKOUT_REF:?请设置 CHECKOUT_REF（检出修订版本的 ref，如 refs/heads/main）以对齐告警版本}"
-        : "${CHECKOUT_COMMIT:?请设置 CHECKOUT_COMMIT（检出修订版本的 40 位提交 SHA）以对齐告警版本}"
-        echo "INFO: 以检出修订版本为基准过滤 CodeQL 告警：ref=${CHECKOUT_REF} commit=${CHECKOUT_COMMIT}" >&2
         # 仓库路径（owner/repo）：**不引用** {{ globals.repo }}——框架只对 user_prompt 做
         #   Jinja 渲染，**shell 任务的 run: 原样交给 bash 执行**（见框架 runner.py：shell 分支
         #   直接 shell_tool_call(run)，不经 render_template）。故 run: 里的 {{ globals.repo }}
@@ -111,14 +82,8 @@ taskflow:
         #     · 优先读环境变量 AUDIT_REPO（workflow 注入 ${{ github.repository }}，与 -g repo 同源）；
         #     · 未注入时回落到 globals.repo 的默认值，保证手动运行也能工作。
         #   从而「拉取端点」与「memcache key」始终指向同一个仓库。
-        # ⚠️ 【不设硬编码兜底】此处**必须**要求 AUDIT_REPO 显式注入，不得回落成某个
-        #   写死的仓库名。原因正是上面那条注释要防的事：静态兜底值会与 workflow 传入的
-        #   `-g repo=<实际仓库>` 脱钩——AUDIT_REPO 一旦漏配（或将来本仓库改名/派生），
-        #   就会出现「用兜底仓库拉告警、却按 -g repo 的 key 审计并建 Issue」的仓库分裂，
-        #   而且错得很安静（拉得到告警，只是拉的是别人家的）。
-        #   下面用 `:?` 直接报错退出。注意：`${VAR:-default}` 与 `${VAR:?}` 不能叠用，
-        #   前者已把空值替换成默认值，后者就再也触发不了——所以这里只保留 `:?`。
-        _REPO="${AUDIT_REPO:?请设置 AUDIT_REPO（owner/repo）——它必须与 -g repo 同源，不得回落到硬编码值}"
+        _REPO="${AUDIT_REPO:-xiaomizhoubaobei/astrbot_plugin_models_ai}"
+        : "${_REPO:?仓库路径未设置（owner/repo）}"
         # 有界网络参数：宁可单页请求失败后重试，也不让 curl 无限期挂起。
         #   --connect-timeout 10  建连超时
         #   --max-time 60         单页总超时（含传输），防止连接建立后长时间无响应
@@ -179,50 +144,19 @@ taskflow:
           echo "ERROR: 累积告警 JSON 非法（repo=${_REPO}），停止。" >&2
           exit 1
         fi
-        # 先按「检出/建库修订版本」过滤，再映射成下游结构（判据见本步头注释）：
-        #   · 主判据：告警最近实例 commit_sha == 检出 commit（精确到提交）；
-        #   · 兜底：告警缺 commit_sha 时，按其 ref 归一化后与检出 ref 比对；
-        #   · 均不匹配 => 属于其它分支/提交 => **丢弃**（与检出/建库代码不同版本，送审只会失真）。
-        # 归一化：剥离 refs/heads/ 与 refs/tags/ 前缀，使 checkout 的 `main` 与 API 的
-        #   `refs/heads/main` 能对齐；仍不等则视为不同 ref。
-        # 过滤程序用**单引号**包裹（jq 程序内不再需要转义双引号）。
-        # 先做一次「干跑」：过滤程序本身若执行失败（如字段类型异常）立即报错退出，
-        # 避免带着坏数据继续写 outputs、把「过滤失败」伪装成「无告警」。
-        if ! jq -e --arg ref "$CHECKOUT_REF" --arg sha "$CHECKOUT_COMMIT" '
-              def norm($r): ($r // "") | sub("^refs/(heads|tags)/"; "");
-              map(. + {_mri_ref:(.most_recent_instance.ref // ""),
-                       _mri_sha:(.most_recent_instance.commit_sha // "")}
-                  | select(
-                      (if ._mri_sha != "" then (._mri_sha == $sha)
-                       else (norm(._mri_ref) == norm($ref)) end)))
-              | length >= 0
-            ' "$_ACC_FILE" > /dev/null; then
-          echo "ERROR: 按检出修订版本过滤告警失败（ref=${CHECKOUT_REF} commit=${CHECKOUT_COMMIT}）。" >&2
-          exit 1
-        fi
-        jq -c --arg ref "$CHECKOUT_REF" --arg sha "$CHECKOUT_COMMIT" '
-              def norm($r): ($r // "") | sub("^refs/(heads|tags)/"; "");
-              map(. + {_mri_ref:(.most_recent_instance.ref // ""),
-                       _mri_sha:(.most_recent_instance.commit_sha // "")}
-                  | select(
-                      (if ._mri_sha != "" then (._mri_sha == $sha)
-                       else (norm(._mri_ref) == norm($ref)) end)))
-              | map({
+        jq -c '
+              map({
                 alert_number: .number,
                 rule: (.rule.id // .rule.description // "unknown"),
                 path: (.most_recent_instance.location.path // "unknown"),
-                message: (.most_recent_instance.message.text // ""),
-                ref: (._mri_ref // ""),
-                commit_sha: (._mri_sha // "")
+                message: (.most_recent_instance.message.text // "")
               })
             ' "$_ACC_FILE" > /tmp/alerts.json
         cat /tmp/alerts.json
         # 无告警时给 stderr 写一条明确提示，避免下游 repeat_prompt 反复输出空迭代告警
         # （提示写入 stderr，不污染 stdout 的纯 JSON，保证命名输出可被正确解析）
         if [ "$(jq 'length' /tmp/alerts.json)" -eq 0 ]; then
-          echo "INFO: 仓库 ${_REPO} 在修订版本（ref=${CHECKOUT_REF} commit=${CHECKOUT_COMMIT}）下无 open 的 CodeQL 告警，无需 AI 分流。" >&2
-        else
-          echo "INFO: 检出修订版本（ref=${CHECKOUT_REF} commit=${CHECKOUT_COMMIT}）下匹配到 $(jq 'length' /tmp/alerts.json) 条 open CodeQL 告警，进入审计。" >&2
+          echo "INFO: 仓库 ${_REPO} 当前没有 open 的 CodeQL 告警，无需 AI 分流，任务提前正常结束。" >&2
         fi
       outputs:
         type: array
@@ -237,29 +171,13 @@ taskflow:
               type: string
             message:
               type: string
-            ref:
-              type: string
-            commit_sha:
-              type: string
-          required: [alert_number, rule, path, message, ref, commit_sha]
+          required: [alert_number, rule, path, message]
 
   # ---------------------------------------------------------------------------
   # 1) 信息收集：调 GitHub API / MCP Server 拿告警上下文（触发点、调用链、权限），
   #    并把「每一条告警的取证结果」落到以告警为 key 的 memcache，供第 2~4 步消费。
   #    （框架 repeat_prompt 每步默认只把原始告警喂给 {{ result }}，跨步骤结果需要
   #      显式经 memcache 按 alert_number 贯通，否则第 2~4 步将看不到上一步结论。）
-  #
-  #    前提：工作流已在调用本 taskflow 前**本地构建 CodeQL 数据库**并注入
-  #      CODEQL_CLI（CLI 绝对路径）与 CODEQL_DBS_BASE_PATH（数据库基目录），
-  #      供本步的 codeql toolbox 读取——缺少这两个变量时，精确行号/数据流取证会退化。
-  #    ⚖️ 工具可用性边界（本步的硬约束，勿把可选工具写成必经步骤）：
-  #      人格仅**确定挂载** memcache + codeql 两个 toolbox；`get_file_contents` 属
-  #      **GitHub API 类可选工具**——只有配置了 MCP_CONFIG（可选 Secret）且其中提供
-  #      该工具时才存在，**不保证可用**。故 prompt 必须：
-  #        · 以 codeql toolbox（已本地建库）为主路径取证；
-  #        · 把 get_file_contents 降级为「若可用则用」，并写明不可用时的降级路径；
-  #        · 明确禁止「因某可选工具缺失而中止取证/跳过本步」——否则一旦未配 MCP，
-  #          取证会失败或退化成残缺证据，令下游校验无从核对行号。
   # ---------------------------------------------------------------------------
   - task:
       must_complete: true
@@ -269,61 +187,18 @@ taskflow:
       agents:
         - ai_audit.personalities.python_auditer
       user_prompt: |
-        你是一名严谨的 Python 安全审计专家。针对 CodeQL 告警 {{ result.alert_number }}
-        （规则：{{ result.rule }}，文件：{{ result.path }}，描述：{{ result.message }}，
-        归属修订版本：ref={{ result.ref }}，commit={{ result.commit_sha }}），
-        ⚠️ 该告警的修订版本已与本次检出/本地建库所用的代码对齐（见上 ref/commit）——
-        请以该修订版本对应的源码为准取证，不要引用其它分支或提交上的差异代码。
-        ⚠️ 工具可用性纪律（务必遵守，避免取证因“某个工具不存在”而失败）：
-        - 本任务**只保证**具备 `CodeQL toolbox` 与 `memcache` 两组工具（人格已挂载、
-          工作流已本地建库并注入 CODEQL_CLI / CODEQL_DBS_BASE_PATH）；
-        - `get_file_contents` 等 **GitHub API 类工具属可选能力**——仅当 MCP_CONFIG
-          被配置且提供了该工具时才存在，**不保证可用**；
-        - 因此**禁止**把任何可选工具当作必经步骤：若某工具不可用（报“未找到工具/未知
-          工具”），**立即改用已确定可用的工具**——优先用 CodeQL toolbox 定位源码与数据流，
-          或直接读取工作区内的源文件；**绝不允许**因工具缺失而中止取证或跳过本步。
-
-        按以下三步取证（优先使用已挂载的 CodeQL toolbox / memcache；GitHub API 类工具
-        如 `get_file_contents` **若可用**则可用于读取源文件，不可用则按上面纪律降级）：
-
-        1. 【源码与上下文定位】
-           - 读取 {{ result.path }} 及其调用链相关代码（优先用 CodeQL toolbox 查询/定位，
-             `get_file_contents` 若可用亦可；二者都不可用时直接读取工作区内的对应源文件）；
-           - 准确定位 source（外部输入点）与 sink（危险调用汇点）的**精确行号**；
-           ⚠️ source 与 sink **可能不在同一个文件**（CodeQL 数据流是跨文件/跨函数的）：
-             两者必须**各自独立**确定「文件路径 + 行号」，不得默认沿用告警位置
-             {{ result.path }}。只有当某端点确实落在 {{ result.path }} 时，其路径才写作
-             {{ result.path }}；否则写实际命中的文件路径（相对仓库根）。
-             若跨文件而无法确定某一端点的精确位置，就把对应的路径/行号字段写 null，
-             并在 notes 说明阻塞原因——**不得**用另一端的路径或告警位置顶替充数。
-           - 检查 sink 前是否存在充分的过滤/校验/参数化防护（如 URL 白名单、参数清洗、
-             使用参数化查询而非字符串拼接、路径规范化后再拼接）。
-
-        2. 【输入可控性与上下文】
-           - 告警路径上是否有用户输入（不可信数据）流入（如聊天消息、指令参数、URL 参数、
-             请求体、环境变量）；
-           - 该代码路径是否在特权/高权限上下文（如服务端处理、凭证处理、文件系统操作、
-             子进程调用）中执行；
-           - 该告警触发的输入是否真的可被外部攻击者控制。
-
-        3. 【落库】调用 memcache_set_state 把取证结果存为一条 JSON，key 为
-           "{{ globals.repo }}_{{ result.alert_number }}_evidence"，value 形如：
-           {
-             "source": {"path": "<source 所在文件（相对仓库根）；无法确定则 null>",
-                        "line": <source 精确行号；无法确定则 null>},
-             "sink": {"path": "<sink 所在文件（相对仓库根）；无法确定则 null>",
-                      "line": <sink 精确行号；无法确定则 null>},
-             "user_input_controlled": true|false,
-             "privileged_context": true|false,
-             "is_test_code": true|false,
-             "ref": "{{ result.ref }}",
-             "commit_sha": "{{ result.commit_sha }}",
-             "notes": "<漏洞原理、触发条件与可利用性简述；若无法利用，写明具体阻断理由>"
-           }
-           ⚠️ is_test_code 的判定基准：告警文件落在测试代码范围（`tests/**`、`test_*.py`、
-           `*_test.py`、`conftest.py` 等）即判 true。测试夹具中的 Mock / 样例 URL /
-           假凭据不是生产运行时风险，下游据此**一票否决**为误报。
-           ⚠️ 严禁无依据捏造行号与利用链：无法取证的字段写 null，并在 notes 说明原因。
+        你是一名 Python 安全审计员。针对以下 CodeQL 安全告警 {{ result.alert_number }}
+        （规则：{{ result.rule }}，文件：{{ result.path }}，描述：{{ result.message }}），
+        调用可用的 MCP Server（如 GitHub API / CodeQL toolbox）收集信息：
+        - 告警的 source（来源点）与 sink（汇点）在该 Python 文件中的精确行号；
+        - 告警路径上是否有用户输入（不可信数据）流入（如聊天消息、指令参数、URL 参数、请求体、环境变量）；
+        - 该代码路径是否在特权/高权限上下文（如服务端处理、凭证处理、文件系统操作、子进程调用）中执行；
+        - 该告警触发的输入是否真的可被外部攻击者控制。
+        调用 memcache_set_state 把取证结果存为一条 JSON，key 为
+        "{{ globals.repo }}_{{ result.alert_number }}_evidence"，value 形如：
+        {"source":"文件:行号","sink":"文件:行号","user_input_controlled":true|false,
+         "privileged_context":true|false,"notes":"..."}
+        不得编造，无法取证的字段写 null 并在 notes 说明。
 
   # ---------------------------------------------------------------------------
   # 2) 审计：剔除误报（攻击者能否触发？是否特权上下文？）
@@ -405,16 +280,8 @@ taskflow:
            ⚠️ 上述两条「驳回」分支也**必须**写全 alert_number/rule/path（report 置空串）：
            第 5 步是纯 shell，只认结构化的 `_verdict`，字段缺失会让驳回记录形状不一致
            （下游若据此落档/排查会读不到编号与位置）。
-        3.1 若 _evidence 中 is_test_code 为 true，一律驳回（即便上游误判为 TP）：
-           value 形如 {"alert_number": {{ result.alert_number }},
-            "rule": {{ result.rule | tojson }}, "path": {{ result.path | tojson }},
-            "status":"REJECTED","reason":"test_code_not_production_risk","report":""} 并结束。
-           测试代码中的告警不是生产运行时风险，**不得**放行至建 Issue / 发布流程。
         4. 否则基于 _evidence 逐项校验报告：
-           - 报告中的文件/行号是否与 _evidence 的 source/sink 一致？注意 source 与 sink
-             是**各自独立**的 {path, line}，可能位于不同文件：报告里任一端的文件路径
-             与行号都必须与该端 _evidence 的取值对应，**不得**出现「两端写成同一文件或
-             同一行、而 _evidence 显示跨文件」的不一致（即幻觉，一律驳回）。
+           - 报告中的文件/行号是否与 _evidence 的 source/sink 一致？
            - 是否缺少关键字段（漏洞类型/位置/攻击路径/修复建议）？
            - 是否含未渲染的模板变量占位（以左双大括号开头的 Jinja 残留）？
            只要任一不满足即判定幻觉/不完整。
@@ -422,18 +289,12 @@ taskflow:
            key "{{ globals.repo }}_{{ result.alert_number }}_verdict"，
            value 必须**自包含**（含下游落盘所需的全部字段，勿只写 status/reason）：
            {"alert_number": {{ result.alert_number }}, "rule": {{ result.rule | tojson }},
-            "path": {{ result.path | tojson }},
-            "source": {"path": <_evidence.source.path>, "line": <_evidence.source.line>},
-            "sink": {"path": <_evidence.sink.path>, "line": <_evidence.sink.line>},
-            "status": "APPROVED"|"REJECTED",
+            "path": {{ result.path | tojson }}, "status": "APPROVED"|"REJECTED",
             "reason": "<简短原因>",
             "report": "<该告警的报告全文；被驳回或报告为空时填空字符串 \"\">"}
            其中 report 若为 APPROVED 必须是第 3 步报告的**原文全文**（Markdown）。
            ⚠️ 必须把 rule/path 也写进来：第 5 步是纯 shell、拿不到上游的 `{{ result.* }}`
            （shell 任务不做模板渲染），只能依赖本键里的自包含字段。
-           ⚠️ source/sink 也要写进来（**原样取自 _evidence**，勿用告警位置填充）：下游
-           报告与私密公告需要**分别**标注两端文件+行号，缺了它们就只能退回到告警位置，
-           跨文件数据流的端点坐标会失真。
         本步只写 _verdict，不创建任何 Issue。
 
   # ---------------------------------------------------------------------------
@@ -529,10 +390,6 @@ taskflow:
             | { alert_number: (.alert_number // null),
                 rule: (.rule // ""),
                 path: (.path // ""),
-                # source/sink 为**各自独立**的 {path, line}；缺失时落为 null，
-                # 下游据此**分别**标注端点坐标，绝不用告警位置 path 顶替。
-                source: ({ path: (.source.path // null), line: (.source.line // null) }),
-                sink: ({ path: (.sink.path // null), line: (.sink.line // null) }),
                 status: .status,
                 report: .report }
           ]')"
