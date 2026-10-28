@@ -50,7 +50,7 @@ jobs:
 
     steps:
       - name: 加固运行器（审计所有出站调用）
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
       - name: "检出代码"
@@ -70,7 +70,7 @@ jobs:
       # 将结果上传为构件（可选）。注释掉将禁用将 SARIF 格式的运行结果
       # 上传到仓库的 Actions 选项卡。
       - name: "上传构件"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: SARIF 文件
           path: results.sarif
@@ -79,6 +79,6 @@ jobs:
       # 将结果上传到 GitHub 的代码扫描仪表板（可选）。
       # 注释掉将禁用将结果上传到您仓库的代码扫描仪表板
       - name: "上传到代码扫描"
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: results.sarif

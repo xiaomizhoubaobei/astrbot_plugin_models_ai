@@ -1082,15 +1082,24 @@ pre-commit run --all-files
 
 | Workflow | 作用 |
 | --- | --- |
-| `CodeQL.yml` | 代码安全分析 |
-| `security-scan.yml` / `DevSkim.yml` / `secret-scanning.yml` | 安全与密钥扫描 |
-| `PythonDependencyAudit.yml` / `dependency-review.yml` | 依赖审计与依赖变更审查 |
-| `tfsec.yml` | IaC 安全扫描 |
+| `CodeQL.yml` | 代码安全分析（单一运行器 + 单一 Python 版本 `3.12`，不做无增益的 os × 版本矩阵） |
+| `security-scan.yml` / `DevSkim.yml` / `secret-scanning.yml` | 安全与密钥扫描（Bandit 仅中高危计入失败；密钥扫描统一走 trufflehog） |
+| `PythonDependencyAudit.yml` / `dependency-review.yml` | 依赖审计（矩阵 `3.12/3.13/3.14`）与依赖变更审查 |
+| `tfsec.yml` | IaC 安全扫描（Trivy `config` 扫描，即 tfsec 规则集的继任引擎） |
 | `Scorecard.yml` | 供应链安全评分 |
-| `inclusiveness-analyzer.yml` | 包容性分析 |
-| `stale.yml` | 陈旧 Issue / PR 自动化 |
-| `release.yml` | 发布流程 |
-| `coverage.yml` | 单元测试覆盖率统计并上报 Codecov（`main` push / PR） |
+| `inclusiveness-analyzer.yml` | 包容性分析（仅 warns，不阻断） |
+| `stale.yml` | 陈旧 Issue / PR 自动化（stale 30 天 / close 7 天） |
+| `release.yml` | 发布流程（tag 幂等跳过、发布包边界校验、证据包 + cosign 签名） |
+| `coverage.yml` | 覆盖率（`coverage` job 单版本统计上报 Codecov + `tests` 矩阵 `3.12/3.13/3.14` + `tests-gate` 汇总门禁） |
+| `ai-audit-scheduled.yml` | CodeQL 完成后的 AI 审计分流（`triage` / `publish` 两段式，artifact 加密交接） |
+
+> **权限口径（统一约定）**：所有工作流**顶层不给 `id-token: write`**，写能力（`contents: write` /
+> `security-events: write` / `id-token: write`）一律下沉到真正需要它的 job，避免某个 action 被
+> 替换后凭空获得云身份令牌或发布能力。唯一保留 `id-token: write` 的是 `release.yml` 的 `build`
+> job（Sigstore keyless 签名所需）。另有一处 job 级例外，因上游硬性要求不可收紧：
+> `Scorecard.yml` 的 `analysis` job（OSSF 发布 API 要求 `id-token: write` **只出现在该 job 上**，
+> 提到工作流级反而会被拒）。
+> `ai-audit-scheduled.yml` 的 `publish` job 只持只读 `contents: read`，建 Issue 走 `GH_PAT` 而非工作流令牌。
 
 `.cnb.yml`：CNB 流水线在 `main` 分支 push 时同步代码到 GitHub 上游仓库。
 

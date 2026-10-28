@@ -11,7 +11,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
   actions: read
 
 jobs:
@@ -21,16 +20,17 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
-      id-token: write
       actions: read
       contents: read
 
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
-      - uses: actions/stale@b5d41d4e1d5dceea10e7104786b73624c18a190f # v10.2.0
+      # v11.0.0：底层迁移到 ESM 并升级依赖（含 brace-expansion 安全修复），
+      # 输入参数与运行时（node24）均未变，故下方 inputs 无需调整。
+      - uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           stale-issue-message: |
@@ -51,5 +51,9 @@ jobs:
             如果此拉取请求已不再需要，请手动关闭它。
 
             感谢您的贡献！
+          # 显式声明阈值：actions/stale 默认 days-before-stale 为 60，
+          # 与消息文案的「30天」不一致，此处按文案统一为 30 天。
+          days-before-stale: 30
+          days-before-close: 7
           stale-issue-label: '🔴 长时间无活动-议题'
           stale-pr-label: '🔴 长时间无活动-拉取请求'

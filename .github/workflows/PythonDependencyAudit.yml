@@ -11,10 +11,11 @@ on:
   # 支持手动触发，便于排障与补跑
   workflow_dispatch:
 
+# 最小权限：pip-audit 只读取仓库与依赖清单，不上传 SARIF、也不调用云身份，
+# 故**不授予** security-events: write / id-token: write，避免第三方 Action
+# 取得不必要的写能力与 OIDC 令牌。
 permissions:
   contents: read
-  security-events: write
-  id-token: write
   actions: read
 
 jobs:
@@ -22,37 +23,30 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        # 与插件声明的 Python 支持范围（3.12+）保持一致：
-        # aiohttp>=3.14.3 / anyio>=4.14.2 等修复版本要求 Python>=3.10，
-        # 而 deprecated>=3.0.0 要求 Python>=3.12，故审计下限为 3.12；
-        # 上限跟随 main 的多矩阵策略（3.12/3.13/3.14），与 CodeQL、DevSkim 对齐。
+        # 逐版本审计，确保每个版本上的依赖解析与漏洞结论都被覆盖。
+        # 矩阵与单测矩阵（coverage.yml）保持一致：3.12/3.13/3.14。
+        # 下限 3.12 与本插件声明的 Python 支持范围（3.12+）对齐：
+        # aiohttp>=3.14.3 / deprecated>=3.0.0 等已修复版本要求 Python>=3.12。
         python-version: ['3.12', '3.13', '3.14']
     runs-on: ${{ matrix.os }}
     name: 审计在 ${{ matrix.os }} 上使用 Python ${{ matrix.python-version }}
-    permissions:
-      contents: read
-      security-events: write
-      id-token: write
-      actions: read
 
     steps:
       - name: 加固运行器（审计所有出站调用）
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
       - name: 检出仓库
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: 设置 Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: 安装依赖项
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
+      # 不在此处 pip install -r requirements.txt：pip-audit 已直接对清单做
+      # 依赖解析与漏洞比对，额外安装只会执行 PR 可修改的依赖脚本，
+      # 无谓扩大不可信代码执行面且属重复工作。
       - name: 运行 pip-audit
         uses: pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266 # v1.1.0
         with:

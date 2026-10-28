@@ -19,37 +19,51 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write
   actions: read
 
 jobs:
   coverage:
-    name: 单元测试与覆盖率
+    name: 单元测试与覆盖率 (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    # 测试矩阵：只在「当前受支持的 3.12 / 3.13 / 3.14」上跑单测，
+    # 逐个版本覆盖是为了尽早暴露版本相关的行为差异（如 asyncio 事件循环、
+    # 标准库弃用告警），而不是只在一个版本上「绿了就算过」。
+    # fail-fast: false —— 某一版本失败不该掩盖其它版本的结论。
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    # 令牌经 job 级 env 暴露给步骤的条件表达式（secrets 不能直接写在 if 中），
+    # 从而在 token 为空时安全跳过上报步骤。
+    env:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
       # 安全加固：与仓库内其余全部工作流一致，内联 step-security/harden-runner。
       # 本工作流会在 PR（不可信来源）场景运行仓库自带测试代码，属高风险面，
       # 故必须补齐该审计 Action；egress-policy: audit 仅审计出网调用，
       # 保持"记录不阻断"的既有策略，与其它工作流口径统一。
       - name: 加固运行器 (审计全部出网调用)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
       - name: 检出代码
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # 本 job 会执行 PR 可控的测试代码，凭据不得留在本地 git 配置里被读取外泄
+          persist-credentials: false
 
       - name: 安装 Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest coverage
+          pip install pytest pytest-asyncio coverage
 
       # 仓库目录名不等于插件包名（astrbot_plugin_models_ai），测试统一按
       # 「顶层包名」导入（见 tests/_coverage_support.py）。此处铺一层同名符号
@@ -61,6 +75,8 @@ jobs:
         env:
           # 覆盖率数据文件落到临时目录，避免污染工作区
           COVERAGE_FILE: ${{ runner.temp }}/.coverage
+          # 包视图目录先进入 sys.path，让顶层包名可解析
+          PYTHONPATH: ${{ runner.temp }}
         run: |
           # --source 用「包名」计数，coverage 会以包所在目录为基准写出相对路径
           # （如 astrbot_plugin_models_ai/commands/generate.py），从而正确定位
@@ -70,34 +86,108 @@ jobs:
           python -m coverage report -m
           python -m coverage xml -o coverage.xml
 
+          # 兜底自检：没收集到任何覆盖率数据就明确失败，而不是上传一份空报告。
+          python -c "
+          import xml.etree.ElementTree as ET
+          root = ET.parse('coverage.xml').getroot()
+          files = [c.get('filename') for c in root.iter('class')]
+          assert files, 'coverage.xml 里没有任何文件，包名很可能没被解析到'
+          print('覆盖率文件:', files)
+          "
+
       # 上报 Codecov：仅在拿到 token（仓库 Secret 或同名 CNB 密钥）时执行。
       # 未配置 token 时跳过上报，仅留存 coverage.xml 工件，不使 CI 失败。
       - name: 上报覆盖率到 Codecov
         id: codecov
-        if: always()
+        # 仅当拿到 token 才上报；token 为空时跳过，避免空 token 触发失败
+        if: ${{ always() && env.CODECOV_TOKEN != '' }}
         continue-on-error: true
+        # 钉定 v7.1.1（提交 303a32d…）：不随 tag 浮动，避免上游改 tag 时静默换代码。
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
-        env:
-          # 官方推荐写法：令牌走环境变量而非 with.token（v5 起弃用，本仓库
-          # 已升到 v7.1.1，仍是唯一推荐路径）；env 注入同时满足
-          # 「上传必须携带令牌」的要求：本仓库虽为公开仓库，但上传发生在
-          # 受保护分支 main 上且未关闭公开仓库令牌校验，按 Codecov 规则
-          # （见 AGENTS.md 10.8.1）依然必须带令牌，故一律显式注入。
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
           files: ./coverage.xml
+          # 覆盖率只跑单一版本（矩阵起始的 3.12）：多版本重复上报同一份
+          # 源码的覆盖率没有增量信息，只会让 Codecov 侧互相覆盖。
+          # 其余版本由下面的 tests 矩阵负责「跑通」这一结论。
           flags: unittests
           name: python-3.12
           fail_ci_if_error: false
           verbose: true
+          # CLI 默认下载到检出根目录并长期留存；改用临时目录并在结束后清理，
+          # 避免工作区里多出一个 codecov 二进制（也只是卫生问题，非必要）。
+          cleanup: true
+          # 钉定 CLI 版本，避免 default 的 latest 静默漂移导致上传协议行为变化。
+          version: v11.3.1
 
-      # 上传覆盖率报告工件：upload-artifact 锁到 v7.0.1 的提交 SHA，
-      # 与 security-scan.yml / Scorecard.yml 保持一致（v7 起运行时为 node24，
-      # 新增可选的 archive 直传能力；本步骤仍走默认 zip 归档，参数量级极小）。
+      # 上传覆盖率报告工件，便于人工下载核对。
       - name: 上传覆盖率报告工件
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: coverage-xml
+          name: coverage-xml-${{ matrix.python-version }}
           path: coverage.xml
           if-no-files-found: warn
+
+  # 纯单测矩阵：3.12 / 3.13 / 3.14 逐版本跑一遍 pytest。
+  # 为什么与 coverage job 分开：覆盖率只需算一次（同一份源码），
+  # 而「代码在这些版本上都能跑通」必须逐版本验证；两者混在一个 job 里
+  # 会让覆盖率被重复计算、被重复上报，纯属浪费。
+  tests:
+    name: 单测 (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    # 某一版本失败不应掩盖其它版本的结果，全部跑完再下结论
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - name: 加固运行器 (审计全部出网调用)
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        with:
+          egress-policy: audit
+
+      - name: 检出代码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 安装 Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
+
+      - name: 构造可导入的包视图
+        run: ln -sfn "$GITHUB_WORKSPACE" "$RUNNER_TEMP/astrbot_plugin_models_ai"
+
+      - name: 运行单元测试
+        env:
+          PYTHONPATH: ${{ runner.temp }}
+        run: |
+          # 不走 coverage 启动器：这里只关心「能不能跑通」，
+          # 覆盖率统计与上报由上面的 coverage job 负责。
+          python -m pytest tests -q
+
+  # 汇总门禁：分支保护只认这一个检查项，避免每加一个版本都要改一次保护规则。
+  # 任一矩阵任务失败 / 被取消，这里都会失败，故不会被单个版本的红灯漏过。
+  tests-gate:
+    name: 单测矩阵汇总
+    runs-on: ubuntu-latest
+    needs: tests
+    if: always()
+    steps:
+      - name: 校验矩阵结果
+        run: |
+          # needs.tests.result 在「至少一个失败」「被取消」时都不是 success，
+          # 故这里用严格相等判定，任何非 success 都判失败。
+          if [ "${{ needs.tests.result }}" != "success" ]; then
+            echo "❌ 单测矩阵未全部通过：${{ needs.tests.result }}"
+            exit 1
+          fi
+          echo "✅ 3.12 / 3.13 / 3.14 全部通过"

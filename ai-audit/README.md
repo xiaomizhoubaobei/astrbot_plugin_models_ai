@@ -39,17 +39,28 @@ LLM + Taskflow Agent 逐个审计
 > 第 ⑤ 步只会在读到 `_verdict.status == APPROVED` 且 `_report` 存在时才落地结论，
 > 下游持令牌的 `publish` job 再用纯 shell（`jq`）**只挑 `status == "APPROVED"` 的条目**建 Issue，结论同时落盘为 `audit-verdicts.json` 留档。
 >
-> ⚖️ **确定性边界（重要，勿过度宣称）**：`_verdict` 的**内容**由第 ④ 步的 **LLM** 判定（该告警是不是真实漏洞，属模型判断，不保证永远正确）；示例能**确定性保证**的是「结论 → 发文」这段把关属**非智能体门禁**——第 ⑤ 步与 `publish` job 都只认 `status == "APPROVED"` 字段，且二者均为纯 shell（`jq`/`curl`）、**不含任何 LLM 环节**。因此准确的表述是「**凡 `_verdict.status` 被写成非 APPROVED 的告警，机制上不可能被创建 Issue**」，而**不是**「被驳回的误报绝无可能被创建」（后者取决于模型判定本身是否可靠）。
+> ⚖️ **确定性边界（重要，勿过度宣称）**：`_verdict` 的**内容**由第 ④ 步的 **LLM** 判定（该告警是不是真实漏洞，属模型判断，不保证永远正确）；示例能**确定性保证**的是「结论 → 发文」这段把关属**非智能体门禁**——第 ⑤ 步与 `publish` job 都只认 `status == "APPROVED"` 字段，且二者均为纯 shell（`jq`/`curl`）、**不含任何 LLM 环节**；`publish` 还会**回查权威 CodeQL 告警**核对 `alert_number`/`rule`/`path` 后才建资源。因此准确的表述是「**凡 `_verdict.status` 被写成非 APPROVED、或与本仓库 CodeQL 告警对不上的条目，机制上不可能被创建 Issue**」，而**不是**「被驳回的误报绝无可能被创建」（后者取决于模型判定本身是否可靠）。
 > 原「⑥ 知识回流」因无法在创建 Issue 后立即获得人工反馈而被移除（见文末“为什么没有知识回流”）。
 
 > 🔒 **安全设计：审计与创建 Issue 分离（pwn-request 防护）**
-> `ai-audit-scheduled.yml` 把流程拆成**两个 job**，中间只以 **artifact（纯数据）** 传信：
-> - `triage` job：**不持有任何仓库写凭据**（无 `GH_PAT`），仅在**可信提交**（`workflow_run`
->   场景下为本次 CodeQL 实际分析的提交 `head_sha`，手动触发时为本次 ref）上检出源码，
->   产出结论文件 `audit-verdicts.json`；
+> `ai-audit-scheduled.yml` 把流程拆成**两个 job**，中间只以 **artifact（加密后的纯数据）** 传信：
+> - `triage` job：**不持有任何仓库写凭据**（无 `GH_PAT`），只在**默认分支**上检出源码
+>   （手动触发也不例外，绝不使用 `github.ref`），产出结论文件 `audit-verdicts.json`；
 > - `publish` job：**唯一持有 `GH_PAT` 的 job**，**不检出/不执行任何源码**，只消费 artifact 里
->   的结构化结论按白名单字段建 Issue。
+>   的结构化结论按白名单字段建 Issue；且建任何资源前会**用只读 API 回查告警来源**
+>   （按 `alert_number` 核对 `rule`/`path`），拒绝非本仓库 CodeQL 告警的伪造结论。
 >
+> 🔐 **artifact 必须加密交接（协调披露的关键）**：`audit-verdicts.json` 里含 `report` 全文、
+> `rule`、`path` —— 正是本工作流刻意**不**放进公开 Issue 的未修复漏洞细节。而 Actions artifact
+> 会被持久化，且**任何拥有仓库读权限的人都能下载**（公开仓库 = 任何互联网读者）。若明文上传，
+> 等于把私密 advisory 里的细节经 artifact 泄成公开可读，彻底架空协调披露设计。
+> 因此 `triage` 在上传前用**公钥**做混合加密 + **加密后认证**（encrypt-then-MAC）：
+> 数据密钥/MAC 密钥均为**十六进制可打印串**（避免 raw 二进制经 `-pass file:` 被换行截断成空口令），
+> 用数据密钥做 AES-256-CBC 加密，再用独立 MAC 密钥对**密文**做 HMAC-SHA256（`openssl enc` 不支持
+> AEAD，故用 encrypt-then-MAC 等效达成「篡改即拒绝」），两枚密钥一并经 RSA-OAEP-SHA256 封装；
+> **只上传密文 + 封装密钥 + HMAC**。`publish` 用**私钥**（Secret 注入）解出密钥、**先验 HMAC 再解密**
+> 后才消费。这既堵住泄漏，又**不削弱「triage 不持仓库写凭据」这道安全墙**——公钥是公开信息，可随仓库提交。
+
 > 之所以必须这样拆：`workflow_run` 会为 **PR（含 fork）触发的 CodeQL 运行**也开火，而 PR 源码
 > 由提交者控制；若让持令牌的 job 同时执行 PR 源码，fork 提交者即可借 PR 改写审计模板，
 > 驱动 agent 拿高权限 PAT 发文（典型 pwn-request）。因此本工作流还有两道源头门禁：
@@ -93,7 +104,8 @@ ai-audit/
 `seclab_taskflow_agent.personalities.c_auditer`，它是针对 **C 语言**设计的
 （系统提示词明确 “Find vulnerabilities in any provided C code”）。
 本项目是 **Python**（AstrBot 插件，核心代码在 `main.py` / `core/` / `commands/` /
-`gitee/` / `llm_tools/` / `qianwen/`），为获得正确的审计结果，示例改用项目自带的
+`gitee/` / `llm_tools/` / `qianwen/`），
+为获得正确的审计结果，示例改用项目自带的
 `ai_audit.personalities.python_auditer`（面向 Python 的审计人格），
 并复用了官方 `codeql` + `memcache` 两个 toolbox。
 
@@ -107,7 +119,7 @@ ai-audit/
 | `seclab-taskflow-agent` 框架 | 需部署框架本体 | ❌ 需部署 |
 | LLM 模型（支持函数调用） | 任意 OpenAI 兼容上游：DeepSeek / 通义千问 / Moonshot / 本地 vLLM 等 | ❌ 需配置（`AI_API_ENDPOINT` + `AI_API_TOKEN`） |
 | GitHub PAT（读告警） | 审计侧只读拉取 CodeQL 告警用（`security_events` 读权限即可） | ❌ 需你提供 |
-| GitHub PAT（写 Issue） | 仅 `publish` job 创建真实 Issue 用（`repo/issues` 写权限） | ❌ 需你提供 |
+| GitHub PAT（写 Issue） | 仅 `publish` job 创建真实 Issue 与私密公告用（`issues` 写 + `repository_advisories:write`；细分令牌还需管理员/安全经理角色） | ❌ 需你提供 |
 | MCP Server（GitHub API） | 框架可选的信息收集能力（只读） | ⭕ 可选 |
 
 ---
@@ -158,49 +170,19 @@ cp -r <本项目>/ai-audit ai_audit
 > `ai_audit` 导入；如果放进 `examples/`，会变成 `examples.ai_audit`，模块路径对不上。
 
 3. 按官方配置指南配好 LLM 模型 + GitHub PAT + MCP Server。
-   示例的 `alerts` 任务会通过 GitHub Code Scanning API 拉取**与检出/本地建库修订版本
-   一致的 CodeQL 告警**（先按 `CHECKOUT_REF` / `CHECKOUT_COMMIT` 过滤，只保留属于本次
-   检出 ref/commit 的 open 告警），因此需要导出 `GITHUB_TOKEN`（PAT，需含 `security_events`
-   读权限）。`CHECKOUT_REF` / `CHECKOUT_COMMIT` 由 CI 自动注入（见下文 Actions 说明），
-   手工运行时需自行导出，二者缺一会**明确失败**而不会退化成跨版本全量拉取。
+   示例的 `alerts` 任务会通过 GitHub Code Scanning API 拉取**最新 CodeQL 告警**，
+   因此需要导出 `GITHUB_TOKEN`（PAT，需含 `security_events` 读权限）。
    仓库统一由 `globals.repo`（owner/repo）这一个值决定：**告警拉取、memcache 状态 key
    都基于它**，workflow 通过 `-g repo=...` 把实际仓库注入进来（见下文 GitHub Actions 说明），
    因此不再需要、也不应单独设置 `GITHUB_REPOSITORY` 以免与 `globals.repo` 分裂。
 
    > 各审计阶段经 memcache 按告警贯通：第 ① 步写取证 `_evidence`，第 ② 步写判定 `_triage`，
    > 第 ③ 步对 TP 写报告 `_report`，第 ④ 步写校验结论 `_verdict`（APPROVED/REJECTED，
-   > 且**自包含** `alert_number/rule/path/source/sink/status/reason/report`，供第 ⑤ 步直接消费）。
+   > 且**自包含** `alert_number/rule/path/status/reason/report`，供第 ⑤ 步直接消费）。
    > 其中第 ④ 步校验**必须同时读取 `_report` 与 `_evidence`**，基于取证核对报告的文件/行号；
    > 若 `_evidence` 缺失则一律驳回（`no_evidence`），避免放行未经验证的行号。
-   >
-   > ⚠️ **端点坐标必须 source/sink 各自记录（勿退回单个 `result.path`）**：CodeQL 数据流
-   > 是跨文件/跨函数的，source 与 sink **常常不在同一个文件**里。`_evidence` 因此把两端写成
-   > **各自独立**的 `{path, line}`（而非「用告警位置 `result.path` 拼上两个行号」）：
-   >
-   > ```json
-   > { "source": {"path": "<相对仓库根的文件>", "line": <行号>},
-   >   "sink":   {"path": "<相对仓库根的文件>", "line": <行号>} }
-   > ```
-   >
-   > 否则跨文件数据流会**保存错误的端点位置**（把 source 的文件也写成 sink 的文件），
-   > 报告与私密公告随之写下错误坐标，令人工复核被误导。若某一端点确实无法定位，
-   > 就写 `null` 并由 notes 说明——**不得**用另一端或告警位置顶替充数。
-   > 该坐标经 `_verdict` 自包含下传，第 ⑤ 步原样落进 `AUDIT_VERDICT_FILE`，
-   > publish job 再分别渲染为「source（来源点）」「sink（汇点）」两行；确实缺失时
-   > 会回落到告警位置并显式标注「未定位」，绝不静默冒充。
-   >
-   > ⚠️ **取证工具可用性边界（勿把可选工具写成必经步骤）**：本审计人格**只确定挂载**
-   > `memcache` + `codeql` 两个 toolbox（工作流已本地建库并注入 `CODEQL_CLI` /
-   > `CODEQL_DBS_BASE_PATH`，故 CodeQL 取证**必然可用**）；而 `get_file_contents` 等
-   > **GitHub API 类工具属可选能力**——只有配置了 `MCP_CONFIG`（**可选** Secret）且其中
-   > 提供了该工具时才存在，**不保证可用**。因此第 ① 步的取证 prompt 以 **CodeQL toolbox
-   > 为主路径**，把 `get_file_contents` 降级为「若可用则用」，并明确纪律：**一旦某可选
-   > 工具不可用，须立即改用已确定可用的工具（CodeQL toolbox / 直接读工作区源码），
-   > 绝不允许因工具缺失而中止取证或跳过本步**——否则未配 MCP 时取证会失败或退化成残缺
-   > 证据，令第 ④ 步的校验无从核对行号。
-   >
    > 第 ⑤ 步（**纯 shell**）**仅当 status==APPROVED 且报告非空**时，把
-   > `{alert_number, rule, path, source, sink, status, report}` 追加写进 `AUDIT_VERDICT_FILE`
+   > `{alert_number, rule, path, status, report}` 追加写进 `AUDIT_VERDICT_FILE`
    > （默认 `/tmp/audit-verdicts.json`）。
    >
    > ⚠️ **第 ⑤ 步的写法有硬约束（本示例最容易踩的坑，勿改回去）**：框架只把 MCP 工具
@@ -214,6 +196,13 @@ cp -r <本项目>/ai-audit ai_audit
    > `MEMCACHE_STATE_DIR` 或 platformdirs 默认路径）、直接读 `memory.db`/`memory.json`**，
    > 再对第 ④ 步写入的**自包含** `_verdict`（含 `alert_number/rule/path/status/report`）
    > 做确定性过滤——全程不调用 MCP、不依赖模板渲染。
+   >
+   > 📌 **落盘文件名与表名以「上游框架实际 schema」为准（勿凭印象猜）**：
+   > 默认后端 `sqlite` 落 `memory.db`（**不是** `memcache.db`，见 upstream
+   > `memcache_backend/sqlite.py`）；其建表模型 `KeyValue` 的 `__tablename__` 是
+   > **`key_value_store`**（见 upstream `sql_models.py`），故查询必须写
+   > `SELECT key, value FROM key_value_store`——写成 `key_value` 会抛
+   > `no such table`，在本步 `set -e` 下直接失败、不产出任何结论。
    >
    > 🔒 **本 taskflow 全程不创建 Issue、不需要 `GH_PAT`**：它只产出结论文件。
    > 真正的 Issue 创建交给 `ai-audit-scheduled.yml` 里持令牌的独立 `publish` job，
@@ -232,15 +221,9 @@ cp -r <本项目>/ai-audit ai_audit
 
 ```bash
 # 方式 A：仅设环境变量（端点与密钥来自 AI_API_ENDPOINT / AI_API_TOKEN，模型用框架默认）
-# 【必填】CHECKOUT_REF / CHECKOUT_COMMIT 是 alerts 任务的修订版本基准（CI 自动注入，
-# 手工运行必须自行提供，否则 alerts 任务会在拉取告警前直接失败）：
-#   CHECKOUT_REF    检出修订版本的 ref（如 refs/heads/main，或 refs/tags/<tag>）
-#   CHECKOUT_COMMIT 检出修订版本的 40 位提交 SHA（须与检出的源码一致）
 AI_API_ENDPOINT=https://api.deepseek.com/v1 \
 AI_API_TOKEN=<你的APIKey> \
 GITHUB_TOKEN=<只读 PAT，含 security_events 读权限即可> \
-CHECKOUT_REF=refs/heads/main \
-CHECKOUT_COMMIT=<40 位提交 SHA，须与检出的源码一致> \
 hatch run main -t ai_audit.alert_triage_example
 
 # 方式 B：显式指定 model_config（推荐，声明 api_type: chat_completions，更稳）
@@ -249,8 +232,6 @@ COPILOT_DEFAULT_MODEL=<你的模型名，如 deepseek-v4-flash> \
 AI_API_ENDPOINT=https://api.deepseek.com/v1 \
 AI_API_TOKEN=<你的APIKey> \
 GITHUB_TOKEN=<只读 PAT，含 security_events 读权限即可> \
-CHECKOUT_REF=refs/heads/main \
-CHECKOUT_COMMIT=<40 位提交 SHA，须与检出的源码一致> \
 hatch run main -t ai_audit.alert_triage_example \
     -m ai_audit.model_config
 # 结论落在 $AUDIT_VERDICT_FILE（默认 /tmp/audit-verdicts.json），本命令不创建 Issue
@@ -268,14 +249,16 @@ hatch run main -t ai_audit.alert_triage_example \
 本仓库已内置 `.github/workflows/ai-audit-scheduled.yml`，可直接自动（或手动）运行 AI 审计：
 
 - **自动触发**：默认监听 `CodeQL.yml`（name: `代码质量分析`）的 `completed` 事件，
-  在 CodeQL 扫完后确定性地运行，并在**与检出/本地建库相同的修订版本**上消费告警
-  （按 `CHECKOUT_REF`/`CHECKOUT_COMMIT` 过滤；`workflow_run` 场景下检出**锁定到本次
-  CodeQL 实际分析的提交 `head_sha`**，与告警的 `commit_sha` 严格同源，避免默认分支在
-  分析完成后又前移导致告警被版本比对丢弃）；
-  同时保留 `workflow_dispatch` 手动触发。
+  在 CodeQL 扫完后确定性地运行，保证消费最新告警；同时保留 `workflow_dispatch` 手动触发。
   🔒 **fork 门禁**：仅当上游运行的 `head_repository` 为本仓库时才进入审计，fork PR 触发的
   CodeQL 运行一律跳过，从源头杜绝把 PR 源码当作不可信输入送进审计链。
 - **手动触发**：在仓库 **Actions → AI 审计（CodeQL 完成后自动分流）→ Run workflow** 手动跑一次用于验证。
+  🔒 手动触发有两道闸：① 仅在**默认分支**上放行，且 checkout 的 ref **固定为默认分支**
+  （不用 `github.ref`），故手选其它分支也不会把未审分支的源码送进审计链；
+  ② `publish` job 绑定受保护 `environment`（`ai-audit-publish`，需配 required reviewers），
+  持令牌发文会**暂停等待人工审批**。
+  ⚠️ 部署前请在 **Settings → Environments** 建好同名环境并配置审批人，否则 `publish` 会因
+  环境不存在而失败。
 
 **所需 Secrets**（仓库 **Settings → Secrets and variables → Actions**）：
 
@@ -284,7 +267,8 @@ hatch run main -t ai_audit.alert_triage_example \
 | `AI_API_ENDPOINT` | ✅ | 上游 base_url（OpenAI 兼容口，如 `https://api.deepseek.com/v1`，或本地 vLLM / Ollama 的 OpenAI 兼容地址） |
 | `AI_API_TOKEN` | ✅ | 对应厂商的 API Key（需支持函数调用） |
 | `AI_MODEL_NAME` | ✅ | 实际调用的模型名（如 `deepseek-v4-flash` / `qwen-max` / `kimi-k2` 等）。工作流运行时将其透传给框架的 `COPILOT_DEFAULT_MODEL` 环境变量 |
-| `GH_PAT` | ✅ | GitHub PAT，需 `repo/issues` 写权限（创建真实 Issue）。**仅注入 `publish` job**，`triage` job 绝不接触该 Secret |
+| `GH_PAT` | ✅ | GitHub PAT。需同时具备：`security_events` 读（读 CodeQL 告警）、`issues` 写（建公开 Issue）、**`repository_advisories:write`**（建私密安全公告）。细分令牌需**同时持有该权限与仓库管理员/安全经理角色**，或改用 classic PAT（`repo` scope 且账号为管理员/安全经理）。**仅注入 `publish` job**，`triage` job 绝不接触该 Secret |
+| `AUDIT_HANDOFF_PRIVATE_KEY` | ✅ | 与仓库内 `ai-audit/handoff-public-key.pem` **配对的 RSA 私钥**（PEM 全文，见下方「加密交接」）。**仅注入 `publish` job** 用于解密；`triage` 只用公钥，不接触私钥 |
 | `MCP_CONFIG` | 可选 | MCP Server（GitHub API）配置 |
 
 > 📌 框架只识别 `AI_API_ENDPOINT` / `AI_API_TOKEN`（即 `AsyncOpenAI(base_url=..., api_key=...)`），
@@ -299,6 +283,129 @@ hatch run main -t ai_audit.alert_triage_example \
 
 > 首次使用建议先 `workflow_dispatch` 手动跑一次，确认链路正常后再依赖自动触发。
 
+#### 加密交接：生成密钥对并注入私钥
+
+`triage` → `publish` 之间以 artifact 传信，且 artifact 对**任何有读权限的人**可下载，
+故必须**加密交接**。做法是「公钥随仓库提交、私钥只进 Secret」：
+
+```bash
+# 1) 生成 RSA 密钥对（3072 位；私钥保密，公钥公开）
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out handoff-private.pem
+openssl rsa -in handoff-private.pem -pubout -out handoff-public.pem
+
+# 2) 用你的公钥替换仓库内占位公钥，并提交
+cp handoff-public.pem ai-audit/handoff-public-key.pem
+git add ai-audit/handoff-public-key.pem && git commit -m "chore(ai-audit): 更新加密交接公钥"
+
+# 3) 把【私钥全文】设为仓库 Secret：Settings → Secrets and variables → Actions →
+#    新建 AUDIT_HANDOFF_PRIVATE_KEY，粘贴 handoff-private.pem 全文
+# 4) 私钥用完即删（绝不入库）
+shred -u handoff-private.pem 2>/dev/null || rm -f handoff-private.pem
+```
+
+- 🔐 **公钥可以公开**（它只能加密，不能解密），因此 `triage` 读它**无需任何 Secret**，
+  「triage 不持仓库写凭据」的安全墙得以保持（它仍需调用 LLM 的 `AI_API_TOKEN` 与只读
+  `GITHUB_TOKEN`，但这些都不具备仓库写能力）。
+- 🔑 **私钥只能经 Secret 注入**，且**只注入 `publish` job**；严禁写进仓库、日志或评论。
+- ♻️ **轮换**：公钥（入库）与私钥（Secret）是**分两步更新**的，中间存在窗口期——
+  若此刻恰好有 workflow 正在跑，它会用「**旧公钥加密、新私钥解密**」而无法解开，导致发布失败。
+  因此正确顺序是：**先暂停触发并等待现有运行完成** → 再更新仓库公钥 → 再更新 Secret 私钥 →
+  **验证新密钥配对**（跑一次成功解密）→ 恢复触发。旧密文因留存期短（`retention-days: 7`）
+  会自然过期。
+- 若 `AUDIT_HANDOFF_PRIVATE_KEY` 未配置，`publish` job 会**明确失败**（而非降级为明文放行）——
+  但仅在**确有待发布结论**时如此，见下方「空结论短路」。
+- 🔏 **完整性**：`triage` 侧在加密后对密文再做 HMAC-SHA256（encrypt-then-MAC），
+  `publish` 侧**先验 HMAC 再解密**——密文被篡改即拒绝，不以「是不是 JSON 数组」充当完整性校验。
+
+#### 空结论短路：无 APPROVED 结论时不再误报为失败
+
+判空短路位于 `publish` job 的**「解密前短路（无待发布结论则跳过，不触碰私钥）」**步骤，
+排在**解密步骤之前**（即 job 内第 3 步，见 `ai-audit-scheduled.yml` 的 `publish.steps`；
+解密本身是第 4 步）。判据是 triage 侧显式外化的**空结论标记**：
+
+```
+publish 侧：/tmp/audit/audit-verdicts.empty 存在
+        →  直接跳过解密与发文（skip=true，不触碰私钥）
+
+triage 侧：jq 'length' == 0
+        →  只产出 audit-verdicts.empty 标记，**不加密、不上传任何密文**
+        （有内容时则相反：只上传密文三件套，不产出标记）
+```
+
+> ⚠️ **口径要点**：这里的 `jq 'length'` 统计的是**待发布的 APPROVED 结论条数**，
+> 而**不是** CodeQL 告警条数。二者并不等价——一次运行**可能扫到若干告警、却没有任何一条
+> 被判为 APPROVED**（例如全被判为误报而 `REJECTED`）。因此本短路的准确语义是
+> **「无 APPROVED 结论」**，不能表述为「零告警」：后者会让人误以为「只有告警数为 0 才会
+> 触发短路」，进而在「有告警但全被驳回」时对短路行为感到困惑。
+
+- **为什么需要**：`triage` 在**无 APPROVED 结论**时也会正常收尾（兜底把 `/tmp/audit-verdicts.json`
+  写成 `[]`）。若「先加密上传、再在 publish 侧先解密再判空」，一条空结论也会去撞
+  `AUDIT_HANDOFF_PRIVATE_KEY`：首次部署尚未配密钥时，`publish` 会在**毫无可发布内容**的情况下硬失败，
+  表现为「CodeQL 跑完 → AI 审计红了」，容易被误诊为链路故障。
+- **两条分支互斥、判据明确**：无 APPROVED 结论时 artifact 内**只有** `audit-verdicts.empty`、**没有任何密文**，
+  有内容时**只有**密文三件套、没有标记——`publish` 只认这枚标记（另保留「既无标记又无密文」
+  的兜底短路，兼容旧产物）。因此无 APPROVED 结论的运行**无需私钥**，与 `Secret` 是否配置完全解耦。
+- **安全边界不变**：短路只看「有没有待发布内容」，**不解析密文、不放宽任何完整性要求**；
+  一旦确有密文需要解密，仍严格走「密钥配对自检 → 验 HMAC → 解密 → 数组格式校验」。
+- **两条路径的差异只体现在「有无内容可发」**：无内容时跳过，有内容时该失败照旧失败
+  （密钥缺失/错配仍是明确失败，绝不降级为明文放行）。
+
+#### 首次部署的推荐顺序
+
+密钥是「公钥入库 + 私钥进 Secret」**成对**生效的，只做一半必然解密失败。推荐：
+
+1. 生成密钥对（见上一小节），**公钥提交入库、私钥存 Secret**；
+2. 先在本地做一次配对自检（见下），确认公私钥同源；
+3. 再跑一次 `workflow_dispatch` 验证整条链路。
+
+> 💡 **配对自检**（无需跑整条流水线）：用公钥加密一段探针、再用私钥解回，
+> 能解回即说明配对正确：
+> ```bash
+> # ⚠️ 必须 `set -e`（或显式检查解密退出码）：末尾的 `shred` 是清理命令，
+> #    若不开启 `-e`，它会**掩盖** `openssl pkeyutl -decrypt` 的非零退出状态——
+> #    即使解密失败（公私钥不配对），脚本整体仍会「成功」返回，自检形同虚设。
+> set -euo pipefail
+> # ⚠️ 私钥一律经 `mktemp` 落到**私有**临时文件（默认 0600、随机名）：
+> #    · 不能写固定路径（如 `/tmp/priv.pem`）——`/tmp` 是全局可写的共享目录，
+> #      固定名既会被他人**预置符号链接**（重定向**跟随链接**写到别处），
+> #      也会**覆盖**别人放在同名路径上的文件；`mktemp` 的随机名 + `O_EXCL`
+> #      创建从根上杜绝这两种「可预测路径」攻击。
+> #    · 不能依赖默认 `umask`——常见 `umask 022` 下重定向出的文件是 **0644 全局可读**，
+> #      明文私钥落成全局可读等于直接泄漏；`mktemp` 创建的却是 0600（仅属主可读）。
+> #    两条合起来才成立：随机名挡「符号链接/覆盖」，0600 挡「被读取」。
+> # ⚠️ 仍要挂 `EXIT` 清理钩子：`set -e` 下**任何**中途失败都会直接退出，
+> #    绝无机会走到末尾的 `shred`——钩子负责在任意退出路径（成功/失败/被信号打断）
+> #    删除探针与私钥，并**原样保留**退出码，既不掩盖失败、也不留残骸。
+> #    （钩子只缩短暴露窗口；防读取/防覆盖由上面的 `mktemp` 负责，二者缺一不可。）
+> PRIV="$(mktemp)"; PROBE="$(mktemp)"; PROBE_ENC="$(mktemp)"; rm -f "$PROBE_ENC"
+> cleanup() {
+>   rc=$?
+>   shred -u "$PRIV" "$PROBE" "$PROBE_ENC" 2>/dev/null || rm -f "$PRIV" "$PROBE" "$PROBE_ENC"
+>   return "$rc"
+> }
+> trap cleanup EXIT
+> printf 'probe' > "$PROBE"
+> openssl pkeyutl -encrypt -pubin -inkey ai-audit/handoff-public-key.pem \
+>   -in "$PROBE" -out "$PROBE_ENC" -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256
+> # 私钥经变量从 stdin 写入（不把 Secret 放进命令行，避免进程列表泄漏）；
+> # 落盘文件由 mktemp 创建，权限已是 0600，无需再赌环境 umask。
+> printf '%s' "$AUDIT_HANDOFF_PRIVATE_KEY" > "$PRIV"
+> # 解密失败即中止（`set -e` 生效），此时由上面的 EXIT 钩子收尾清理、不留私钥残骸
+> openssl pkeyutl -decrypt -inkey "$PRIV" -in "$PROBE_ENC" \
+>   -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256
+> echo "✅ 配对自检通过：公私钥同源"
+> ```
+
+#### 排错对照
+
+| 现象 | 含义 | 处置 |
+|------|------|------|
+| 报「缺少仓库 Secret `AUDIT_HANDOFF_PRIVATE_KEY`」 | 私钥未配（或配了空值）**且确有待发布结论** | 按提示生成密钥对并配置 Secret；无待发布内容时该步会**自动跳过**，不再报错 |
+| 报「私钥无法解开封装密钥：密钥不配对」 | Secret 里的私钥与仓库公钥**不是同一对** | 重新生成一对，**公钥入库 + 私钥进 Secret 两步都做**，再做一次配对自检 |
+| 报「HMAC 校验失败」 | 密文被篡改，或拿的是**不该用的旧密文** | 确认 artifact 未经修改；必要时重跑上游 `triage` 重新产出密文 |
+| 无任何报错但**本次运行**没建新 Issue | ⚠️ **两种成因**，别急着归咎 `_verdict`：①**幂等去重命中**——该告警此前已建过 Issue（按 `alert_number` 指纹去重），本次属**正常跳过**；②结论里确实没有 `status == APPROVED` 的条目 | **先查去重、再查门禁**：按 `<!-- ai-audit-alert:<alert_number> -->` 指纹或标题 `[AI审计] CodeQL 告警 #<alert_number>` **检索**是否已有 open Issue（去重会**逐页遍历全部 open Issue**，不要只看首页）——**已存在 = ①，属预期**；确认无既有 Issue，才是②，再去查 triage 阶段的 `_verdict` 判定理由 |
+| 无 APPROVED 结论时 `publish` 仍报「缺少 Secret」 | 判空短路**未生效**（应表现为跳过、不报错） | 检查 `publish` 短路步骤是否**排在解密之前**、且识别 `audit-verdicts.empty` 标记；再看 triage 是否在 `jq 'length' == 0` 时**未上传任何密文**（若仍上传了 `.enc`，说明 triage 侧判空步骤缺失或被跳过） |
+
 ### 方式二：把 `ai_audit` 作为可导入包安装
 
 如果你更希望像普通包一样使用，把 `ai-audit` 目录命名为 `ai_audit` 并安装进 Python 环境，
@@ -312,12 +419,9 @@ hatch run main -t ai_audit.alert_triage_example \
 
 先在一个 CodeQL 告警上跑通，验证链路后再铺开到全部告警：
 
-1. 示例开头 `alerts` 任务已改为从 GitHub Code Scanning API 拉取**与检出/本地建库修订版本
-   一致的 open CodeQL 告警**（`state=open&tool_name=CodeQL`，再按 `CHECKOUT_REF`/`CHECKOUT_COMMIT`
-   过滤——**commit_sha 精确匹配为主、ref 归一化比对兜底**），并映射成下游需要的
-   `alert_number / rule / path / message / ref / commit_sha` 结构（保留版本锚点），
-   无需手动维护告警列表。这样保证「本地建库/检出的源码」与「审计的告警」处于同一修订版本，
-   避免对着 A 版本代码建的库去调查 B 版本的告警、产出失真/错位的证据。
+1. 示例开头 `alerts` 任务已改为从 GitHub Code Scanning API 拉取**最新 CodeQL 告警**
+   （`state=open&tool_name=CodeQL`），并映射成下游需要的
+   `alert_number / rule / path / message` 结构，无需手动维护告警列表。
 2. 观察各阶段输出是否符合预期，重点看**校验阶段（第 ④ 步）**是否把不完整报告驳回并写入
    `_verdict.status == REJECTED`，以及第 ⑤ 步的结论文件是否只包含 APPROVED 的告警。
 3. 确认无误后开启 `publish` job（若已注释），即可对真实漏洞自动创建 Issue。
@@ -333,24 +437,27 @@ hatch run main -t ai_audit.alert_triage_example \
   （不能在 shell 里调 MCP 工具、也不能用 `{{ result.* }}`，详见第三节）。
 - **分页拉取**：`alerts` 任务逐页拉取全部 open 的 CodeQL 告警，仓库告警超过 100 条也不会漏审。
 - **防幻觉校验**：报告不完整/不一致直接驳回（`_verdict=REJECTED`），避免 LLM 编造漏洞。
-- **端点坐标各自独立**：`_evidence` 的 source/sink 分别记录 `{path, line}`（跨文件数据流
-  两端常不在同一文件），报告、私密公告据此**分别**标注两端坐标，不再拿告警位置顶替两端；
-  定位不到时显式写 `null` / 标注「未定位」，而不是写出一个看似精确的错误位置。
-- **审计与发文隔离**：taskflow 只产出结论文件；Issue 由独立持令牌 job 消费结论创建
-  （标题带 `[AI审计]` 前缀，并打 `bug`/`security`/`ai-audit` 标签），且仅对
-  `_verdict.status == APPROVED` 的告警执行——不可信输入与高权限动作分处两个 job。
+- **审计与发文隔离**：taskflow 只产出结论文件；Issue 由独立持令牌 job 消费结论创建。
+  为遵守协调披露，公开 Issue 仅作**脱敏占位**：
+  - **标题**：`[AI审计] CodeQL 告警 #<alert_number>`（**不含** rule/path）；
+  - **标签**：仅 `security` 与 `ai-audit`（**没有** `bug`）；
+  - **正文**：只有告警编号 + 「私密详情见 security advisory `<ghsa_id>`」+ 处置约定，
+    rule / path / report 全文一律不放公开渠道，而是写进**私密 security advisory**。
+  且仅对 `_verdict.status == APPROVED` 的告警执行——不可信输入与高权限动作分处两个 job。
   ⚖️ 注意边界：**「结论 → 发文」的把关是非智能体的确定性 shell 门禁**（只认 APPROVED 字段、
   无 LLM 参与），但 **`_verdict` 本身是 LLM 判定**。故此处只能承诺「非 APPROVED 的告警不会
   被创建 Issue」，**不能**承诺「模型判定错误（误报被误判为 TP/APPROVED）也不会被创建」。
 - **发文幂等 + 并发自愈（防重复 Issue）**：CodeQL 在 push / PR / schedule 多入口下可能
   **并发完成**，从而同时拉起多个本工作流实例；若两个 `publish` 同时走到「先查是否存在、
   再创建」的判定点，就会双双读到「不存在」→ 双双创建 → 同一漏洞出现两条 Issue。为此：
-  1. **工作流级 `concurrency`**：`group: ${{ github.workflow }}` + `cancel-in-progress: false`，
-     把所有触发源的实例收敛到**同一条队列**串行执行，从源头掐掉并发（不掺 `github.ref`，
-     否则不同 ref 的实例会落入不同队列、竞态依旧）。
+  1. **工作流级 `concurrency`**：`group: ${{ github.workflow }}` + `cancel-in-progress: false`
+     + `queue: max`，把所有触发源的实例收敛到**同一条队列**串行执行，从源头掐掉并发
+     （不掺 `github.ref`，否则不同 ref 的实例会落入不同队列、竞态依旧；仅设
+     `cancel-in-progress: false` 会「替换待跑实例」，需 `queue: max` 才真正**排队不丢单**）。
   2. **指纹去重**：正文首部写入 `<!-- ai-audit-alert:<alert_number> -->`（HTML 注释，用户不可见），
-     以 **`alert_number`** 而非标题作幂等判据——标题是 `[AI审计] <rule> - <path>`，同 rule+path
-     的不同告警会撞标题（误合并），同告警标题微调又会漏判（漏合并）。
+     以 **`alert_number`** 而非标题作幂等判据——标题是 `[AI审计] CodeQL 告警 #<alert_number>`，
+     单靠标题匹配易漏判/误判；告警编号是唯一稳定锚点。私密公告同样按**完整标题精确相等**
+     去重（不可用 `contains`，否则 `#1` 会误命中 `#10`）。
   3. **全量翻页**：去重检索**逐页遍历全部 open Issue**，而非只取 `?per_page=100` 首页——
      仓库 open Issue 超 100 条时，排在其后的既有 Issue 会被漏查而重复创建。
   4. **创建后自愈（TOCTOU 兜底）**：创建后立即复查同指纹；若临界区里对方已抢先建过，
@@ -372,7 +479,9 @@ hatch run main -t ai_audit.alert_triage_example \
 
 ---
 
-> 🔒 安全模型说明：本工作流已按「不可信输入与高权限动作隔离」原则改造——审计 job 无凭据、
+> 🔒 安全模型说明：本工作流已按「不可信输入与高权限动作隔离」原则改造——审计 job
+> **不持有任何仓库写凭据**（它仍需 `GH_PAT` 之外的 `AI_API_TOKEN` 调用 LLM、
+> 以及一枚**只读** `GITHUB_TOKEN` 读告警，因此准确说法是「无仓库写凭据」而**不是**「无凭据」）、
 > 发文 job 不落地源码，两者以 artifact 传信，并在 `workflow_run` 上加了 fork 门禁，
 > 用于消除「fork PR 源码 → 持 GH_PAT 的 AI agent」这一提权路径。
 >

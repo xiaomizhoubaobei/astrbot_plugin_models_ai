@@ -3,16 +3,15 @@
 # 扫描将提供关于发现的术语和可以使用的替代术语的上下文。
 name: 包容性分析扫描
 
+# 不设 paths 过滤：排他性术语同样可能出现在 README、文档与工作流中，
+# 只扫 Python 文件会漏检，故对所有变更全量扫描。
 on:
   push:
     branches: [main]
-    paths:
-      - "**/*.py"
   workflow_dispatch:
 
-# 声明最小权限（保留只读，并补齐三项统一权限）。
+# 声明最小权限（仅只读）。本工作流无 OIDC 消费者，不授予 id-token: write。
 permissions:
-  id-token: write
   actions: read
   contents: read
 
@@ -21,12 +20,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 加固运行器（审计所有出站调用）
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
+      # v1.0.1 起 Action 内部用 `git log -1` + `git show --diff-filter=AM` 计算
+      # 「上次提交变更的文件」（excludeUnchangedFiles 默认 true），浅克隆只有 1 层
+      # 时 git show 会拿不到父提交而返回空结果，导致扫描形同空转。
+      # 故显式取 2 层历史，与 Action 的默认扫描口径对齐。
       - name: 检出代码
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
 
+      # 上游最新发布即 v1.0.1（2022-11-02，commit 994519a4），之后无 release，
+      # 故此处钉定 SHA 已是上游最新发布版，无需再升级；升级时同步更新注释里的版本号。
       - name: 包容性分析器
         uses: microsoft/InclusivenessAnalyzer@994519a4cd1f0ccc7415fff13b7f287344c420bc # v1.0.1
+        with:
+          # 仅告警不阻断流水线：包容性术语属提示性建议，不应把 main 上的提交判死。
+          failOnNonInclusiveTerm: false
+          # 只扫本次提交新增/修改的文件，保持轻量（依赖上面的 fetch-depth: 2）。
+          excludeUnchangedFiles: true
