@@ -16,6 +16,17 @@ permissions:
   contents: read
   actions: read
 
+# ⚠️ 【发布串行化】release 是「先查 tag 是否存在、再建 tag、再发布」的三段动作，
+#   GitHub Actions 无法把「查」与「建」做成一个原子操作。若两次 main 推送同时跑，
+#   两者都可能先观察到「该版本 tag 尚不存在」，于是各建一次同名 tag → 后到者要么
+#   撞 tag 失败、要么把同一版本发两遍（Release 页面出现重复/覆盖的产物）。
+#   故用 concurrency 把发布**串行化**：同一时刻只允许一个 release 在跑，
+#   cancel-in-progress: false —— 发布是「必须完成的动作」，不能被新提交顶掉，
+#   后来的排队等前一个跑完即可（它拿到锁后会重新查 tag，从而正确跳过已发布的版本）。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: 构建 Release
@@ -410,21 +421,29 @@ jobs:
           # 那条入口要 typer，而这里刻意不装依赖。
           EVIDENCE_PACK_REV='53216365066a9fe64de178ab0184539ad253e355'
           EVIDENCE_PACK_SRC="${RUNNER_TEMP:-/tmp}/ci-evidence-pack"
+          # ⚠️ 【拿到解析器 = 可选项，不是发布前提】Rekor 条目只是给正文补一个
+          #   「可复核的公开落点」，本步开头就声明「读不出来不拦发布」。因此**取不到
+          #   解析器也必须走同一条降级路径**：写一条如实的说明、继续发布。
+          #   早期此处对 fetch 失败直接 `exit 1`，等于让一次网络抖动把整个发布掐死，
+          #   与「不拦发布」的承诺自相矛盾——顺手把「有证据但没法解析」错报成
+          #   「发布失败」，比没有落点更误导。
           rm -rf "$EVIDENCE_PACK_SRC"
           git init --quiet "$EVIDENCE_PACK_SRC"
           git -C "$EVIDENCE_PACK_SRC" remote add origin \
             https://github.com/xiaomizhoubaobei/ci-evidence-pack.git
-          git -C "$EVIDENCE_PACK_SRC" fetch --quiet --depth 1 origin "$EVIDENCE_PACK_REV" \
-            || { echo "::error::取不到 ci-evidence-pack@${EVIDENCE_PACK_REV}，无法解析透明日志"; exit 1; }
-          git -C "$EVIDENCE_PACK_SRC" checkout --quiet FETCH_HEAD
-          # 显式核对落地提交就是钉的那个：浅拉只给了 FETCH_HEAD，别把「取到了」
-          # 当成「取对了」。对不上就停，不用来源不明的解析器读证据。
-          GOT_REV=$(git -C "$EVIDENCE_PACK_SRC" rev-parse HEAD)
-          if [ "$GOT_REV" != "$EVIDENCE_PACK_REV" ]; then
-            echo "::error::ci-evidence-pack 提交不符：期望 ${EVIDENCE_PACK_REV}，实际 ${GOT_REV}"
-            exit 1
+          # 把「取源码 + 校验提交」整体包成可失败的判断：任一环节不成就降级，不 exit。
+          if git -C "$EVIDENCE_PACK_SRC" fetch --quiet --depth 1 origin "$EVIDENCE_PACK_REV" 2>/dev/null \
+             && git -C "$EVIDENCE_PACK_SRC" checkout --quiet FETCH_HEAD 2>/dev/null \
+             && [ "$(git -C "$EVIDENCE_PACK_SRC" rev-parse HEAD)" = "$EVIDENCE_PACK_REV" ]; then
+            export PYTHONPATH="$EVIDENCE_PACK_SRC/src${PYTHONPATH:+:$PYTHONPATH}"
+          else
+            # 取不到解析器 / 落地提交与钉定的不符：一律按「没有可复核落点」处理。
+            # 不 echo 原始错误内容（可能含远端地址等噪音），只记一条警告。
+            printf '%s\n' "- 未能取得透明日志解析器（网络或提交校验失败），本次不提供可复核的 Rekor 落点；信任根只有上方 sha256 锚点。" > "$MARKDOWN"
+            echo "::warning::取不到 ci-evidence-pack@${EVIDENCE_PACK_REV}，跳过 Rekor 条目解析，发布继续"
+            emit "$MARKDOWN"
+            exit 0
           fi
-          export PYTHONPATH="$EVIDENCE_PACK_SRC/src${PYTHONPATH:+:$PYTHONPATH}"
           if python3 -m evidence_pack rekor "${SIG_BUNDLE:-}" --json > _anchor/rekor.json 2>/dev/null; then
             python3 - "$MARKDOWN" <<'PY'
           import json

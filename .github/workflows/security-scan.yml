@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 # 最小权限：仅需读取仓库内容与 Actions 元数据。
-# 本工作流的写能力（security-events）已下沉到 job 级，顶层不再授予 id-token。
+# 本工作流**不需要任何写权限**（不上传 SARIF、不写 Issue），也不授予 id-token。
 permissions:
   contents: read
   actions: read
@@ -22,8 +22,9 @@ jobs:
     permissions:
       actions: read
       contents: read
-      # 仅上传 CodeQL 结果需要 security-events: write；同样不需要 id-token。
-      security-events: write
+      # ⚠️ 本工作流**不上传 SARIF**（Bandit 结果走 artifact，trufflehog 直接以退出码
+      #   判定），故不授予 security-events: write——多一分写权限就多一分被滥用的面。
+      #   该权限只留给真正调用 upload-sarif 的工作流（CodeQL / DevSkim）。
 
     steps:
     - name: 加固运行器
@@ -33,6 +34,10 @@ jobs:
 
     - name: 检出代码
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        # trufflehog 扫的是 **git 历史**：浅克隆看不到早期提交，等于把历史里的
+        # 明文密钥漏掉。故强制拉全量历史（与 secret-scanning.yml 口径一致）。
+        fetch-depth: 0
 
     - name: 设置 Python
       uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -68,6 +73,17 @@ jobs:
 
     # 用 trufflehog 做真实密钥扫描：仅在发现已核实（verified）密钥时失败，
     # 且**不会把匹配到的明文密钥打印进 Actions 日志**。
+    #
+    # 关于「与 secret-scanning.yml 重复」的说明（刻意保留，非遗漏）：
+    #   · secret-scanning.yml  专责密钥扫描，覆盖 push / PR / 手动触发，
+    #     口径最宽（--results=verified,unknown），是**主**通道；
+    #   · 本步只在 security-scan 的触发面（含每周 schedule）内再跑一次，
+    #     口径更严（仅 verified），作用是在「安全扫描整体巡检」时**顺带兜底**：
+    #     一旦 secret-scanning.yml 被误改/停用，密钥扫描不会随之一起消失。
+    #   两者判定结果互不覆盖（各自独立 job），重复成本是一次 git 历史遍历，
+    #   换的是「单一工作流被改坏也不至于全盲」。若确要收敛，应删 secret-scanning.yml
+    #   并把本步的 extra_args 放宽到 verified,unknown、同时在 workflow 名上标明
+    #   它就是密钥扫描的**唯一**入口——而不是悄悄删掉其中一边。
     # 旧的 `git grep "password|secret|..."` 既不阻断（grep 命中即成功返回），
     # 又会把整行明文密钥输出到日志，等同于扩面泄漏，故整体替换。
     #
@@ -76,7 +92,11 @@ jobs:
     # 重复传入会让 CLI 直接报 `flag 'fail' cannot be repeated` 并以退出码 1 终止，
     # 看起来像"扫到了密钥"，实则是参数冲突导致的**假失败**。
     # 因此只保留 `--results=verified`，失败判定交给 Action 内置的 `--fail`。
+    # ⚠️ 必须加 `if: always()`：上面 Bandit 命中中危即以非零码退出，默认的
+    #   `success()` 会让本步被**跳过**——于是「代码里有密钥」这件事反被一个静态检查
+    #   失败掩盖。密钥扫描与代码风格扫描彼此独立，不该互相短路。
     - name: 密钥扫描（trufflehog）
+      if: always()
       uses: trufflesecurity/trufflehog@31ce31ee1abbcc7dc8eee5764c17121c3044c8b2 # v3.99.7
       with:
         extra_args: --results=verified

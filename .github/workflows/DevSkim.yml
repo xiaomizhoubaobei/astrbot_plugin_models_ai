@@ -63,7 +63,12 @@ jobs:
 
       - name: 上传 DevSkim 扫描结果到 GitHub 安全标签
         # 扫描失败也要上传：报告本身就是排障证据，不能因非零码丢掉。
-        if: always()
+        # ⚠️ 但**必须同时确认文件存在**：扫描若在写文件前就失败（或写一半被取消），
+        #   devskim-results.sarif 根本不存在，`always()` 会带着一个缺失路径去 upload-sarif，
+        #   报出「找不到文件」这种**误导性错误**，把真正的失败原因盖住；更糟的是
+        #   若上一次残留了同名文件，还会把过期结果当成这次的覆盖上传。
+        #   用 hashFiles 做存在性判定，无文件就干净跳过。
+        if: always() && hashFiles('devskim-results.sarif') != ''
         uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: devskim-results.sarif

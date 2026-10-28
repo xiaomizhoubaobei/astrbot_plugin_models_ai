@@ -33,10 +33,14 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
-    # 令牌经 job 级 env 暴露给步骤的条件表达式（secrets 不能直接写在 if 中），
-    # 从而在 token 为空时安全跳过上报步骤。
+    # ⚠️ 【令牌只在「上报」这一步可见】切勿把 CODECOV_TOKEN 提到 job / workflow 级 env：
+    #   本 job 会 `pip install -r requirements.txt` 并执行 **PR 可控的测试代码**，
+    #   job 级 env 会让这些不可信代码直接读到 Secret，一个 `curl $CODECOV_TOKEN`
+    #   就能把它外泄。故 Secret 只注入到「上报覆盖率到 Codecov」那一步。
+    #   `if` 里不能直接写 secrets（GitHub 不允许在 if 中引用 secrets），故另设一个
+    #   **非机密**的存在性标志，仅用于条件判断，泄露它没有任何风险。
     env:
-      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      HAS_CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN != '' }}
     steps:
       # 安全加固：与仓库内其余全部工作流一致，内联 step-security/harden-runner。
       # 本工作流会在 PR（不可信来源）场景运行仓库自带测试代码，属高风险面，
@@ -100,8 +104,11 @@ jobs:
       - name: 上报覆盖率到 Codecov
         id: codecov
         # 仅当拿到 token 才上报；token 为空时跳过，避免空 token 触发失败
-        if: ${{ always() && env.CODECOV_TOKEN != '' }}
+        if: ${{ always() && env.HAS_CODECOV_TOKEN == 'true' }}
         continue-on-error: true
+        # 令牌的作用域收窄到这一步：上面 install/test 阶段的环境里读不到它。
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         # 钉定 v7.1.1（提交 303a32d…）：不随 tag 浮动，避免上游改 tag 时静默换代码。
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:

@@ -24,10 +24,12 @@ jobs:
         with:
           egress-policy: audit
 
-      # v1.0.1 起 Action 内部用 `git log -1` + `git show --diff-filter=AM` 计算
-      # 「上次提交变更的文件」（excludeUnchangedFiles 默认 true），浅克隆只有 1 层
-      # 时 git show 会拿不到父提交而返回空结果，导致扫描形同空转。
-      # 故显式取 2 层历史，与 Action 的默认扫描口径对齐。
+      # excludeUnchangedFiles: true 时，Action 需要知道「本次提交改了哪些文件」，
+      # 而它的算路依赖能取到**当前提交的父提交**（HEAD^）做 diff。
+      # 默认 checkout 只取 1 层（depth=1）时，HEAD 是个**没有父提交的嫁接提交**：
+      # 此时 `git show --diff-filter=AM` 不会报错，而是把**全部文件**都当成新增文件
+      # 列出——结果就是「只扫变更」退化成「扫全仓」，既慢又不符合本步意图。
+      # 故显式取 2 层历史，保证 diff 有真实的父提交可比。
       - name: 检出代码
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -71,5 +71,13 @@ jobs:
     - name: 执行 CodeQL 分析
       uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
       with:
-        # 单一组合下 category 只需按语言区分；保留语言维度便于未来扩展多语言
+        # 单一组合下 category 只需按语言区分；保留语言维度便于未来扩展多语言。
+        #
+        # ⚠️ 【category 迁移说明】本次由 `/os:<os>/py:<ver>` 收敛为 `/language:<lang>`，
+        #   Code Scanning 会据此把它视为**另一个分析类别**：历史告警仍挂在旧 category 下，
+        #   既不会被本工作流刷新，也**不会**被自动关闭。
+        #   处理方式：合并后到 Security → Code scanning 里把旧 category
+        #   （形如 `/os:ubuntu-latest/py:3.12`）下的告警**手动 dismiss（wont fix / used in tests）**
+        #   或删除该分析配置，否则 ai-audit 会一直把它们当成 open 告警反复送审。
+        #   等旧 category 清空并累积一次成功运行后，新 category 才成为唯一事实来源。
         category: "/language:${{ matrix.language }}"
