@@ -7,19 +7,27 @@ on:
     branches: [ "main" ]
   schedule:
     - cron: '0 0 * * 1'  # 每周一运行
+  # 支持手动触发，便于排障与补跑
+  workflow_dispatch:
 
+# 最小权限：仅需读取仓库内容与 Actions 元数据。
+# 本工作流的写能力（security-events）已下沉到 job 级，顶层不再授予 id-token。
 permissions:
   contents: read
-  id-token: write
   actions: read
 
 jobs:
   security-scan:
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      # 仅上传 CodeQL 结果需要 security-events: write；同样不需要 id-token。
+      security-events: write
 
     steps:
     - name: 加固运行器
-      uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+      uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
       with:
         egress-policy: audit
 
@@ -27,27 +35,48 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: 设置 Python
-      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
       with:
+        # 单版本工作流，跟随测试矩阵的起始版本（3.12）
         python-version: '3.12'
 
     - name: 安装依赖项
       run: |
         python -m pip install --upgrade pip
-        pip install bandit black flake8
+        pip install bandit
 
+    # 不加 `|| true`：Bandit 命中扫描阈值时以非零码退出，使本工作流真正告警。
+    # 报告文件仍会在后续步骤上传，故失败也不丢证据。
+    #
+    # `-ll`（severity-level=MEDIUM）：只把**中/高**危问题计入失败判定，与注释
+    # 声明的「中高危才告警」口径一致。不加阈值时 Bandit 对**任何**级别（含
+    # LOW）都返回非零码——例如测试里的 `assert`（B101）与测试用假密钥
+    # （B106）本就是 LOW 噪音，会把工作流永久标红、淹没真实风险。
+    # 完整报告（含 LOW）仍写入 bandit-report.json 工件，人工可全量核对。
     - name: 运行 Bandit 安全扫描
       run: |
-        bandit -r . -f json -o bandit-report.json || true
+        bandit -r . -ll -f json -o bandit-report.json
 
     - name: 上传 Bandit 结果
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: bandit-报告
         path: bandit-report.json
         retention-days: 5
+        if-no-files-found: warn
 
-    - name: 运行代码扫描
-      run: |
-        # 检查敏感信息
-        git grep -i "password\|secret\|token\|key\|pwd" -- './*' ':!*.yml' ':!*.yaml' ':!*.lock' ':!node_modules' ':!.git' || echo "敏感数据检查完成"
+    # 用 trufflehog 做真实密钥扫描：仅在发现已核实（verified）密钥时失败，
+    # 且**不会把匹配到的明文密钥打印进 Actions 日志**。
+    # 旧的 `git grep "password|secret|..."` 既不阻断（grep 命中即成功返回），
+    # 又会把整行明文密钥输出到日志，等同于扩面泄漏，故整体替换。
+    #
+    # ⚠️ 这里**不能**再传 `--fail`：该 Action 的入口脚本本身已固定追加 `--fail`
+    # （见 action.yml 的 `trufflehog git ... --fail --no-update --github-actions`），
+    # 重复传入会让 CLI 直接报 `flag 'fail' cannot be repeated` 并以退出码 1 终止，
+    # 看起来像"扫到了密钥"，实则是参数冲突导致的**假失败**。
+    # 因此只保留 `--results=verified`，失败判定交给 Action 内置的 `--fail`。
+    - name: 密钥扫描（trufflehog）
+      uses: trufflesecurity/trufflehog@31ce31ee1abbcc7dc8eee5764c17121c3044c8b2 # v3.99.7
+      with:
+        extra_args: --results=verified

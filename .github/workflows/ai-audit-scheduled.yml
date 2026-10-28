@@ -13,16 +13,18 @@
 #
 # 对策：把流程劈成两段，中间只以 artifact（纯数据）传信，令牌与不可信源码
 #       物理隔离：
-#       ┌─ triage  job（无任何 Secret / 无写权限）──────────────────────────┐
-#       │  仅在**可信提交**（本次 CodeQL 分析的提交 / 手动触发的本次 ref）上  │
-#       │  检出源码；                                                        │
-#       │  只给 content-free 的只读审计能力；产出结构化审计结论 artifact。   │
+#       ┌─ triage  job（无仓库写凭据 / 不接触 GH_PAT）──────────────────────┐
+#       │  只在**默认分支**上检出源码（手动触发也不用 github.ref）；         │
+#       │  只给只读的审计能力（AI_API_TOKEN 调 LLM + 只读 GITHUB_TOKEN 读    │
+#       │  告警），产出结构化审计结论 artifact。                            │
 #       └──────────────────────────────────────────────────────────────────┘
-#                              ↓ audit-verdicts.json（数据）
+#                              ↓ audit-verdicts.json（**公钥加密+HMAC 后的密文** + 封装密钥）
 #       ┌─ publish job（唯一持 GH_PAT 的 job）──────────────────────────────┐
 #       │  不检出/不执行任何不可信源码；只消费 artifact 里的结构化结论。     │
 #       │  【协调披露】漏洞细节走**私密 security advisory**，公开 Issue 只   │
 #       │  留脱敏占位（指纹 + 告警编号），不在修复前暴露可利用细节。        │
+#       │  artifact 为**公钥加密的密文**：读权限者可下载但不可读，只有本    │
+#       │  job（持私钥）能解密 —— 交接全程不泄漏未修复漏洞细节。            │
 #       │  输入已被上游 schema 约束，无法注入。                              │
 #       └──────────────────────────────────────────────────────────────────┘
 #
@@ -30,7 +32,17 @@
 #   - workflow_run：监听 CodeQL.yml（name: "代码质量分析"）的 completed 事件。
 #     仅当上游运行成功、且其 head 分支属于**本仓库**（非 fork）时才进入 triage
 #     （见 jobs.triage.if 的 head_repository 门禁），从源头掐断 fork 源码流入。
-#   - workflow_dispatch：保留手动触发，方便首次部署时验证链路。
+#   - workflow_dispatch：保留手动触发以便首次部署验证，但**不得**让任意分支的源码
+#     流入持有 GH_PAT 的 publish job。威胁：手动触发会以「所选 ref 的源码」运行，
+#     若允许在任意分支/任意 ref 上触发，等于任何有 workflow 运行权限的人都可拿一个
+#     被改写过的 triage 去喂 publish job，借高权限 PAT 发文（伪同 pwn-request）。
+#     对策（两道锁）：
+#       ① checkout 的 ref 固定为**默认分支**（绝不用 `github.ref`），故无论手选哪个
+#          分支，执行的 triage 源码恒为已合并的可信代码；
+#       ② publish job 绑定受保护的 `environment`（需人工审批），把「持令牌发文」
+#          收窄到获批主体。
+#     ⚠️ 请勿把 checkout 的 ref 改回 `github.ref`——那会让所选分支的源码进入
+#        高权限链，重新打开本条门禁。
 #
 # 所需 Secrets（仓库 Settings → Secrets and variables → Actions）：
 #   - AI_API_ENDPOINT 必填，上游 base_url（OpenAI 兼容口，如 https://api.deepseek.com/v1）
@@ -40,8 +52,19 @@
 #                     工作流运行时将本 Secret 透传过去，从而免改代码即可切换模型。
 #   - GH_PAT          必填，GitHub PAT，需同时含以下权限：
 #                     · security_events 读权限 —— 读取本仓库 CodeQL 告警
-#                     · repo / issues 写权限   —— 创建公开跟踪 Issue 与私密安全公告
+#                     · issues 写权限          —— 创建公开跟踪 Issue
+#                     · repository_advisories:write —— 创建私密安全公告（security advisory）
+#                       细分令牌（fine-grained PAT）需**同时具备该权限与
+#                       仓库管理员/安全经理（security manager）角色**；
+#                       或改用 classic PAT（`repo` scope，且账号为仓库管理员/安全经理）。
 #                     ⚠️ 仅注入 publish job（见下），triage job 绝不接触该 Secret。
+#                     ⚠️ 若只配 `repo/issues` 写权限，建公告会在建公开 Issue **之前**失败。
+#   - AUDIT_HANDOFF_PRIVATE_KEY
+#                     必填（启用加密交接后），与仓库内 ai-audit/handoff-public-key.pem
+#                     **配对的 RSA 私钥**（PEM 全文）。triage 用**公钥**加密结论后
+#                     才上传 artifact，本 Secret 仅注入 publish job 用于解密。
+#                     ⚠️ 生成方式见 ai-audit/README.md「加密交接」一节；公钥为公开
+#                        信息可随仓库提交，私钥**只能**经 Secret 注入、严禁入库。
 #   - MCP_CONFIG      可选，MCP Server（GitHub API）配置
 #
 # ⚠️ 注意：
@@ -85,181 +108,63 @@ concurrency:
   # group 固定为工作流名（不掺 ref/事件），确保**所有**触发源的实例都排进同一条队列；
   # 若按 github.ref 分组，不同分支/事件的并发实例会落入不同队列，竞态依旧。
   group: ${{ github.workflow }}
-  # false = 排队而非取消：宁可稍等，也不并发发文
+  # false = 不取消正在跑的实例：宁可稍等，也不并发发文
   cancel-in-progress: false
+  # ⚠️ 仅设 cancel-in-progress: false **不等于**「排队」：默认行为是「新实例替换掉
+  #    该 group 里尚未开始的 pending 实例」——若 CodeQL 连续多次完成，先前排队的
+  #    实例会被后到的顶掉，其审计结论被静默丢弃（表现为「跑了 CodeQL 却没发文」）。
+  #    queue: max 让 pending 实例**全部保留**、按序排队执行，杜绝静默丢单。
+  queue: max
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Job 1：审计（无 Secret、无写权限、不接触 GH_PAT）
+  # Job 1：审计（无仓库写凭据、不接触 GH_PAT）
   # ---------------------------------------------------------------------------
   # 这是「不可信输入」与「高权限动作」之间的隔离墙：本 job 只做只读分析，
   # 产出结构化结论 artifact；它**永远不持有**任何可写仓库的凭据。
+  # ⚠️ 注意措辞：本 job 并非「零凭据」——它仍需 AI_API_TOKEN（调 LLM）与只读的
+  #    GITHUB_TOKEN（读 CodeQL 告警）；应准确表述为「**不持仓库写凭据**」。
   triage:
-    name: 审计分流（无凭据）
+    name: 审计分流（无仓库写凭据）
     runs-on: ubuntu-latest
     permissions:
       # 只读：足够读取 CodeQL 告警与仓库内容；本 job 不持有任何仓库写凭据。
       contents: read
       security-events: read
     # 门禁：
-    #   1) 手动触发直接放行；
+    #   1) 手动触发需落在**默认分支**上才放行（配合下方 checkout 固定默认分支，
+    #      即便手选其它分支，执行的 triage 源码仍是已合并的可信代码）；
     #   2) workflow_run 需上游 CodeQL 成功完成（避免失败/取消的过期扫描状态）；
     #   3) 【安全关键】上游运行的 head 仓库必须是本仓库，即 fork PR 触发的
     #      CodeQL 运行**一律不进入本工作流**，杜绝 PR 源码充当不可信输入。
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) ||
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_repository.full_name == github.repository)
     steps:
       # 只读出站加固运行器（audit 模式：记录所有出站调用，便于事后审计）
       - name: 加固运行器（审计所有出站调用）
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
-      # 拉取源码：只认**可信 ref**，绝不用 workflow_run 事件里的 PR head。
-      #   手动触发 -> 当前 ref（由有写权限的维护者手动发起，可信）；
-      #   workflow_run -> 触发本次审计的那次 CodeQL 运行**实际分析的提交**
-      #   （github.event.workflow_run.head_sha）。上游已在 if 中排除 fork，故该
-      #   head_sha 必属本仓库既有提交，是可信代码，而非事件携带的任意提交。
+      # 拉取源码：**一律默认分支**，绝不用 workflow_run 事件里的 PR head，
+      #   也**不用** `github.ref`（手动触发时它指向所选分支，会把未审分支的源码送进
+      #   下游持 GH_PAT 的 publish 链）。上游已在 if 中排除 fork，故默认分支恒为
+      #   已合并的可信代码。
       # ⚠️ 第三方 Actions 一律锁定到已复核的不可变 commit SHA，禁用易被上游篡改的
       #   浮动 tag（如 actions/checkout@v4）；框架同样锁定到复核过的发布 commit。
-      # ⚠️ id 用于把「实际检出的修订版本」显式记录下来，供下游第 0 步按同一
-      #   修订版本过滤 CodeQL 告警：checkout action 会输出 ref/commit，其中
-      #   steps.checkout.outputs.commit 是**解析后的 40 位提交 SHA**（比 github.sha
-      #   更可靠——手动触发指定 tag/分支时 github.sha/github.ref 未必等于检出内容）。
-      #   下面「建库」「取告警」「审计」三段因此统一锚定到**同一个修订版本**上。
-      #
-      # ⚠️⚠️ 【修订版本锚定，勿改回 default_branch】════════════════════════════════
-      #   成因：workflow_run 场景若检出的 ref 写 `github.event.repository.default_
-      #   branch`，取到的是**移动中的默认分支 tip**，而非「触发本次审计的那次 CodeQL
-      #   运行所分析的提交」。二者在下列窗口里必然错位：
-      #     CodeQL 分析提交 A 完成 → 审计被拉起，但在 checkout 之前，默认分支被别人
-      #     （或 CI）推了一个**不影响 CodeQL 触发**的新提交 B（如仅改文档 / 非 `**.py`
-      #     路径）→ 默认分支 tip 已是 B。
-      #   此时 checkout 检出 B，CHECKOUT_COMMIT=B；而 CodeQL 告警的
-      #   most_recent_instance.commit_sha 仍是 A（B 未触发新的 CodeQL 分析，故告警
-      #   不会在 B 上重建）。下游第 0 步以 commit_sha **精确等于** CHECKOUT_COMMIT
-      #   为主判据过滤，A≠B → 本次扫描的全部告警被**静默丢弃**，审计报「无告警」，
-      #   真实漏洞被漏审；且 CodeQL.yml 的 push 触发仅匹配 `**.py`，文档类推送
-      #   **不会**补跑一次扫描，故不存在「稍后自愈」的兜底。
-      #   对策：把检出**绑定到触发运行实际分析的 SHA**（head_sha），使检出的提交与
-      #   告警的 commit_sha 天然同源（同一提交 A），消除漂移窗口——既修掉漏审，也
-      #   让「建库/审计的代码」与「拉取到的告警」严格同版本。
-      #   head_sha 由 workflow_run 事件在**触发时即冻结**，不随默认分支移动而变，
-      #   故不受上述窗口影响；且上游经 head_repository 门禁已排除 fork，安全性不变。
-      - name: Checkout 本项目（锚定触发运行实际分析的提交）
-        id: checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Checkout 本项目（仅可信 ref：默认分支）
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # workflow_run -> head_sha（本次扫描分析的提交，权威无歧义）；
-          # workflow_dispatch -> 当前 ref（维护者手动指定的可信 ref）。
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-
-      # ── 初始化 CodeQL CLI 并构建数据库（供 MCP codeql toolbox 读取）───────────
-      # 说明：审计人格挂了 seclab_taskflow_agent.toolboxes.codeql，Agent 会用
-      #   `codeql` 工具对源码做 AST/数据流取证来精确定位行号，因此这里先本地建库。
-      # 关键取舍：
-      #   - 建库对象是**本步已检出的可信源码**（workflow_run 场景下即本次 CodeQL
-      #     实际分析的提交 head_sha），与「只认可信提交」的安全模型一致，不引入
-      #     任何不可信输入，且与下游过滤告警所用的 commit 严格同源。
-      #   - 数据库落在 /tmp 下（而非仓库工作区），避免污染检出树、也不会被
-      #     upload-artifact 误打包；后续用环境变量把路径透传给 Agent。
-      #
-      # ⚠️ CLI 定位与建库**拆成两步**：CLI 的安装位置随 runner 而异——托管 runner
-      #   常装在**带版本号的 tool-cache 路径**（如 /opt/hostedtoolcache/codeql/
-      #   3.19.0/x64/codeql），自托管 runner 可能在 /opt/codeql 或仅 PATH，甚至
-      #   没装。旧实现只探测「单个写死路径 + PATH」，命中不了时直接 exit 1，会让
-      #   整个审计在**建库之前**就中止（正是本次评审指出的缺陷）。
-      #   故将探测收敛到 .github/scripts/resolve-codeql-cli.sh：多候选探测 + 兜底
-      #   下载官方固定版本 bundle（**先校验 SHA-256 完整性再解压执行**），解析出的
-      #   真实路径经 GITHUB_ENV 透传给后续步骤。
-      - name: 解析 CodeQL CLI（多候选探测 + 兜底安装）
-        run: |
-          set -euo pipefail
-          # shellcheck source=.github/scripts/resolve-codeql-cli.sh
-          source .github/scripts/resolve-codeql-cli.sh
-          if ! CLI="$(resolve_codeql_cli)"; then
-            echo "ERROR: 无法获得可执行的 CodeQL CLI（已知位置未命中且兜底安装失败）。" >&2
-            exit 1
-          fi
-          # ⚠️ 【写 GITHUB_ENV 前必须归一化为绝对路径】
-          #   resolve_codeql_cli 已在内部归一化（见脚本内 _canonicalize），此处再兜一层，
-          #   保证无论解析脚本怎么改，写入 GITHUB_ENV 的都**永不是相对路径**。
-          #   成因：PATH 里含相对条目时 `command -v codeql` 会返回 `bin/codeql` 这类相对
-          #   路径——它只在当前 cwd 成立；而消费该变量的后续步骤（建库步、以及
-          #   `working-directory: seclab-taskflow-agent` 的审计步 / codeql toolbox）
-          #   cwd 各不相同，相对路径在那边解析不到 → CLI 静默失效、取证退化。
-          if ! CLI_ABS="$(canonicalize_path "$CLI")"; then
-            echo "ERROR: CodeQL CLI 路径无法归一化为绝对路径：$CLI" >&2
-            exit 1
-          fi
-          # 归一化后必须仍可执行，避免把「规范化成不存在的路径」当成功放行
-          if [ ! -x "$CLI_ABS" ]; then
-            echo "ERROR: 归一化后的 CodeQL CLI 不可执行：$CLI_ABS" >&2
-            exit 1
-          fi
-          CLI="$CLI_ABS"
-          echo "CodeQL CLI: $CLI"
-          "$CLI" version
-          # 把实测的**绝对**路径写入 GITHUB_ENV，供建库步骤与后续 Agent（codeql toolbox）复用
-          echo "CODEQL_CLI=${CLI}" >> "$GITHUB_ENV"
-
-      - name: 构建 CodeQL 数据库
-        # ⚠️ 【修订版本一致】本数据库基于**上一步检出的修订版本**构建；下游拉取 CodeQL
-        #   告警时会以同一 ref/commit 过滤（见「运行 AI 审计 taskflow」的 CHECKOUT_* 注入），
-        #   从而保证「用哪版代码建库，就审哪版告警」，不会拿 A 版本数据库调查 B 版本告警。
-        run: |
-          set -euo pipefail
-          # ① 直接消费上一步解析并写入 GITHUB_ENV 的真实 CLI 路径。
-          #    若因异常未注入，则回落到同一解析脚本重新探测（保证幂等自愈）。
-          # shellcheck source=.github/scripts/resolve-codeql-cli.sh
-          source .github/scripts/resolve-codeql-cli.sh
-          if [ ! -x "${CODEQL_CLI:-}" ]; then
-            CODEQL_CLI="$(resolve_codeql_cli)" \
-              || { echo "ERROR: 未找到可执行的 CodeQL CLI，无法建库。" >&2; exit 1; }
-            echo "CODEQL_CLI=${CODEQL_CLI}" >> "$GITHUB_ENV"
-          fi
-          # ⚠️ 建库步同样强制绝对路径：即便 GITHUB_ENV 里的值被人改成相对路径，
-          #   这里也先归一化再用，杜绝「同一台机器上换 cwd 就找不到 CLI」的漂移。
-          CLI="$(canonicalize_path "$CODEQL_CLI")" \
-            || { echo "ERROR: CODEQL_CLI 无法归一化为绝对路径：$CODEQL_CLI" >&2; exit 1; }
-          echo "CodeQL CLI: $CLI"
-          "$CLI" version
-
-          # ② 建库（纯离线本地操作，不联网、不上传，只需读权限即可）。
-          # ⚠️ 【落盘路径单一来源】先把**实际使用的**基目录固化成 DBS_BASE 变量，
-          #   并写入 GITHUB_ENV（主步骤 env: 也显式引用同一变量，见下方「运行 AI
-          #   审计 taskflow」）。这样「建库」与「消费建库」两处**必然指向同一目录**：
-          #   若本步用 CODEQL_DBS_BASE_PATH 建库、而下游却把 env: 写死成 /tmp/codeql-dbs，
-          #   一旦基目录被改成非默认值，Agent 就会去错误路径找库（查不到 → 取证退化）。
-          DBS_BASE="${CODEQL_DBS_BASE_PATH:-/tmp/codeql-dbs}"
-          mkdir -p "$DBS_BASE"
-          "$CLI" database create "${DBS_BASE}/${{ github.repository }}" \
-            --language=python \
-            --source-root=. \
-            --overwrite
-          # 自检：数据库确实落盘，避免「静默建库失败」让后续 Agent 拿到空数据库。
-          test -d "${DBS_BASE}/${{ github.repository }}" \
-            || { echo "ERROR: CodeQL 数据库未生成。" >&2; exit 1; }
-          # 自检：库文件确属 CodeQL 数据库（存在 codeql-database.yml 才认；防止把
-          #   空目录/半成品当成功建库放行）。
-          test -f "${DBS_BASE}/${{ github.repository }}/codeql-database.yml" \
-            || { echo "ERROR: ${DBS_BASE}/${{ github.repository }} 不是有效的 CodeQL 数据库。" >&2; exit 1; }
-
-          # ③ 把**实测值**写入 GITHUB_ENV，供下游按同一目录消费（单一事实来源）：
-          #    · CODEQL_CLI —— 解析步已写过一次，这里兜底覆盖，确保后续 Agent
-          #      （codeql toolbox）拿到的 CLI 与本步实际建库所用**完全一致**；
-          #    · CODEQL_DBS_BASE_PATH —— 固化本步实际使用的数据库基目录，杜绝
-          #      「建库用一个路径、下游用另一个路径」的漂移。
-          echo "CODEQL_CLI=${CLI}" >> "$GITHUB_ENV"
-          echo "CODEQL_DBS_BASE_PATH=${DBS_BASE}" >> "$GITHUB_ENV"
 
       # 拉取 seclab-taskflow-agent 框架，固定到已复核发布的不可变 commit SHA
       - name: Checkout seclab-taskflow-agent 框架（固定 commit）
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: GitHubSecurityLab/seclab-taskflow-agent
           # 固定到复核过的 v0.5.0 发布 commit，而非浮动默认分支
@@ -279,10 +184,7 @@ jobs:
       - name: 安装 hatch（锁定版本）
         run: pip install hatch==1.14.0 "virtualenv<21"
 
-      # 运行 AI 审计 taskflow（消费**与检出/建库修订版本一致**的 CodeQL 告警），产出结构化结论 artifact。
-      # ⚠️ 【修订版本一致】taskflow 第 0 步以 checkout 的 ref/commit 为基准过滤告警，
-      #   故必须透传检出结果（见下方 CHECKOUT_REF / CHECKOUT_COMMIT），否则会退化为
-      #   「跨分支/跨提交全量送审」，与被审计代码不是同一修订版本。
+      # 运行 AI 审计 taskflow（消费最新 CodeQL 告警），产出结构化结论 artifact。
       # ⚠️ 本 job 不注入 GH_PAT；读取 CodeQL 告警所需的只读令牌用 GITHUB_TOKEN
       #   （其权限已被顶层收紧到 contents: read，且上游 CodeQL 告警读取无需写权限）。
       #   AI_* 凭据仅用于调用 LLM，不具备任何仓库写能力。
@@ -297,42 +199,11 @@ jobs:
           MCP_CONFIG: ${{ secrets.MCP_CONFIG }}
           # 审计结果落盘位置，供 publish job 消费
           AUDIT_VERDICT_FILE: /tmp/audit-verdicts.json
-          # 【修订版本一致】把上面 checkout 步骤**实际检出**的修订版本透传给 taskflow：
-          #   taskflow 第 0 步据此只保留「最近实例归属于该 ref/commit」的告警，
-          #   从源头丢弃属于其它分支/提交的告警，保证「本地建库/审计的代码」与
-          #   「拉取到的告警」处在**同一修订版本**上（否则会对着 A 版本代码建的库，
-          #   去调查 B 版本的告警，产出删除/错位的失真证据）。
-          #   CHECKOUT_REF 用于 ref 归属比对（如 refs/heads/main）；
-          #   CHECKOUT_COMMIT 用于 commit_sha 精确比对（40 位 SHA，权威无歧义）。
-          # ⚠️【勿用 steps.checkout.outputs.ref 作 CHECKOUT_REF】：workflow_run 场景下
-          #   检出的 ref 已是**提交 SHA**（见上方 checkout 的 ref 表达式），checkout 的
-          #   outputs.ref 会**原样回显该 SHA** 而非 `refs/heads/...`；拿它去做 ref 兜底
-          #   比对本就永远不匹配，等于废掉兜底。故这里显式从**事件语义**取 ref：
-          #     · workflow_run -> head_branch 补成 refs/heads/<branch>（扫描所属分支）；
-          #     · workflow_dispatch -> github.ref（维护者选定的完整 ref）。
-          #   主判据（CHECKOUT_COMMIT 的 commit_sha 精确比对）不受影响、且为权威路径；
-          #   此处仅保证「缺 commit_sha 的告警」也能靠 ref 兜底正确归属。
-          CHECKOUT_REF: ${{ github.event_name == 'workflow_run' && format('refs/heads/{0}', github.event.workflow_run.head_branch) || github.ref }}
-          CHECKOUT_COMMIT: ${{ steps.checkout.outputs.commit }}
-          # ── CodeQL MCP（codeql toolbox）所需环境变量 ──────────────────────
-          # 说明：codeql toolbox 需要一个 **CLI 可执行文件绝对路径**与一个
-          #   **数据库基目录**（它会在其下按仓库名寻找数据库）。
-          # ⚠️ 为什么不在 env: 里写 `$(which codeql)`：env: 是**静态 YAML**，
-          #   `$(...)` 属 shell 命令替换，在 env 里**不会被执行**——会被原样当
-          #   字面量传给 Agent，指向一个根本不存在的路径。
-          #   CODEQL_CLI 由前面「建库」步骤探测真值并写入 GITHUB_ENV，会原生注入
-          #   本步骤环境。
-          # ⚠️ CODEQL_DBS_BASE_PATH 必须与**建库步实际使用的**基目录一致，故这里
-          #   引用建库步写入 GITHUB_ENV 的同名变量，而**不是**硬编码 /tmp/codeql-dbs：
-          #   硬编码会在基目录被改为非默认值（如仓库变量/手动触发覆盖）时覆盖掉建库
-          #   实际路径，令 Agent 去错误目录找库（取证退化为「查不到数据库」）。
-          #   run: 内部再做一次兜底导出，确保即便 GITHUB_ENV 缺失也能把有效路径
-          #   传给 hatch 子进程。
-          CODEQL_DBS_BASE_PATH: ${{ env.CODEQL_DBS_BASE_PATH }}
+          # 仓库路径（owner/repo）：与下方 `-g repo=` **同源**（都取 github.repository），
+          # 供 shell 任务的第 0 步拉取告警端点使用，杜绝「拉 A 仓库告警、却按 B 仓库 key
+          # 审计」的仓库分裂（shell 的 run: 不做模板渲染，拿不到 globals.repo）。
+          AUDIT_REPO: ${{ github.repository }}
         run: |
-          # 兜底：确保 CODEQL_CLI 非空（正常情况下由建库步经 GITHUB_ENV 注入）
-          export CODEQL_CLI="${CODEQL_CLI:-/opt/hostedtoolcache/codeql/current/codeql}"
-          export CODEQL_DBS_BASE_PATH="${CODEQL_DBS_BASE_PATH:-/tmp/codeql-dbs}"
           # 模型从仓库 Secret AI_MODEL_NAME 经 COPILOT_DEFAULT_MODEL 传入框架，
           # 因此调用前必须确保其非空（GitHub Actions 未配置的 Secret 会解析成空串）
           : "${AI_MODEL_NAME:?请配置仓库 Secret AI_MODEL_NAME 以指定 AI 审计所用模型}"
@@ -348,43 +219,280 @@ jobs:
           hatch run main -t ai_audit.alert_triage_example \
               -g repo="${{ github.repository }}" \
               -m ai_audit.model_config
-          # 兜底：若 taskflow 未产出结论文件，写一个空数组，保证 artifact 存在
+          # 兜底：若 taskflow 未产出结论文件，写一个空数组，保证后续步骤有输入
           [ -f "$AUDIT_VERDICT_FILE" ] || echo '[]' > "$AUDIT_VERDICT_FILE"
 
-      # 上传审计结论（纯数据），交给下游持令牌的 publish job。
-      # 仅上传结论 JSON，不上传任何可执行产物，避免下游执行不可信代码。
-      - name: 上传审计结论 artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      # ── 空结论短路（triage 侧）：无 APPROVED 结论时**不产出任何密文** ──────
+      # 成因：taskflow 在**无 APPROVED 结论**时也会正常收尾，兜底逻辑会把
+      #      `/tmp/audit-verdicts.json` 写成 `[]`。若照旧加密并上传，下游 publish
+      #      job 拿到的是「合法密文（明文为空数组）」——它**无从判断内容是否为空**，
+      #      只能照常解密，于是无 APPROVED 结论的运行仍会去撞 `AUDIT_HANDOFF_PRIVATE_KEY`：
+      #      首次部署尚未配密钥时 publish 会**硬失败**（"CodeQL 跑完 → AI 审计红了"），
+      #      却是「毫无可发布内容」，把配置缺失误报成链路故障。
+      # 对策：在这里就用**确定性外壳检查**判空（`jq 'length'`），并把结论**显式**外化
+      #      为一枚标记文件 `audit-verdicts.empty`：
+      #        · 结论为空 → 只产出这枚标记，**跳过加密**、**不上传任何密文**；
+      #        · 结论非空 → 照常加密并上传密文三件套（不产出标记）。
+      #      publish 侧据此在**任何密码学操作之前**短路跳过，与私钥是否配置解耦。
+      # 安全边界不变：判空只看「条数」，不解析、不放宽任何完整性要求；确有内容时
+      #      仍严格走「配对自检 → 验 HMAC → 解密 → 数组格式校验」。
+      - name: 判空并写入空结论标记（无 APPROVED 结论时不产出密文）
+        id: emptiness
+        run: |
+          set -euo pipefail
+          VERDICT_FILE=/tmp/audit-verdicts.json
+          [ -f "$VERDICT_FILE" ] || { echo "缺少结论文件 $VERDICT_FILE" >&2; exit 1; }
+          # 防御：结论文件必须是合法 JSON 数组（与 publish 侧同源的格式校验）
+          jq -e 'type == "array"' "$VERDICT_FILE" >/dev/null \
+            || { echo "结论文件不是 JSON 数组，拒绝继续" >&2; exit 1; }
+          COUNT="$(jq 'length' "$VERDICT_FILE")"
+          if [ "$COUNT" -eq 0 ]; then
+            # 显式空结论标记：**唯一**的空结果信号，publish 侧只认这枚文件
+            : > /tmp/audit-verdicts.empty
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+            echo "本次无 APPROVED 结论（0 条），跳过加密与上传：仅交付空结论标记。"
+          else
+            rm -f /tmp/audit-verdicts.empty
+            echo "empty=false" >> "$GITHUB_OUTPUT"
+            echo "本次待发布结论 $COUNT 条，继续加密并上传密文三件套。"
+          fi
+
+      # ── 加密结论（协调披露的关键一步） ─────────────────────────────────────
+      # 威胁：artifact 会被平台**持久化，且任何拥有仓库读权限的人都能下载**
+      #       （公开仓库 = 任何互联网读者）。而 verdict 里含 `report` 全文、
+      #       `rule`、`path` —— 正是本工作流刻意**不**放进公开 Issue 的未修复漏洞细节。
+      #       若明文上传，等于把「私密 advisory」里的细节经由 artifact 泄成公开可读，
+      #       彻底架空 SECURITY.md 的协调披露设计。
+      # 对策：在上传前用**公钥（非机密）**做混合加密 + **加密后认证**（encrypt-then-MAC），
+      #       只上传密文：
+      #         · 数据密钥 / MAC 密钥均为 64 位十六进制**可打印**串（避免 raw 二进制经
+      #           `-pass file:` 时被换行/空字节截断而退化成空口令）；
+      #         · 用数据密钥做 AES-256-CBC 加密；
+      #         · 用独立的 MAC 密钥对**密文**做 HMAC-SHA256（先加密后认证）；
+      #         · 两个密钥一并经 RSA-OAEP-SHA256 封装。
+      #       公钥可就地提交、无需注入任何 Secret —— **triage job 因此保持零凭据**
+      #       （安全墙不削弱）。唯一能解密的是持私钥的 publish job（私钥经 Secret 注入）。
+      # 完整性：publish 侧**先验 HMAC 再解密**——`openssl enc` 不支持 AEAD（GCM 会被拒绝），
+      #       故用 encrypt-then-MAC 达到等效的「密文被篡改即拒绝」，而非只做数组格式检查。
+      # 顺带收益：密文对读权限所有者不可读，且密文不可执行，下游仍只消费数据。
+      - name: 加密审计结论（公钥混合加密 + encrypt-then-MAC，仅上传密文）
+        if: steps.emptiness.outputs.empty != 'true'
+        env:
+          # 公钥随仓库提交（公开信息），triage 不接触任何 Secret
+          AUDIT_HANDOFF_PUBLIC_KEY: ${{ github.workspace }}/ai-audit/handoff-public-key.pem
+        run: |
+          set -euo pipefail
+          : "${AUDIT_HANDOFF_PUBLIC_KEY:?缺少公钥路径}"
+          test -f "$AUDIT_HANDOFF_PUBLIC_KEY" \
+            || { echo "公钥文件不存在：$AUDIT_HANDOFF_PUBLIC_KEY" >&2; exit 1; }
+          umask 077
+          # 1) 生成两枚**可打印**的一次性随机密钥（各 64 位十六进制字符 = 256 bit 熵），
+          #    ⚠️ 必须用 hex 而非 raw 二进制：`-pass file:` 只读**首行**，raw 里随机的
+          #       换行会截断口令、首字节若恰为 LF 则口令为空（等效无口令）。
+          ENC_KEY="$(openssl rand -hex 32)"   # 数据加密密钥
+          MAC_KEY="$(openssl rand -hex 32)"   # 完整性认证密钥（与加密密钥分离）
+          # 2) AES-256-CBC + PBKDF2 加密结论（salt 由 openssl 随机生成）
+          printf '%s' "$ENC_KEY" > /tmp/.audit-enc.key
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
+            -in /tmp/audit-verdicts.json -out /tmp/audit-verdicts.json.enc \
+            -pass file:/tmp/.audit-enc.key
+          # 3) encrypt-then-MAC：对**密文**做 HMAC-SHA256（先加密后认证，避免篡改密文）
+          printf '%s' "$MAC_KEY" | openssl dgst -sha256 -mac HMAC -macopt hexkey:"$MAC_KEY" \
+            -binary /tmp/audit-verdicts.json.enc > /tmp/audit-verdicts.json.mac
+          # 4) 用**公钥**（RSA-OAEP-SHA256）封装「加密密钥 + MAC 密钥」（JSON 明文交付）
+          printf '{"enc_key":"%s","mac_key":"%s"}' "$ENC_KEY" "$MAC_KEY" > /tmp/.audit-keys.json
+          openssl pkeyutl -encrypt -pubin -inkey "$AUDIT_HANDOFF_PUBLIC_KEY" \
+            -in /tmp/.audit-keys.json -out /tmp/audit-verdicts.key.enc \
+            -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256
+          # 5) 清除明文与临时密钥材料，避免误上传
+          shred -u /tmp/audit-verdicts.json /tmp/.audit-enc.key /tmp/.audit-keys.json \
+            2>/dev/null || rm -f /tmp/audit-verdicts.json /tmp/.audit-enc.key /tmp/.audit-keys.json
+          echo "已加密+认证：仅上传 audit-verdicts.json.enc（密文）、audit-verdicts.key.enc（封装密钥）、audit-verdicts.json.mac（HMAC）"
+
+      # 上传审计结论（**密文**），交给下游持令牌与私钥的 publish job。
+      # 仅上传加密后的纯数据，不上传任何可执行产物，避免下游执行不可信代码。
+      # ⚠️ 上传路径是**互斥**的两条分支（见上一步的 `empty` 输出）：
+      #    · 非空 → 上传密文三件套（.enc/.key.enc/.mac）；
+      #    · 空   → 只上传空结论标记 audit-verdicts.empty（**不含任何密文**）。
+      #      正因如此，无 APPROVED 结论运行时 artifact 里根本不存在 `.enc`，publish 侧
+      #      的判空短路无论如何都会命中，无需（也不应）依赖私钥。
+      - name: 上传加密后的审计结论 artifact（空结论时只上传标记）
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: audit-verdicts
-          path: /tmp/audit-verdicts.json
+          path: |
+            /tmp/audit-verdicts.json.enc
+            /tmp/audit-verdicts.key.enc
+            /tmp/audit-verdicts.json.mac
+            /tmp/audit-verdicts.empty
+          # 空结论时只有 .empty、无内容时为三件套，任何一个分支都至少有一个文件
           if-no-files-found: error
+          # 进一步缩短留存期，降低密文在平台上被长期留存的暴露面
+          retention-days: 7
 
   # ---------------------------------------------------------------------------
   # Job 2：发布（唯一持有 GH_PAT 的 job）
   # ---------------------------------------------------------------------------
-  # 本 job 的输入只有上游 artifact（结构化 JSON），字段受白名单约束，因此即便
+  # 本 job 的输入是上游 artifact（结构化 JSON），字段受白名单约束，因此即便
   # artifact 内容被污染，也无法注入工作流或命令；它不检出/不执行任何仓库源码。
+  # ⚠️ 该 artifact 已在 triage 侧用**公钥混合加密 + encrypt-then-MAC**，本 job 用私钥
+  #    （Secret 注入）**先验 HMAC 再解密**后才消费：读权限者即使下载了 artifact 也只能
+  #    拿到密文，且任何篡改都会被 MAC 拦下，无法影响发布结果。
   publish:
     name: 创建 Issue（持令牌）
     needs: triage
     runs-on: ubuntu-latest
     # 仅当上游确实产出了结论时才跑
     if: needs.triage.result == 'success'
+    # 🔒 受保护环境（人工审批门禁）：这是「持 GH_PAT 发真实 Issue/公告」的唯一出口，
+    #    绑定 environment 后，未获批的运行会在此 job **暂停等待审批**，
+    #    把高权限动作收窄到经授权的主体（尤其对手动触发场景）。
+    #    ⚠️ 需在仓库 Settings → Environments 建同名环境并配置 required reviewers；
+    #       未配置时 jobs 会因 environment 不存在而失败，请一并完成。
+    environment:
+      name: ai-audit-publish
     permissions:
       # 仍保持最小权限：建 Issue 走 GH_PAT，不依赖 GITHUB_TOKEN 写能力
       contents: read
     steps:
       - name: 加固运行器（审计所有出站调用）
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
-      - name: 下载审计结论 artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      # ⚠️ v8 起该 action 改用 ESM，且**不再无条件解压**所有下载内容：它先看 Content-Type，
+      #    非压缩包原样落盘（密文三件套本身就是未压缩文件，故落到 /tmp/audit 仍是平铺的文件名，
+      #    与下方 precheck 读取的路径一致）；digest 不匹配默认按 error 失败（安全默认，保留）。
+      - name: 下载加密后的审计结论 artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: audit-verdicts
           path: /tmp/audit
+
+      # ── 空结论短路（必须在解密之前） ───────────────────────────────────────
+      # ⚠️ 顺序很关键：判断「有没有东西要发布」**早于**任何密码学操作。
+      #    成因：triage 在**无 APPROVED 结论**时会正常收尾（兜底把结论写成 `[]`）。
+      #    若「先解密再判空」，一条空结论也会去撞 `AUDIT_HANDOFF_PRIVATE_KEY`：
+      #    Secret 尚未配置时，本 job 会在**毫无可发布内容**的情况下硬失败
+      #    （表现为「CodeQL 跑完 → AI 审计红了」，实际却无事可做），
+      #    既误导排查、又把「首次部署尚未配密钥」误报成链路故障。
+      #    故此处先用**确定性外壳检查**判空——它不碰私钥，与 Secret 是否配置无关。
+      # ✅ 空结果的**唯一**信号是 triage 侧显式外化的标记文件 `audit-verdicts.empty`：
+      #    无 APPROVED 结论时 triage **不加密、不上传任何密文**，artifact 里只有这枚标记；
+      #    有内容时则只有密文三件套、没有标记。两条分支互斥，判据明确、无歧义。
+      # 说明：判空只看「有没有待发布内容」，不解析密文，也不放宽任何完整性要求——
+      #      一旦确有密文需要解密，仍严格走「配对自检 → 验 HMAC → 解密 → 数组校验」。
+      - name: 解密前短路（无待发布结论则跳过，不触碰私钥）
+        id: precheck
+        run: |
+          set -euo pipefail
+          # 1) 显式空结论标记：triage 判定为无 APPROVED 结论时写入（此时 artifact 内无任何密文）
+          if [ -f /tmp/audit/audit-verdicts.empty ]; then
+            echo "triage 已标记本次无 APPROVED 结论（无待发布结论），跳过解密与发文。"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # 2) 兼容旧产物 / 兜底：既无标记又无密文，同样视为无待发布结论
+          if [ ! -f /tmp/audit/audit-verdicts.json.enc ]; then
+            echo "无待发布结论（既无 audit-verdicts.empty 标记，也无 audit-verdicts.json.enc 密文），跳过解密与发文。"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # 3) 有密文却缺配套材料 → 属产物不完整，明确失败（不猜、不放行）
+          test -f /tmp/audit/audit-verdicts.key.enc \
+            || { echo "缺少封装密钥 audit-verdicts.key.enc" >&2; exit 1; }
+          test -f /tmp/audit/audit-verdicts.json.mac \
+            || { echo "缺少完整性标签 audit-verdicts.json.mac" >&2; exit 1; }
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      # ── 解密审计结论（协调披露的收口） ─────────────────────────────────────
+      # artifact 里只有密文与 HMAC（见 triage job 的加密步骤）；只有本 job 经 Secret
+      # 拿到私钥，是**唯一**能把内容变回可读的一方 —— 这正是「为发布者加密」的落地。
+      # ⚠️ 先**验 HMAC 再解密**：密文被篡改（或 MAC 不匹配）时直接失败，绝不把未认证的
+      #    数据喂给下游建 Issue。仅做「是不是 JSON 数组」的格式检查**不构成**完整性校验。
+      # 若 Secret 缺失或密钥不匹配：明确失败，绝不退化成「明文放行」。
+      - name: 校验完整性并解密审计结论（私钥仅本 job 持有）
+        if: steps.precheck.outputs.skip != 'true'
+        env:
+          AUDIT_HANDOFF_PRIVATE_KEY: ${{ secrets.AUDIT_HANDOFF_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          # 私钥缺失时给出**可照做**的修复指引，而不是一句干巴巴的报错：
+          #   密钥对必须「公钥入库 + 私钥进 Secret」两步成对完成，只做一半必然解密失败。
+          if [ -z "${AUDIT_HANDOFF_PRIVATE_KEY:-}" ]; then
+            {
+              echo "缺少仓库 Secret AUDIT_HANDOFF_PRIVATE_KEY，无法解密审计结论（已按设计明确失败，不降级为明文放行）。"
+              echo ""
+              echo "修复步骤（密钥对必须成对配置，只配一半必然失败）："
+              echo "  1) 本地生成 3072 位密钥对："
+              echo "       openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out handoff-private.pem"
+              echo "       openssl rsa -in handoff-private.pem -pubout -out handoff-public.pem"
+              echo "  2) 用新公钥替换仓库内占位公钥并提交："
+              echo "       cp handoff-public.pem ai-audit/handoff-public-key.pem"
+              echo "  3) 把**私钥全文**存入 Secret（Settings → Secrets and variables → Actions → New secret）："
+              echo "       Name: AUDIT_HANDOFF_PRIVATE_KEY"
+              echo "       Value: handoff-private.pem 的完整内容"
+              echo "  4) 用后立即销毁本地私钥：shred -u handoff-private.pem"
+              echo ""
+              echo "详见 ai-audit/README.md「加密交接：生成密钥对并注入私钥」一节。"
+            } >&2
+            exit 1
+          fi
+          umask 077
+          # 把私钥落到临时文件（Secret 不入命令行，避免进程列表泄漏）
+          KEYFILE="$(mktemp)"
+          printf '%s\n' "$AUDIT_HANDOFF_PRIVATE_KEY" > "$KEYFILE"
+          # 1) 用私钥解出「加密密钥 + MAC 密钥」JSON（RSA-OAEP-SHA256）
+          #    ⚠️ 这一步同时充当**密钥配对自检**：能解开封装密钥，才说明本 Secret 里的私钥
+          #       确实与 triage 用的仓库公钥配对。错配（如换了公钥却没换私钥，或反之）
+          #       会在此失败——那属于**配置错误**，不是密文被篡改，故单独给出可照做的指引，
+          #       避免把「密钥没换完」误诊成「artifact 被篡改」。
+          KEYS="$(mktemp)"
+          if ! openssl pkeyutl -decrypt -inkey "$KEYFILE" \
+               -in /tmp/audit/audit-verdicts.key.enc -out "$KEYS" \
+               -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256; then
+            {
+              echo "私钥无法解开封装密钥：Secret AUDIT_HANDOFF_PRIVATE_KEY 与仓库内"
+              echo "ai-audit/handoff-public-key.pem 不是同一对（或将私钥配错/配了占位值）。"
+              echo ""
+              echo "修复步骤（公钥与私钥必须同源、成对更新）："
+              echo "  1) 重新生成一对：openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out handoff-private.pem"
+              echo "                   openssl rsa -in handoff-private.pem -pubout -out handoff-public.pem"
+              echo "  2) 公钥提交入库：cp handoff-public.pem ai-audit/handoff-public-key.pem"
+              echo "  3) 私钥全文更新到 Secret：AUDIT_HANDOFF_PRIVATE_KEY"
+              echo ""
+              echo "⚠️ 轮换顺序：先暂停触发并等待现有运行结束 → 更新公钥 → 更新私钥 → 验证配对 → 恢复触发。"
+              echo "   中途运行会「旧公钥加密、新私钥解密」而失败（见 ai-audit/README.md 密钥轮换）。"
+            } >&2
+            shred -u "$KEYFILE" "$KEYS" 2>/dev/null || rm -f "$KEYFILE" "$KEYS"
+            exit 1
+          fi
+          ENC_KEY="$(jq -er '.enc_key' "$KEYS")" \
+            || { echo "封装密钥解开后缺少 enc_key 字段，拒绝继续。" >&2; exit 1; }
+          MAC_KEY="$(jq -er '.mac_key' "$KEYS")" \
+            || { echo "封装密钥解开后缺少 mac_key 字段，拒绝继续。" >&2; exit 1; }
+          # 2) 【先验完整性】对密文重算 HMAC-SHA256 并与交付的标签做**定长比较**
+          #    ⚠️ 必须在解密之前：CBC 无完整性，篡改密文会导致「可预测的明文损坏」，
+          #       只有 MAC 通过才说明这份密文确实出自持有合法公钥的 triage。
+          EXPECT_MAC="$(printf '%s' "$MAC_KEY" | openssl dgst -sha256 -mac HMAC -macopt hexkey:"$MAC_KEY" -binary /tmp/audit/audit-verdicts.json.enc | od -An -v -tx1 | tr -d ' \n')"
+          ACTUAL_MAC="$(od -An -v -tx1 /tmp/audit/audit-verdicts.json.mac | tr -d ' \n')"
+          if [ "$EXPECT_MAC" != "$ACTUAL_MAC" ]; then
+            echo "HMAC 校验失败：artifact 密文可能被篡改，拒绝解密与发文。" >&2
+            shred -u "$KEYFILE" "$KEYS" 2>/dev/null || rm -f "$KEYFILE" "$KEYS"
+            exit 1
+          fi
+          # 3) 用数据密钥解出结论明文
+          printf '%s' "$ENC_KEY" > /tmp/.audit-dec.key
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+            -in /tmp/audit/audit-verdicts.json.enc \
+            -out /tmp/audit/audit-verdicts.json -pass file:/tmp/.audit-dec.key
+          # 4) 立即清除私钥临时文件与密钥材料
+          shred -u "$KEYFILE" "$KEYS" /tmp/.audit-dec.key 2>/dev/null \
+            || rm -f "$KEYFILE" "$KEYS" /tmp/.audit-dec.key
+          # 5) 防御：解密结果必须是合法 JSON 数组（信任边界格式校验，非完整性校验）
+          jq -e 'type == "array"' /tmp/audit/audit-verdicts.json > /dev/null \
+            || { echo "解密后的结论不是 JSON 数组，拒绝继续" >&2; exit 1; }
+          echo "完整性校验通过，解密完成，结论条数：$(jq 'length' /tmp/audit/audit-verdicts.json)"
 
       # ── 非智能体门禁（deterministic gate） ──────────────────────────────────
       # 本 step 是「是否创建 Issue」的**唯一**放行点，且**全程不含任何 LLM**：
@@ -396,13 +504,16 @@ jobs:
       #    本门禁确定性保证的是「结论 → 发文」这一段——只认 APPROVED 字段，不做二次模型判断。
       #    故**不要**宣称「被驳回的误报绝无可能被创建」，只能说「非 APPROVED 的告警不可能被创建」。
       # GH_PAT 仅在本 step 注入，且只用于 GitHub API 建 Issue。
+      # ⚠️ 与解密步骤共用 precheck 短路条件：无待发布结论时本步**直接跳过**，
+      #    连 GH_PAT 都不必读取（避免「无内容可发却先校验令牌」的无谓失败）。
       - name: 按审计结论创建 Issue（幂等 + 并发自愈）
+        if: steps.precheck.outputs.skip != 'true'
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          : "${GH_PAT:?请配置仓库 Secret GH_PAT 以创建 Issue}"
+          : "${GH_PAT:?请配置仓库 Secret GH_PAT 以创建 Issue（详见 ai-audit/README.md 所需 Secrets 表）}"
           FILE=/tmp/audit/audit-verdicts.json
           if [ ! -f "$FILE" ]; then echo "无结论文件，跳过"; exit 0; fi
           # 防御：结论文件必须是合法 JSON 数组，否则直接失败（不猜测、不放行）
@@ -423,6 +534,39 @@ jobs:
           #      仓库维护者可见；修复发布后再由人工按需公开（或直接随 Release 致谢）。
           # 幂等指纹仍写在**公开 Issue**正文里（HTML 注释），保证去重逻辑不变。
           FINGERPRINT_PREFIX="<!-- ai-audit-alert:"
+
+          # ── 告警来源校验（provenance check，发文前的信任边界） ────────────────
+          # 威胁：artifact 虽已用公钥加密（防读），但**不构成来源可信**——若上游加密
+          #       环节被换掉/伪造，或手误产出一条「看着 APPROVED」的结论，仅凭
+          #       `status == "APPROVED"` 就去建 Issue，等于信任一条未经核对的告警编号。
+          # 对策：建任何 GitHub 资源**之前**，用只读的 Code Scanning API 以
+          #       `alert_number` 回查**权威告警**，逐字段核对 rule.id 与 location.path。
+          #       三者不一致（编号不存在 / 规则或路径对不上）即判定「非可信 CodeQL 告警」，
+          #       跳过该条、不建公告也不建 Issue。
+          # ⚠️ 校验失败（含 API 报错）一律**返回非 0**，由调用方 abort，绝不「当作没问题放行」。
+          verify_alert_provenance() {
+            local alert="$1" rule="$2" path="$3" body
+            # 只接受纯数字告警编号：杜绝把 `1` / `../` 之类拼进 URL 路径
+            case "$alert" in
+              ''|*[!0-9]*) echo "告警编号非法（应为纯数字）：${alert}" >&2; return 1 ;;
+            esac
+            body="$(curl -fsSL -H "${AUTH_HEADER}" -H "${ACCEPT_HEADER}" \
+              "${API}/repos/${REPO}/code-scanning/alerts/${alert}")" \
+              || { echo "拉取权威告警 #${alert} 失败（可能不存在或无权读取）" >&2; return 1; }
+            jq -e 'type == "object"' <<<"$body" >/dev/null \
+              || { echo "权威告警 #${alert} 响应非 JSON 对象，拒绝继续" >&2; return 1; }
+            # 逐字段核对：规则 id（回退 description）与实例文件路径必须与结论一致
+            local ok
+            ok="$(jq -r --arg r "$rule" --arg p "$path" '
+              ((.rule.id // .rule.description // "") == $r)
+              and ((.most_recent_instance.location.path // "") == $p)
+            ' <<<"$body")"
+            if [ "$ok" != "true" ]; then
+              echo "权威告警 #${alert} 的 rule/path 与结论不一致（结论：rule=${rule} path=${path}），判定为非可信来源，跳过。" >&2
+              return 1
+            fi
+            return 0
+          }
 
           # 是否存在「带该指纹」的 Issue：**须翻页遍历全部 open Issue**。
           # ⚠️ 只取 `?per_page=100` 首页会漏判：open Issue 超 100 条时，排在 100 名
@@ -454,6 +598,8 @@ jobs:
           # ── 私密公告的去重判据：用 advisory 标题里的告警指纹 ──────────────────────
           # 公告标题固定为 `AI审计：CodeQL 告警 #<alert_number>`，先查是否已建同号公告，
           # 命中则跳过，避免同一条告警重复开公告（公告写接口非幂等）。
+          # ⚠️ 必须**精确等于**完整标题，不可用 `contains("告警 #1")`：后者会把
+          #    `#10` / `#100` 也判为命中，导致「复用别人的公告、本告警却没落细节」。
           find_advisory_by_alert() {
             local alert="$1" page=1 found=""
             while : ; do
@@ -466,8 +612,8 @@ jobs:
               local n
               n="$(jq 'length' <<<"$batch")"
               [ "$n" -eq 0 ] && break
-              found="$(jq -r --arg a "告警 #${alert}" \
-                '[.[] | select((.summary // "") | contains($a))]
+              found="$(jq -r --arg s "AI审计：CodeQL 告警 #${alert}" \
+                '[.[] | select((.summary // "") == $s)]
                  | if length > 0 then (.[0].ghsa_id // "") else "" end' <<<"$batch")"
               [ -n "$found" ] && { printf '%s' "$found"; return 0; }
               [ "$n" -lt 100 ] && break
@@ -493,23 +639,31 @@ jobs:
               PATH_="$(jq -r '.path' <<<"$item")"
               ALERT="$(jq -r '.alert_number' <<<"$item")"
               REPORT="$(jq -r '.report // ""' <<<"$item")"
-              # ── 端点坐标：source 与 sink **各自独立**，可能不在同一文件 ──────────
-              # 取不到时回落到告警位置 PATH_，并标注「未定位」——绝不在跨文件数据流上
-              # 把告警位置当成两端坐标（那会写出错误的端点位置，误导维护者排查）。
-              # 展开为 `<文件>:<行号>`；line 为 null 时只保留文件路径。
-              SRC="$(jq -r '(.source.path // "") as $p | (.source.line // "") as $l | if $p != "" then (if $l != "" then "\($p):\($l)" else $p end) else "" end' <<<"$item")"
-              SNK="$(jq -r '(.sink.path // "") as $p | (.sink.line // "") as $l | if $p != "" then (if $l != "" then "\($p):\($l)" else $p end) else "" end' <<<"$item")"
-              [ -n "$SRC" ] || SRC="${PATH_}（source 未定位）"
-              [ -n "$SNK" ] || SNK="${PATH_}（sink 未定位）"
               # ⚠️ 公开标题**不含** rule/path（二者属可利用细节），仅以告警编号区分；
               #    维护者可凭编号到私密公告里查看对应的规则与文件。
               TITLE="[AI审计] CodeQL 告警 #${ALERT}"
               FINGERPRINT="${FINGERPRINT_PREFIX}${ALERT} -->"
 
+              # ── ⓪ 来源校验：建任何 GitHub 资源**之前**，用权威 API 回查该告警 ─────────
+              # 不信任 artifact 里的 APPROVED 标记本身，只认「能在本仓库 Code Scanning
+              # 里按 alert_number 查到、且 rule/path 逐字段一致」的告警，杜绝伪造结论发文。
+              if ! verify_alert_provenance "$ALERT" "$RULE" "$PATH_"; then
+                echo "跳过非可信来源的告警：#${ALERT}" >&2
+                SKIPPED=$((SKIPPED + 1))
+                continue
+              fi
+
               # ── ① 先投私密公告（承载细节），未成功则**不建公开 Issue** ─────────────
               # 顺序很关键：先确保细节有私密落点，再建公开占位；否则一旦公告写入失败
               # 而公开 Issue 已建，就会出现「公开无细节、私密无记录」的悬空跟踪项。
-              ADVISORY_ID="$(find_advisory_by_alert "$ALERT" || true)"
+              # ⚠️ 去重查询失败**必须区分于「查无结果」**：若把失败当成空结果，一次瞬时
+              #    网络抖动就会让本步误判「无同名公告」而重复 POST（公告接口非幂等）。
+              #    故这里**不吞错**：查询失败即 abort 整条流水线（下次重跑可自愈），
+              #    只有当查询**成功且确无命中**时才继续去创建。
+              if ! ADVISORY_ID="$(find_advisory_by_alert "$ALERT")"; then
+                echo "私密公告去重查询失败（告警 #${ALERT}），中止本次发布以避免重复创建。" >&2
+                exit 1
+              fi
               if [ -z "$ADVISORY_ID" ]; then
                 # 说明：一次成型成 payload，**不要**先把 description 单独 jq 成字符串再
                 #      用 --arg 传入——那会把已是 JSON 字符串的中转值再包一层引号，
@@ -518,9 +672,8 @@ jobs:
                   --arg summary "AI审计：CodeQL 告警 #${ALERT}" \
                   --arg r "$REPORT" --arg a "$ALERT" \
                   --arg ru "$RULE" --arg p "$PATH_" \
-                  --arg src "$SRC" --arg snk "$SNK" \
                   '{summary:$summary,
-                    description:("## 漏洞概述\n\n\($r)\n\n## 关联 CodeQL 告警\n\n- 告警编号：\($a)\n- 规则：\($ru)\n- 告警位置：\($p)\n- source（来源点）：\($src)\n- sink（汇点）：\($snk)\n\n## 处置约定\n\n- 本公告为 AI 审计自动创建的**私密**安全公告，仅维护者可见，用于在协调披露期内跟踪未修复漏洞。\n- 修复发布后，请按 SECURITY.md 的协调披露约定致谢并公开必要信息。"),
+                    description:("## 漏洞概述\n\n\($r)\n\n## 关联 CodeQL 告警\n\n- 告警编号：\($a)\n- 规则：\($ru)\n- 文件：\($p)\n\n## 处置约定\n\n- 本公告为 AI 审计自动创建的**私密**安全公告，仅维护者可见，用于在协调披露期内跟踪未修复漏洞。\n- 修复发布后，请按 SECURITY.md 的协调披露约定致谢并公开必要信息。"),
                     severity:"medium", vulnerabilities:[]}')"
                 ADVISORY_ID="$(curl -fsSL -X POST -H "${AUTH_HEADER}" \
                   -H "${ACCEPT_HEADER}" \
@@ -538,7 +691,10 @@ jobs:
               # 第一道去重（乐观预检）：命中即跳过，省下一次创建调用。
               # 注意：并发窗口下这一步只是「快速路径」，**不是**正确性保证，
               #       正确性由后续的创建后自愈兜底（见下）。
-              EXIST="$(find_issue_by_fingerprint "$FINGERPRINT" || true)"
+              if ! EXIST="$(find_issue_by_fingerprint "$FINGERPRINT")"; then
+                echo "公开 Issue 去重查询失败（告警 #${ALERT}），中止以避免重复创建。" >&2
+                exit 1
+              fi
               if [ -n "$EXIST" ]; then
                 echo "已存在（#${EXIST}），跳过：$TITLE"
                 SKIPPED=$((SKIPPED + 1))
@@ -574,7 +730,10 @@ jobs:
               # 到唯一一条 open Issue，无需人工清理。
               # 说明：本工作流已用 concurrency 串行化，此处自愈属**纵深防御**——
               #       即便未来有人去掉 concurrency 或 GitHub 偶发重放，也能自愈。
-              DUP_OF="$(find_issue_by_fingerprint "$FINGERPRINT" || true)"
+              if ! DUP_OF="$(find_issue_by_fingerprint "$FINGERPRINT")"; then
+                echo "创建后自愈复查失败（告警 #${ALERT}），中止以避免残留重复。" >&2
+                exit 1
+              fi
               if [ -n "$DUP_OF" ] && [ "$DUP_OF" != "$NEW_ID" ] \
                  && [ "$DUP_OF" -lt "$NEW_ID" ]; then
                 echo "检测到并发重复（保留 #${DUP_OF}），自我关闭 #${NEW_ID}" >&2

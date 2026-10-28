@@ -22,6 +22,10 @@ coverage:
         informational: true
 
 # 覆盖率构成（供 Codecov 页面展开查看）
+# 路径口径：coverage.yml 用 `--source=astrbot_plugin_models_ai` 传**包名**计数，
+# 其 SF 会写成 `astrbot_plugin_models_ai/<相对路径>` 形态。Codecov 的 paths 是
+# 后缀/通配匹配，下面的前缀写法即可命中；若把 CI 改回绝对路径 --source，
+# SF 会退化成 /home/runner/work/... 这类路径，固定映射后匹配不到文件、覆盖率恒为 0。
 flags:
   unittests:
     paths:

@@ -1,44 +1,77 @@
-# 此工作流程使用未经 GitHub 认证的操作。
-# 它们由第三方提供，并受单独的服务条款、隐私政策和支持文档的约束。
+# 基础设施即代码（IaC）安全扫描。
+#
+# 为什么不是 tfsec 官方 Action：aquasecurity/tfsec-sarif-action 最后一个提交停留在
+# 2022-11（v0.1.4，Docker 型 Action），上游 tfsec 已官方宣布并入 Trivy，工程重心
+# 全部转向 Trivy 的 IaC/misconfig 扫描。Trivy 的 `config` 扫描就是 tfsec 引擎的
+# 继任者（规则集即 trivy-checks，源自 tfsec），故这里改用 aquasecurity/trivy-action
+# 的 `scan-type: config`，输出格式与告警内容对齐原 tfsec SARIF 口径，同时避免
+# 长期冻结的第三方 Action。
+#
+# 另：本仓库当前**没有任何 .tf 文件**（插件是纯 Python，Terraform 相关配置在
+# CNB 流水线与 GitHub Actions 侧）。Trivy config 扫描同时覆盖 Terraform、K8s、
+# Dockerfile、GitHub Actions 等，空扫描只报告不失败，故本工作流可安全常驻，
+# 未来引入 IaC 时自动开始产出告警。
 
 name: tfsec
 
 on:
+  push:
+    branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
   # 支持手动触发，便于排障与补跑
   workflow_dispatch:
 
+# 最小权限：无 OIDC 联邦 / 云身份需求，**不授予** id-token: write——
+# 否则一旦某个 action 被替换，攻击者可凭空铸造云身份令牌（多余武器）。
 permissions:
   contents: read
-  id-token: write
   actions: read
 
 jobs:
   tfsec:
-    name: 运行 tfsec sarif 报告
+    name: IaC 安全扫描（Trivy config / tfsec 规则集）
     runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: read
+      # 仅上传 SARIF 结果需要 security-events: write
       security-events: write
-      id-token: write
 
     steps:
       - name: 加固运行器（审计所有出站调用）
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        # 观察模式：egress-policy 保持 audit，仅记录出网调用、不阻断构建；
+        # 与仓库内其余工作流口径统一（阻断模式需先凭审计日志收敛白名单）。
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
-      - name: 克隆仓库
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: 运行 tfsec
-        uses: aquasecurity/tfsec-sarif-action@21ded20e8ca120cd9d3d6ab04ef746477542a608
+      - name: 检出仓库
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          sarif_file: tfsec.sarif
+          persist-credentials: false
+
+      - name: 运行 IaC 扫描（Trivy config）
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: 'config'
+          scan-ref: '.'
+          hide-progress: true
+          format: 'sarif'
+          output: 'tfsec.sarif'
+          # 与硬性门槛对齐：仅中/高危计入失败，LOW 噪音不阻断 PR；
+          # limit-severities-for-sarif 让 SARIF 报告与失败判定同口径，
+          # 避免"报告里全量、判定却只看高危"的两套标准。
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          limit-severities-for-sarif: true
+          # 不加 `|| true`：命中门槛即以非零码退出，使本工作流真正告警。
+          exit-code: '1'
 
       - name: 上传 SARIF 文件
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        # 扫描失败也要上传：报告本身就是排障证据，不能因非零码丢掉。
+        if: always()
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
-          # 仓库根目录下 SARIF 文件的路径
+          # 仓库根目录下 SARIF 文件的路径（与本工作流其余 action 版本对齐）
           sarif_file: tfsec.sarif
+          category: tfsec

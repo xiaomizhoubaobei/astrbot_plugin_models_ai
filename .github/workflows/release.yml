@@ -7,17 +7,22 @@ on:
       - main
     paths:
       - '**/*.py'
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:  # 允许手动触发（下发给 build 任务的 refs/heads/main 闸门会拒绝非 main 分支）
 
+# 顶层默认最小权限：只用只读能力。真正需要的写能力（contents: write 建 tag/发 Release、
+# id-token: write 供 Sigstore 签名）一律下沉到下方 build job，避免工作流级授予写权限——
+# 否则任一步骤被替换即可拿到发布与签名能力。actions: read 用于读取同仓 Actions 元数据。
 permissions:
   contents: read
-  id-token: write
   actions: read
 
 jobs:
   build:
     name: 构建 Release
     runs-on: ubuntu-latest
+    # 手动触发时可指定任意分支，本任务持有 contents: write 会打 tag 并发布；
+    # 因此强制只在 main 上发布，防止把非 main 分支的内容发成正式 Release。
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: write
       id-token: write  # 为签名所必需
@@ -26,7 +31,7 @@ jobs:
     steps:
       # 0. 安全加固
       - name: 加固运行器
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
 
@@ -35,12 +40,16 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0  # 获取完整的 git 历史
+          # 不把具备写权限的 GITHUB_TOKEN 落到本地 git 配置，避免后续第三方 action 复用；
+          # 需要写权限的 action 已通过 env 显式接收 token
+          persist-credentials: false
 
       # 2. 设置 Python 环境
       - name: 设置 Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: '3.12'
+          # 单版本工作流，跟随测试矩阵的起始版本（3.13）
+          python-version: '3.13'
 
       # 3. 获取版本号和插件名称
       - name: 获取版本号和插件名称
@@ -55,6 +64,14 @@ jobs:
           # 从 metadata.yaml 文件中读取插件名称
           PLUGIN_NAME=$(grep "^name:" metadata.yaml | awk '{print $2}')
           echo "plugin_name=$PLUGIN_NAME" >> $GITHUB_OUTPUT
+          # 判断该版本 tag 是否已存在：每次 .py 变更都会跑本工作流，
+          # 版本号未变时必须跳过发布，避免覆盖已有 Release 的资产与正文
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+            echo "tag_exists=true" >> $GITHUB_OUTPUT
+            echo "::notice::tag v${VERSION} 已存在，后续发布步骤将跳过"
+          else
+            echo "tag_exists=false" >> $GITHUB_OUTPUT
+          fi
 
       # 4. 安装依赖
       - name: 安装依赖
@@ -75,33 +92,85 @@ jobs:
         run: |
           PLUGIN_NAME="${{ steps.get_info.outputs.plugin_name }}"
 
-          # 复制主程序文件
-          cp main.py "$PLUGIN_NAME/" || true
-          # 复制配置文件和依赖文件
-          cp metadata.yaml requirements.txt _conf_schema.json "$PLUGIN_NAME/" || true
-          # 复制所有相关模块
-          cp __init__.py "$PLUGIN_NAME/" || true
-          # 复制子目录
-          cp -r commands "$PLUGIN_NAME/" || true
-          cp -r core "$PLUGIN_NAME/" || true
-          cp -r gitee "$PLUGIN_NAME/" || true
-          cp -r llm_tools "$PLUGIN_NAME/" || true
-          cp -r qianwen "$PLUGIN_NAME/" || true
-          # 复制 logo 文件（如果存在）
+          # 插件必需文件：缺失即失败，避免产出残缺包却发布成功
+          cp main.py "$PLUGIN_NAME/"
+          cp metadata.yaml requirements.txt _conf_schema.json "$PLUGIN_NAME/"
+          # 复制插件入口
+          cp __init__.py "$PLUGIN_NAME/"
+          # 复制子包：命令层 / 核心能力 / 上游 API 接入 / LLM 工具 / 千问云接入
+          cp -r commands "$PLUGIN_NAME/"
+          cp -r core "$PLUGIN_NAME/"
+          cp -r gitee "$PLUGIN_NAME/"
+          cp -r llm_tools "$PLUGIN_NAME/"
+          cp -r qianwen "$PLUGIN_NAME/"
+          # 注意：commands/style_prompts.json（风格提示词字典）随 commands/ 一并打包，
+          # 属于运行时依赖，不要单独漏拷。
+          # 复制 logo 文件（可选，缺失不影响插件运行）
           cp logo.png "$PLUGIN_NAME/" || true
 
       # 7. 打包为 zip 文件
       - name: 创建 zip 包
         run: |
           PLUGIN_NAME="${{ steps.get_info.outputs.plugin_name }}"
+
+          # 构建目录里只有上一步按复制白名单 cp 进来的文件，白名单即发布包内容的唯一来源,
+          # 无需再做排除过滤，直接整目录打包即可（CNB 只做镜像同步，不涉及打包）。
           zip -r "${PLUGIN_NAME}.zip" "$PLUGIN_NAME/"
+
+          echo "== 发布包内容 =="
+          unzip -l "${PLUGIN_NAME}.zip"
+
+      # 7.1 校验发布包边界：只允许白名单文件，必需文件不得缺失
+      - name: 校验发布包边界
+        run: |
+          PLUGIN_NAME="${{ steps.get_info.outputs.plugin_name }}"
+          ARTIFACT="${PLUGIN_NAME}.zip"
+          # awk 取第 4 列文件名；去掉目录行与表头 / 分隔行，再滤掉空行，
+          # 否则首尾空行会让逐行断言失去意义
+          LIST=$(unzip -l "$ARTIFACT" | awk '{print $4}' | grep -v '/$' \
+            | grep -vE '^(Name|-+)?$' || true)
+
+          # 1) 必需文件必须在包内
+          for required in main.py __init__.py metadata.yaml requirements.txt _conf_schema.json \
+                          commands/generate.py core/config.py gitee/api_client.py \
+                          llm_tools/draw.py qianwen/api_client.py; do
+            echo "$LIST" | grep -qx "${PLUGIN_NAME}/$required" \
+              || { echo "::error::发布包缺少必需文件: $required"; exit 1; }
+          done
+
+          # 2) 包内只能出现白名单条目：开发 / CI 资产（AGENTS.md、install_gpg_keys.sh、
+          #    ai-audit/、.github/、tests/ 等）一旦混进包，会被铺到使用者的插件目录里，
+          #    其中拉取私钥、改写全局 git 配置的脚本若被误执行，风险由使用者承担。
+          #    白名单须与上面「复制插件文件」步骤保持一致（logo.png 可选）。
+          while IFS= read -r entry; do
+            case "$entry" in
+              "${PLUGIN_NAME}/main.py"|"${PLUGIN_NAME}/__init__.py"| \
+              "${PLUGIN_NAME}/metadata.yaml"|"${PLUGIN_NAME}/requirements.txt"| \
+              "${PLUGIN_NAME}/_conf_schema.json"|"${PLUGIN_NAME}/logo.png")
+                continue
+                ;;
+              # 业务子包：只允许 plugins 目录内的 .py 与风格提示词 JSON，
+              # 杜绝 tests/、docs/、ai-audit/、install_gpg_keys.sh 等开发资产混入发布包
+              "${PLUGIN_NAME}/commands/"*.py|"${PLUGIN_NAME}/commands/"*.json| \
+              "${PLUGIN_NAME}/core/"*.py|"${PLUGIN_NAME}/gitee/"*.py| \
+              "${PLUGIN_NAME}/llm_tools/"*.py|"${PLUGIN_NAME}/qianwen/"*.py)
+                continue
+                ;;
+            esac
+            echo "::error::发布包内混入了白名单之外的条目: ${entry}"
+            exit 1
+          done <<< "$LIST"
+
+          echo "发布包边界校验通过"
 
       # 8. 生成 Release Notes
       - name: 生成 Release Notes
         id: release_notes
         run: |
-          # 从上一个标签生成发布说明
-          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          # 从上一个版本标签生成发布说明：只认 vX.Y.Z 家族的 tag，
+          # 否则 CI / 维护类的无关 tag 会被误当作上一版本，导致首次发布说明被抑制或漏掉提交
+          PREVIOUS_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --merged HEAD^ --sort=-v:refname 2>/dev/null | head -n 1 || echo "")
+          echo "上一个版本标签: ${PREVIOUS_TAG:-<无>}"
           VERSION=${{ steps.get_info.outputs.version }}
 
           # 定义生成更新日志的函数
@@ -124,12 +193,13 @@ jobs:
 
             # 遍历所有 commit
             while IFS= read -r commit; do
-              # 提取 commit 类型和消息
-              type=$(echo "$commit" | sed -n 's/^\([a-z]*\):.*/\1/p')
-              msg=$(echo "$commit" | sed 's/^[a-z]*: *//')
+              # 提取 commit 类型和消息，兼容本仓库要求的 type(scope): subject 格式
+              # （scope 可选，如 fix(claude): xxx；解析时先剥离 scope 再分类与去前缀）
+              type=$(echo "$commit" | sed -nE 's/^([a-z]+)(\([^)]*\))?!?:.*/\1/p')
+              msg=$(echo "$commit" | sed -E 's/^([a-z]+)(\([^)]*\))?!?:[[:space:]]*//')
 
-              # 按类型分类
-              case "$type" in
+              # 按类型分类（解析不到 type 的 commit 归入「其他」）
+              case "${type:-other}" in
                 feat)    FEAT="${FEAT}- ${msg}\n" ;;
                 fix)     FIX="${FIX}- ${msg}\n" ;;
                 refactor) REFACTOR="${REFACTOR}- ${msg}\n" ;;
@@ -207,7 +277,12 @@ jobs:
             # 检查是否存在 CHANGELOG.md
             if [ -f "CHANGELOG.md" ]; then
               # 从 CHANGELOG.md 提取当前版本的更新内容
-              CHANGELOG_CONTENT=$(awk -v version="\\[${VERSION}\\]" '$0 ~ version {found=1} found {print} found && /^## / && !($0 ~ version) {exit}' CHANGELOG.md | tail -n +2)
+              # 先判断是否已进入下一节标题再打印，否则会把下一个版本的标题一起带进本次 Release
+              CHANGELOG_CONTENT=$(awk -v version="\\[${VERSION}\\]" '
+                $0 ~ version {found=1; print; next}
+                found && /^## / {exit}
+                found {print}
+              ' CHANGELOG.md | tail -n +2)
 
               if [ -n "$CHANGELOG_CONTENT" ]; then
                 NOTES="## 📦 Release v${VERSION}\n\n${CHANGELOG_CONTENT}"
@@ -222,7 +297,8 @@ jobs:
           fi
 
           # 添加 Release Notes
-          RELEASE_FOOTER="\n\n---\n\n### 📥 安装方法\n\n\`\`\`bash\n# 下载插件包后，将其放入 AstrBot 的 plugins 目录\n# 然后重启 AstrBot 服务\n"
+          # 代码围栏必须闭合，否则后续「证据包」说明会被渲染进安装代码块
+          RELEASE_FOOTER="\n\n---\n\n### 📥 安装方法\n\n\`\`\`bash\n# 下载插件包后，解压到 AstrBot 的 data/plugins 目录\n# 重启 AstrBot 服务或在管理面板重载插件\n\`\`\`\n"
 
           NOTES="${NOTES}${RELEASE_FOOTER}"
 
@@ -236,15 +312,152 @@ jobs:
             echo EOF
           } >> $GITHUB_OUTPUT
 
-      # 9. 生成证据包
+      # 9. 生成证据包（ci-evidence-pack v0.0.2）
+      #
+      # 引用方式：钉到 v0.0.2 的 commit SHA（53216365…），而不是 @main 或可移动的
+      # tag。浮动引用会让「本次跑的到底是哪一版」永远说不清，出了事故也无法回放。
+      #
+      # v0.0.2 的契约要点（与本段逐条对齐，改之前先读 action.yml）：
+      #   1) include 必填，留空会让打包脚本直接 exit 1，而不是产出一个空包；
+      #   2) 输出目录 ≠ 上传目录：本作业用 _evidence_dist，签名产物路径只能从
+      #      steps.evidence.outputs.* 取，手拼文件名会在改名时静默缺件；
+      #   3) 签名产物是 cosign v3 的 .sigstore.json 单文件，.sig + .crt 双文件形态已废弃；
+      #   4) 签名默认开启，信任根是 job 的 id-token: write（job 级 permissions 会
+      #      覆盖顶层声明，所以它必须写在本 job 上）；
+      #   5) identity 留空时按本次触发 ref 自动拼，这里**不写死** @refs/heads/main ——
+      #      写死会在 tag 触发的场景判 2「签名身份不是我以为的那个」。
       - name: 生成证据包
-        if: always()  # 即使构建失败也运行
-        uses: OrygnsCode/ci-evidence-pack@8222d7b3b015ce2f72222215bdf9966773036ab1 # main
+        id: evidence
+        if: steps.get_info.outputs.tag_exists != 'true'
+        uses: xiaomizhoubaobei/ci-evidence-pack@53216365066a9fe64de178ab0184539ad253e355 # v0.0.2
         with:
+          # 收集范围：插件 zip 产物 + 发布正文 + 构建输入清单。
+          # 只列必需项，不整目录收录（否则 .git 与本地缓存会一起进包）。
+          include: |
+            ${{ steps.get_info.outputs.plugin_name }}.zip
+            release_notes.md
+            metadata.yaml
+            requirements.txt
+            _conf_schema.json
+          out-dir: _evidence_dist
+          sbom: auto
           sign: 'true'
+          # 包外锚点：sha256 登记到包外台账，随 Release 一起分发供下游核对。
+          anchor-file: _anchor/anchor.txt
+          expect-repo: ${{ github.repository }}
+          # 自检不通过即红：发出一份自己都不信的包，比不发更糟。
+          fail-on-invalid: true
 
-      # 10. 创建 GitHub Release
+      # 9.1 阻塞闸门：自检退出码非 0 就不许发布
+      # Action 内已按 fail-on-invalid 把步骤判红，这里再显式拦一道，确保后续
+      # 发布步骤不会在「证据无效」的状态下继续（2 = 证据无效，3 = 工具异常）。
+      - name: 校验证据包自检结论
+        if: steps.get_info.outputs.tag_exists != 'true'
+        env:
+          VERIFY_CODE: ${{ steps.evidence.outputs.verify-exit-code }}
+          VERIFY_OK: ${{ steps.evidence.outputs.verify-ok }}
+        run: |
+          set -euo pipefail
+          if [ "${VERIFY_CODE:-3}" != "0" ]; then
+            echo "::error::证据包自检未通过（退出码 ${VERIFY_CODE:-空}）：拒绝发布"
+            exit 1
+          fi
+          echo "证据包自检通过：verify-ok=${VERIFY_OK:-true}"
+
+      # 9.2 解出透明日志（Rekor）条目，供发布正文引用可复核位置
+      # 条目坐标只从签名 bundle 里读，不从日志文本里抠 —— logIndex / logId
+      # 只有那一处是权威的。读不出来不拦发布，但正文须如实写明「没有公开落点」。
+      - name: 解析 Rekor 透明日志条目
+        id: rekor
+        if: steps.get_info.outputs.tag_exists != 'true'
+        env:
+          SIG_BUNDLE: ${{ steps.evidence.outputs.signature-bundle }}
+        run: |
+          set -uo pipefail
+          mkdir -p _anchor
+          MARKDOWN=_anchor/rekor.md
+          # 正文走 heredoc 写进 step output：GITHUB_OUTPUT 支持多行值，
+          # 比「先存路径、再在发布正文里读文件」少一层对文件生命周期的依赖。
+          emit() {
+            {
+              echo 'notes<<REKOR_EOF'
+              cat "$1"
+              echo REKOR_EOF
+            } >> "$GITHUB_OUTPUT"
+          }
+          # `${VAR:-}`：set -u 下未注入该 env 时也不该炸，按「没有签名」处理。
+          if [ -z "${SIG_BUNDLE:-}" ] || [ ! -f "${SIG_BUNDLE:-}" ]; then
+            printf '%s\n' "- 本次未产出签名 bundle，因而没有透明日志条目；信任根只有上方 sha256 锚点。" > "$MARKDOWN"
+            echo "::warning::没有签名 bundle，跳过 Rekor 条目解析"
+            emit "$MARKDOWN"
+            exit 0
+          fi
+          # 解析透明日志，用与上面 evidence 步骤**完全同一个 commit** 的 CLI。
+          #
+          # 不能用 `GITHUB_ACTION_PATH` 借 action 自带的源码：该变量只在 composite
+          # action 内部有效，普通 workflow step 里永远是空的。曾因此退化成
+          # `pip install 'evidence-pack>=0.0.1'` 的兜底 —— 一个可移动的版本区间，
+          # 会在本 job（contents: write + id-token: write）里装进没人审过的包。
+          #
+          # 也不能走 pip 的 VCS 安装（`package @ git+https://…@<sha>`）：本包
+          # pyproject.toml 在仓库根、源码在 src/，实测 pip 22 经由该路径构建出的
+          # 是空的 `UNKNOWN-0.0.0`（dist-info + LICENSE，无任何 py 文件），
+          # 装完 import 直接 ModuleNotFoundError。安静装个空包比装错版本更糟。
+          #
+          # 所以：按 SHA 取源码 → 验 SHA → 以 PYTHONPATH 直接用它，全程不经过
+          # PyPI、不构建包、不装 typer。rekor 子命令只用标准库（json/pathlib）。
+          # 注意这是裸 `python -m`，**不能**用 evidence_pack.cli 的 Typer 入口 ——
+          # 那条入口要 typer，而这里刻意不装依赖。
+          EVIDENCE_PACK_REV='53216365066a9fe64de178ab0184539ad253e355'
+          EVIDENCE_PACK_SRC="${RUNNER_TEMP:-/tmp}/ci-evidence-pack"
+          rm -rf "$EVIDENCE_PACK_SRC"
+          git init --quiet "$EVIDENCE_PACK_SRC"
+          git -C "$EVIDENCE_PACK_SRC" remote add origin \
+            https://github.com/xiaomizhoubaobei/ci-evidence-pack.git
+          git -C "$EVIDENCE_PACK_SRC" fetch --quiet --depth 1 origin "$EVIDENCE_PACK_REV" \
+            || { echo "::error::取不到 ci-evidence-pack@${EVIDENCE_PACK_REV}，无法解析透明日志"; exit 1; }
+          git -C "$EVIDENCE_PACK_SRC" checkout --quiet FETCH_HEAD
+          # 显式核对落地提交就是钉的那个：浅拉只给了 FETCH_HEAD，别把「取到了」
+          # 当成「取对了」。对不上就停，不用来源不明的解析器读证据。
+          GOT_REV=$(git -C "$EVIDENCE_PACK_SRC" rev-parse HEAD)
+          if [ "$GOT_REV" != "$EVIDENCE_PACK_REV" ]; then
+            echo "::error::ci-evidence-pack 提交不符：期望 ${EVIDENCE_PACK_REV}，实际 ${GOT_REV}"
+            exit 1
+          fi
+          export PYTHONPATH="$EVIDENCE_PACK_SRC/src${PYTHONPATH:+:$PYTHONPATH}"
+          if python3 -m evidence_pack rekor "${SIG_BUNDLE:-}" --json > _anchor/rekor.json 2>/dev/null; then
+            python3 - "$MARKDOWN" <<'PY'
+          import json
+          import sys
+
+          markdown_path = sys.argv[1]
+          entries = json.load(open("_anchor/rekor.json", encoding="utf-8")).get("entries", [])
+          lines: list[str] = []
+          if not entries:
+              lines.append("- 签名 bundle 内**没有**透明日志条目：这条签名缺少可复核的公开落点，")
+              lines.append("  不能单独构成证据。请检查 Rekor 连通性。")
+          for entry in entries:
+              lines.append(f"- logIndex `{entry['log_index']}`，integratedTime `{entry['integrated_time']}`")
+              if entry["log_id"]:
+                  lines.append(f"  - logId `{entry['log_id']}`")
+              # 查询地址落在条目 uuid 上（/api/v1/log/entries/<uuid>），
+              # 不是 ?logIndex= —— 后者是给人翻页的过滤参数，不是定位符。
+              if entry["url"]:
+                  lines.append(f"  - 查询地址 {entry['url']}")
+          with open(markdown_path, "w", encoding="utf-8") as handle:
+              handle.write("\n".join(lines) + "\n")
+          PY
+          else
+            printf '%s\n' "- 条目解析失败，本次没有可复核的透明日志位置；信任根只有上方 sha256 锚点。" > "$MARKDOWN"
+            echo "::warning::Rekor 条目解析失败，发布正文将如实标注"
+          fi
+          rm -f _anchor/rekor.json
+          cat "$MARKDOWN"
+          emit "$MARKDOWN"
+
+      # 10. 创建 GitHub Release（tag 已存在则跳过，避免覆盖既有 Release 的资产与正文）
       - name: 创建 GitHub Release
+        if: steps.get_info.outputs.tag_exists != 'true'
         uses: softprops/action-gh-release@e598afbe1493e6b1bafb1f389cabb956eab91231 # v3.0.3
         with:
           tag_name: ${{ steps.get_info.outputs.tag_name }}
@@ -259,21 +472,47 @@ jobs:
             本 Release 包含以下文件：
 
             - **${{ steps.get_info.outputs.plugin_name }}.zip**: 插件安装包
-            - **evidence-bundle.tar.gz**: CI 证据包（包含源代码、Git 元数据、依赖项、SBOM 等）
-            - **evidence-bundle.tar.gz.sig**: 证据包的 Sigstore 签名
-            - **evidence-bundle.tar.gz.crt**: 证据包的签名证书
+            - **evidence-\*.tar.gz**: CI 证据包（确定性打包 + 严格 manifest + SBOM）
+            - **evidence-\*.tar.gz.sigstore.json**: cosign v3 签名 bundle（keyless，OIDC 短期证书）
+            - **anchor.txt**: 证据包的包外 sha256 台账
 
-            证据包用于合规性审计和构建验证，可以使用以下命令验证：
+            证据包 sha256：`${{ steps.evidence.outputs.bundle-sha256 }}`
+
+            签名身份（identity）由 Action 按 `github.workflow_ref` 现拼，形如
+            `https://github.com/<owner>/<repo>/.github/workflows/release.yml@refs/heads/main`，
+            即「仓库 + 工作流文件 + 触发 ref」三者都定死。验签时按它核对：
 
             ```bash
-            ci-evidence-pack verify evidence-bundle.tar.gz
+            cosign verify-blob \
+              --bundle evidence-*.tar.gz.sigstore.json \
+              --certificate-identity 'https://github.com/${{ github.repository }}/.github/workflows/release.yml@refs/heads/main' \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              evidence-*.tar.gz
             ```
+
+            注意：这里用的是 `--certificate-identity`（全等匹配），**不要**退化成
+            `--certificate-identity-regexp 'https://github.com/${{ github.repository }}/'`。
+            那条正则只锚到仓库前缀就收尾，同一仓库下**别的**工作流、**别的** ref
+            签出来的包也会被判通过 —— 而本工作流只在 `main` 上发布（job 级
+            `if: github.ref == 'refs/heads/main'`），身份只可能是这一个。
+
+            ### 透明日志（Rekor）
+
+            签名写入公开透明日志后，任何人都能在包外独立复核「这条签名在某个时刻确实存在过」。
+            这是 sha256 锚点之外的第二个落点：锚点记在哪里由你决定，日志记在哪里由密码学决定。
+
+            ${{ steps.rekor.outputs.notes }}
           draft: false
           prerelease: false
           files: |
             ${{ steps.get_info.outputs.plugin_name }}.zip
-            _evidence_dist/*.tar.gz
-            _evidence_dist/*.sig
-            _evidence_dist/*.crt
+            ${{ steps.evidence.outputs.bundle-path }}
+            ${{ steps.evidence.outputs.signature-bundle }}
+            ${{ steps.evidence.outputs.anchor-file }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 提示跳过发布
+        if: steps.get_info.outputs.tag_exists == 'true'
+        run: |
+          echo "::notice::tag ${{ steps.get_info.outputs.tag_name }} 已存在，跳过本次 Release；如需重新发布请先提升 metadata.yaml 中的 version"
