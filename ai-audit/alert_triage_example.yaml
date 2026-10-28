@@ -9,8 +9,8 @@
 #   - 阶段间数据贯通：第 1~4 步均为**智能体任务**，通过 memcache（按 alert_number 为 key）
 #     把前一步的取证/判定/报告传给下一步；末步只**落地结构化结论文件**（不建 Issue）。
 #     ⚠️ 末步是**纯 shell 任务**，因此**不得**在其中调用 memcache 的 MCP 工具
-#     （memcache_get_state 等只在智能体上下文可用），也**不能**依赖 `{{ result.* }}` /
-#     `{{ globals.* }}`（shell 任务不参与 repeat_prompt 扇出，run 也不做模板渲染）。
+#     （memcache_get_state 等只在智能体上下文可用），也**不能**依赖上游的 result / globals
+#     字段（shell 任务不参与 repeat_prompt 扇出，run 也不做模板渲染）。
 #     末步改为自行解析 memcache 落盘目录、直接读文件后做确定性过滤，详见该步注释。
 #     Issue 的创建由持令牌的独立 job（.github/workflows/ai-audit-scheduled.yml 的
 #     publish job）消费该结论后完成——「不可信输入」与「高权限动作」由此物理隔离，
@@ -293,8 +293,11 @@ taskflow:
             "reason": "<简短原因>",
             "report": "<该告警的报告全文；被驳回或报告为空时填空字符串 \"\">"}
            其中 report 若为 APPROVED 必须是第 3 步报告的**原文全文**（Markdown）。
-           ⚠️ 必须把 rule/path 也写进来：第 5 步是纯 shell、拿不到上游的 `{{ result.* }}`
+           ⚠️ 必须把 rule/path 也写进来：第 5 步是纯 shell、拿不到上游的 result 字段
            （shell 任务不做模板渲染），只能依赖本键里的自包含字段。
+           （user_prompt 会经 Jinja 渲染，故此处一律用纯文字描述 result 字段，
+             切勿写成带双大括号的通配写法——通配符不是合法 Jinja 名字，会抛
+             "expected name or number" 并使整个审计任务在渲染阶段失败。）
         本步只写 _verdict，不创建任何 Issue。
 
   # ---------------------------------------------------------------------------
@@ -325,7 +328,7 @@ taskflow:
       #      · shell 任务**不参与 repeat_prompt 扇出**（框架 fans_out 恒为 false），
       #        `run:` 只会执行一次，故不可用 `{{ result.alert_number }}` 逐告警迭代；
       #      · `run:` 字段**不会被框架做 Jinja 渲染**（只渲染 user_prompt），
-      #        故 `{{ globals.repo }}` / `{{ result.* }}` 在 run 里都是死字面量。
+      #        故 globals.repo / result 字段在 run 里都是死字面量。
       #    正确做法：**脚本自己**按框架同一套规则解析 memcache 落盘路径、直接读文件
       #    （不依赖任何 MCP 工具/模板渲染），再对第 4 步写入的自包含 `_verdict` 做确定性过滤。
       #

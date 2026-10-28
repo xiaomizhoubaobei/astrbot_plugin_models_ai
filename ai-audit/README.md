@@ -191,7 +191,9 @@ cp -r <本项目>/ai-audit ai_audit
    > → `_STATUS` 恒为空 → 恒判 SKIP → **每条告警被静默跳过、全量漏审**。
    > 此外两条同源约束：**shell 任务不参与 `repeat_prompt` 扇出**（框架 `fans_out` 恒为
    > false，`run:` 只执行一次），且 **`run:` 字段不会被框架做 Jinja 渲染**（只渲染
-   > `user_prompt`），故 `{{ result.* }}` / `{{ globals.* }}` 在 shell 里都是死字面量。
+   > `user_prompt`），故 `result` / `globals` 的通配写法在 shell 里都是死字面量。
+   > ⚠️ 反过来，`user_prompt` **会**做 Jinja 渲染，其中只能写合法的变量名（如 `result.rule`），
+   > 写成通配（`result.*`）会抛 `expected name or number` 并在渲染阶段直接失败。
    > 因此第 ⑤ 步改为：**脚本自行按框架同一套规则解析 memcache 落盘目录（
    > `MEMCACHE_STATE_DIR` 或 platformdirs 默认路径）、直接读 `memory.db`/`memory.json`**，
    > 再对第 ④ 步写入的**自包含** `_verdict`（含 `alert_number/rule/path/status/report`）
@@ -434,7 +436,7 @@ triage 侧：jq 'length' == 0
 - **5 阶段审计链 + 数据贯通**：信息收集 → 审计 → 报告 → 校验 → 落地结构化结论。
   第 ①~④ 步（智能体）经 memcache 按告警传递 `_evidence/_triage/_report/_verdict`，
   下游始终基于上游结论判定；第 ⑤ 步（纯 shell）**直接读 memcache 落盘文件**完成确定性过滤
-  （不能在 shell 里调 MCP 工具、也不能用 `{{ result.* }}`，详见第三节）。
+  （不能在 shell 里调 MCP 工具、也不能引用上游 `result` 字段，详见第三节）。
 - **分页拉取**：`alerts` 任务逐页拉取全部 open 的 CodeQL 告警，仓库告警超过 100 条也不会漏审。
 - **防幻觉校验**：报告不完整/不一致直接驳回（`_verdict=REJECTED`），避免 LLM 编造漏洞。
 - **审计与发文隔离**：taskflow 只产出结论文件；Issue 由独立持令牌 job 消费结论创建。

@@ -184,6 +184,23 @@ jobs:
       - name: 安装 hatch（锁定版本）
         run: pip install hatch==1.14.0 "virtualenv<21"
 
+      # ── 离线 lint（零模型调用的语法/引用门禁） ─────────────────────────────
+      # 成因：taskflow 的 user_prompt 会经 Jinja 渲染，一旦其中混入非法表达式
+      #      （例如把通配写法当成变量名），渲染阶段会抛 `expected name or number`，
+      #      整个审计任务在**真正跑模型之前**就已失败——但这一步要等到 hatch 装完
+      #      依赖、跑到第 4 个智能体任务才暴露，白白消耗十几分钟核时且报错难定位。
+      # 对策：用框架自带的 `--lint` 做**纯离线**校验（不加载模型、不发起任何调用）。
+      #      它能提前揪出 Jinja 语法错误、缺失的 personality/toolbox 引用、未知字段等，
+      #      让「prompt 写坏了」在几分钟内、在 AI 任务之前就明确失败。
+      # `--strict` 把未知字段从警告升级为错误：taskflow 是人工维护的 YAML，
+      # 字段名拼错通常不会报错而是静默失效，严格模式才能兜住这类隐性回归。
+      - name: 离线 lint taskflow（零模型调用，提前拦截语法/引用错误）
+        working-directory: seclab-taskflow-agent
+        run: |
+          set -euo pipefail
+          hatch run main --lint -t ai_audit.alert_triage_example \
+              -m ai_audit.model_config --strict
+
       # 运行 AI 审计 taskflow（消费最新 CodeQL 告警），产出结构化结论 artifact。
       # ⚠️ 本 job 不注入 GH_PAT；读取 CodeQL 告警所需的只读令牌用 GITHUB_TOKEN
       #   （其权限已被顶层收紧到 contents: read，且上游 CodeQL 告警读取无需写权限）。
