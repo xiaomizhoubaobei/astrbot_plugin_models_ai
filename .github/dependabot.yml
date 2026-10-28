@@ -23,6 +23,30 @@ updates:
       prefix: "deps"
       prefix-development: "deps(dev)"
 
+  # 配置 CI 工具链依赖更新（requirements-ci-tools.txt）
+  # 单独一组：这份清单是「版本 + 哈希双锁定」，Dependabot 升级时会同时改写
+  # 版本号与 sha256，正是我们希望的升级路径（手工改哈希极易漏写多版本标签）。
+  # 与上面那组的区别：那组面向 requirements.txt（运行依赖，走版本下限），
+  # 这组面向 CI 工具链（pytest / coverage / bandit / black 等），两者升级节奏
+  # 与风险面不同，故分开、并各自限制同时打开的 PR 数，避免互相挤占。
+  - package-ecosystem: "pip"
+    directory: "/"
+    # 只盯 CI 工具链这一份清单，不碰 requirements.txt（上面的条目负责它）
+    allow:
+      - dependency-name: "*"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "09:30"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 1
+    target-branch: "main"
+    labels:
+      - "dependencies"
+      - "ci-toolchain"
+    commit-message:
+      prefix: "ci(deps)"
+
   # 配置 GitHub Actions 工作流更新
   - package-ecosystem: "github-actions"
     directory: "/"

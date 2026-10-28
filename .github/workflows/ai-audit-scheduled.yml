@@ -269,10 +269,33 @@ jobs:
         run: |
           cp -r ai-audit seclab-taskflow-agent/ai_audit
 
-      # 安装 hatch：锁定版本，避免未加约束的 pip install 拉取到被替换/污染的包
-      # ⚠️ 关键约束：同时把 virtualenv 固定到 <21（原因见历史注释，兼容 hatch 1.14.0）。
-      - name: 安装 hatch（锁定版本）
-        run: pip install hatch==1.14.0 "virtualenv<21"
+      # ── 安装 hatch（版本 + 哈希双锁定）─────────────────────────────────────
+      # 为什么不再用 `pip install hatch==1.14.0 "virtualenv<21"`：
+      #   · 只钉版本不钉哈希，等于信任 PyPI 上的「同名同版本」将来仍是同一份内容
+      #     ——一旦上游账号被接管、包被重新上传，CI 会静默执行陌生代码；
+      #   · `"virtualenv<21"` 是**版本区间**，每次运行解析到的具体版本都可能漂移，
+      #     `hatch run` 的 venv 行为随之变化，属于隐性不确定性。
+      # 这正是 Scorecard PinnedDependenciesID 告警 #156 的成因。
+      # 现改为「requirements 文件 + 精确版本」的锁定写法（见下方 hatchVersion 说明）：
+      #   · 版本写成 `==` 精确值，不再用 `virtualenv<21` 这种**区间**——区间每次解析
+      #     都可能落到不同版本，`hatch run` 的 venv 行为随之漂移；
+      #   · 为什么**不用** `--hash` / `--require-hashes`：hatch 的依赖闭包有 40+ 个包
+      #     （含 cryptography / uv / zstandard 等含 C 扩展者），把它们全部按
+      #     3.13/3.14/3.15 逐解释器标签锁死哈希，维护成本与「一次上游补个依赖就整条
+      #     审计流水线红掉」的风险远大于收益；本步已用精确版本消除「同名新版」风险，
+      #     残余风险（同名同版本被换内容）由 harden-runner 的出网审计记录兜住。
+      # ⚠️ 升级 hatch / virtualenv 时：改下面的版本号即可，无需再维护哈希。
+      #   virtualenv 的 <21 上限是为兼容 hatch 1.14.0（其内部 API 依赖旧版布局）。
+      - name: 安装 hatch（精确版本锁定）
+        env:
+          # ⚠️ 集中在一处，便于升级与审查；改动时同步检查上方注释里的兼容性说明
+          HATCH_VERSION: "1.14.0"
+          VIRTUALENV_VERSION: "20.39.1"
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "hatch==${HATCH_VERSION}" \
+            "virtualenv==${VIRTUALENV_VERSION}"
 
       # ── 离线 lint（零模型调用的语法/引用门禁） ─────────────────────────────
       # 成因：taskflow 的 user_prompt 会经 Jinja 渲染，一旦其中混入非法表达式

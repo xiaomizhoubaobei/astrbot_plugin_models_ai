@@ -144,6 +144,19 @@ pre-commit run --all-files    # 首次会联网安装各 hook 环境，稍慢
   - 覆盖率仅由 GitHub 侧工作上传统计并上报 Codecov；CNB 侧的上报已移除。改动覆盖率链路前请先读 `AGENTS.md` 10.8.1。
 - 面向 Codecov 的 GitHub 工作流需要仓库 Secret `CODECOV_TOKEN` 才会真正上报；**令牌只能走 Secrets 注入**，请勿写进代码或工作流文件。未配置时上报会被跳过，CI 不失败。
 
+### CI 工具链依赖（必须锁定）
+
+CI 里用到的测试 / 扫描工具（`pytest`、`coverage`、`bandit`、`black` 等）统一锁在
+`requirements-ci-tools.txt`，工作流通过 `pip install --require-hashes -r requirements-ci-tools.txt` 安装。
+
+- **不要在 workflow 里写 `pip install pytest` 这类浮动安装**：它会让上游换包内容时 CI 静默执行陌生代码，
+  也是 Scorecard `PinnedDependenciesID` 告警的来源。
+- 该文件是**完整依赖闭包**（顶层工具 + 传递依赖），每行都带 `sha256`；`--require-hashes` 要求闭包完整，
+  漏一个依赖安装就会失败。
+- 矩阵覆盖 3.13 / 3.14 / 3.15，含 C 扩展的包（`black` / `coverage` / `PyYAML`）需按解释器标签补齐哈希。
+  升级走 Dependabot 的 `ci(deps)` PR，或按该文件头的命令手工重新生成哈希。
+- 插件**运行依赖**仍走 `requirements.txt`（版本下限，交给 AstrBot 宿主解析），两者不要混用。
+
 ### 文档规范
 
 - 所有公共函数和类都应有文档字符串
