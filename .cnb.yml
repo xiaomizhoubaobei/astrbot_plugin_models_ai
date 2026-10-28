@@ -55,11 +55,6 @@ main:
       # 注意：本仓库已移除 CNB 侧的覆盖率上报（原「覆盖率测试 + testing:coverage」作业）。
       # 单元测试覆盖率现统一由 GitHub 侧 .github/workflows/coverage.yml 产出并上报 Codecov，
       # 徽章见 README 顶部。CNB 侧仅保留「同步到 GitHub」作业。
-      #
-      # 同步策略（强制单向覆盖）：
-      #   1. 主同步走 git-sync（sync_mode: force，以 CNB 仓库为唯一事实来源强制覆盖 GitHub main）；
-      #   2. 兜底同步走原生 git push --force：git-sync 若因配置漂移失败，仍能保证 GitHub 与其对齐；
-      #   3. 兜底阶段失败不拦截流水线（allow_failure），避免同步问题反向拖垮主分支构建。
       push:
         - services:
             - docker
@@ -74,27 +69,7 @@ main:
                 username: ${GIT_USERNAME}
                 password: ${GIT_ACCESS_TOKEN}
                 branch: main
-                # force：以 CNB 仓库为准强制覆盖 GitHub main，杜绝非快进（non-fast-forward）导致同步中断
-                sync_mode: force
                 git_user: ${GIT_USERNAME}
                 git_email: ${GIT_EMAIL}
-            - name: 兜底强制推送到GitHub
-              allow_failure: true
-              script: |
-                set -euo pipefail
-                # Git 令牌由 imports 注入，缺失则跳过兜底（主同步仍会执行）
-                GH_USER="${GIT_USERNAME:-}"
-                GH_TOKEN_VAL="${GIT_ACCESS_TOKEN:-}"
-                GH_EMAIL="${GIT_EMAIL:-}"
-                if [ -z "$GH_USER" ] || [ -z "$GH_TOKEN_VAL" ]; then
-                  echo "未注入 GIT_USERNAME / GIT_ACCESS_TOKEN，跳过兜底强制推送"
-                  exit 0
-                fi
-                # 同步源固定为 main（本作业仅在 main: push 事件下触发）
-                SRC_BRANCH="main"
-                git config user.name "$GH_USER"
-                git config user.email "${GH_EMAIL:-$GH_USER@users.noreply.github.com}"
-                # 用 https 令牌地址强制推送，确保 CNB 与 GitHub main 完全一致
-                git push --force \
-                  "https://${GH_USER}:${GH_TOKEN_VAL}@github.com/xiaomizhoubaobei/astrbot_plugin_models_ai.git" \
-                  "HEAD:refs/heads/${SRC_BRANCH}"
+                # 强制覆盖镜像：镜像仓库以 CNB 侧为准，分叉时用 --force 覆盖（git-sync 的 PLUGIN_FORCE）
+                force: true

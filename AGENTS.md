@@ -121,13 +121,6 @@ bash install_gpg_keys.sh
 - 创建 CNB PR 前，先检查本仓库 `.cnb.yml` 是否配置了到 Github 的同步/镜像能力（重点 grep `git-sync` / `github-mirror` / `sync-github` / `github.com` 等关键字）；若存在，则同步在 Github 镜像仓库创建完全一致的 PR。
 - 若 `.cnb.yml` 中**没有任何**同步到 Github 的 stage（如仅有 `docker build & push`、知识库更新、代码扫描、NPC 触发等），则该仓库不适用本条双端同步要求，本 PR 只需在 CNB 维护即可。
 
-#### 3.5.1 同步方式：强制单向覆盖（CNB 为唯一事实来源）
-
-- 本仓库 `.cnb.yml` 的 `main: push` 同步作业为**强制同步**：`git-sync` 阶段显式声明 `sync_mode: force`，以 CNB 仓库为唯一事实来源**强制覆盖** GitHub `main`，非快进（non-fast-forward）冲突不再中断流水线。
-- 紧随其后还有一个**兜底强制推送阶段**（原生 `git push --force`，`allow_failure: true`）：`git-sync` 因配置漂移 / 镜像行为变化失败时，仍能保证 GitHub 与 CNB 对齐；该阶段失败**不拦截**流水线，避免同步问题反向拖垮主分支构建。
-- 由此带来的纪律：**GitHub 镜像仓库 `main` 上的直接提交会被覆盖**，不要在 GitHub 侧直接改 `main`；所有变更仍在 CNB 提 PR 合入 `main` 后由流水线单向同步过去。
-- 同步令牌 `GIT_USERNAME` / `GIT_ACCESS_TOKEN` / `GIT_EMAIL` 一律由 `imports`（密钥仓库）注入，**严禁**写进 `.cnb.yml`、代码、文档或评论。
-
 ## 4. 持续集成与部署规范 (CI/CD - .cnb.yml)
 
 ### 4.1 配置文件规范
@@ -1121,7 +1114,7 @@ pre-commit run --all-files
 
 覆盖率上报**只有一条链路**：GitHub 侧的 `.github/workflows/coverage.yml` + `codecov.yml`，在 GitHub `push`(main) / `pull_request` 时产出 `coverage.xml` 并上报 Codecov，徽章展示在 README 顶部。
 
-> **CNB 侧（`.cnb.yml`）原有的「覆盖率测试 + `testing:coverage`」作业已移除**，CNB 平台不再产出覆盖率徽章，`.cnb.yml` 仅保留「同步到 GitHub」作业（含 `sync_mode: force` 主同步 + 原生 `git push --force` 兜底，见 3.5.1）。新增/修改覆盖率链路时**不要**再往 CNB 侧加回上报，统一走 Codecov。
+> **CNB 侧（`.cnb.yml`）原有的「覆盖率测试 + `testing:coverage`」作业已移除**，CNB 平台不再产出覆盖率徽章，`.cnb.yml` 仅保留「同步到 GitHub」作业。新增/修改覆盖率链路时**不要**再往 CNB 侧加回上报，统一走 Codecov。
 
 **GitHub 侧关键约定（改动前务必先读这条，否则徽章会显示 unknown）：**
 
