@@ -12,6 +12,9 @@
 统一用轻量桩件驱动异步生成器，避免依赖真实 AstrBot 运行时。
 """
 
+import tempfile
+from pathlib import Path
+
 import pytest
 from _plugin_harness import FakeResult, ensure_host, run  # noqa: E402
 
@@ -59,9 +62,13 @@ class Client:
     supported_ratios = {"1:1": ["1024x1024"], "9:16": ["576x1024"]}
     default_size = "1024x1024"
 
-    def __init__(self, raises=None, edit_raises=None):
+    def __init__(self, raises=None, edit_raises=None, out_dir=None):
         self._raises = raises
         self._edit_raises = edit_raises
+        # 产物路径落在调用方给的临时目录（默认 mkdtemp），不硬编码共享 /tmp。
+        out = Path(out_dir) if out_dir is not None else Path(tempfile.mkdtemp())
+        self._gen_path = str(out / "gen.png")
+        self._edit_path = str(out / "edit.png")
         self.generate_calls = []
         self.edit_calls = []
         self.model = "z-image-turbo"
@@ -70,13 +77,13 @@ class Client:
         self.generate_calls.append((prompt, size))
         if self._raises:
             raise self._raises
-        return "/tmp/gen.png"
+        return self._gen_path
 
     async def edit_image(self, **kwargs):
         self.edit_calls.append(kwargs)
         if self._edit_raises:
             raise self._edit_raises
-        return "/tmp/edit.png"
+        return self._edit_path
 
 
 class ModelLister:
@@ -222,12 +229,12 @@ def test_style_without_prompt_uses_style_only() -> None:
     assert plugin.api_client.generate_calls
 
 
-def test_style_image2image_success() -> None:
+def test_style_image2image_success(tmp_path) -> None:
     """带图片时走编辑链路（edit_image）."""
     from astrbot.api.message_components import Image
 
     comp = Image()
-    comp.path = "/tmp/in.png"
+    comp.path = str(tmp_path / "in.png")
     message_obj = type("M", (), {"message": [comp]})()
     event = Event(message_obj=message_obj)
 
@@ -238,12 +245,12 @@ def test_style_image2image_success() -> None:
     assert any(getattr(r, "kind", "") == "chain" for r in out)
 
 
-def test_style_edit_failure() -> None:
+def test_style_edit_failure(tmp_path) -> None:
     """编辑链路异常时回包失败文案."""
     from astrbot.api.message_components import Image
 
     comp = Image()
-    comp.path = "/tmp/in.png"
+    comp.path = str(tmp_path / "in.png")
     message_obj = type("M", (), {"message": [comp]})()
     event = Event(message_obj=message_obj)
     plugin = Plugin(client=Client(edit_raises=RuntimeError("boom")))
@@ -266,11 +273,11 @@ def test_ai_edit_no_images() -> None:
     assert any("请发送要编辑的图片" in getattr(r, "text", "") for r in out)
 
 
-def test_ai_edit_success() -> None:
+def test_ai_edit_success(tmp_path) -> None:
     from astrbot.api.message_components import Image
 
     comp = Image()
-    comp.path = "/tmp/in.png"
+    comp.path = str(tmp_path / "in.png")
     message_obj = type("M", (), {"message": [comp]})()
     event = Event(message_obj=message_obj)
 
@@ -281,11 +288,11 @@ def test_ai_edit_success() -> None:
     assert any(getattr(r, "kind", "") == "chain" for r in out)
 
 
-def test_ai_edit_default_task_type() -> None:
+def test_ai_edit_default_task_type(tmp_path) -> None:
     from astrbot.api.message_components import Image
 
     comp = Image()
-    comp.path = "/tmp/in.png"
+    comp.path = str(tmp_path / "in.png")
     message_obj = type("M", (), {"message": [comp]})()
     event = Event(message_obj=message_obj)
     plugin = Plugin()
@@ -293,11 +300,11 @@ def test_ai_edit_default_task_type() -> None:
     assert plugin.api_client.edit_calls[0]["task_types"] == ["style"]
 
 
-def test_ai_edit_failure() -> None:
+def test_ai_edit_failure(tmp_path) -> None:
     from astrbot.api.message_components import Image
 
     comp = Image()
-    comp.path = "/tmp/in.png"
+    comp.path = str(tmp_path / "in.png")
     message_obj = type("M", (), {"message": [comp]})()
     event = Event(message_obj=message_obj)
     plugin = Plugin(client=Client(edit_raises=RuntimeError("boom")))

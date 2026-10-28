@@ -35,15 +35,16 @@ class Client:
     supported_ratios = {"1:1": ["1024x1024"], "9:16": ["576x1024"]}
     default_size = "1024x1024"
 
-    def __init__(self, raises=None):
+    def __init__(self, raises=None, out_path=""):
         self._raises = raises
+        self._out_path = out_path
         self.calls = []
 
     async def generate_image(self, prompt, size=""):
         self.calls.append((prompt, size))
         if self._raises:
             raise self._raises
-        return "/tmp/fake.png"
+        return self._out_path
 
 
 class Plugin:
@@ -82,9 +83,9 @@ def _collect(plugin, event, prompt, **kw):
     return run(_drive())
 
 
-def test_draw_success_returns_image_message() -> None:
+def test_draw_success_returns_image_message(tmp_path) -> None:
     """成功时产出一条图片消息，并发送进度提示."""
-    plugin = Plugin()
+    plugin = Plugin(client=Client(out_path=str(tmp_path / "fake.png")))
     event = Event()
     out = _collect(plugin, event, "一只猫 9:16")
     assert out

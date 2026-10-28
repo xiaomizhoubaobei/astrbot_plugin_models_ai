@@ -121,7 +121,7 @@ def test_file_uri_parse_error_returns_false() -> None:
     assert cu._is_file_uri(None) is False
 
 
-def test_file_field_http_url_downloads(monkeypatch) -> None:
+def test_file_field_http_url_downloads(monkeypatch, tmp_path) -> None:
     """图片组件仅 file 字段为 http(s) URL 时应走远程下载.
 
     注意：``extract_images_from_message`` 内部用的是它导入期绑定的
@@ -135,7 +135,7 @@ def test_file_field_http_url_downloads(monkeypatch) -> None:
 
     async def _fake_download(url, allowed_hosts=None, *, allow_any_host=False):
         called.append(url)
-        return "/tmp/dl.png"
+        return str(tmp_path / "dl.png")
 
     monkeypatch.setattr(cu, "download_image", _fake_download)
 
@@ -145,7 +145,7 @@ def test_file_field_http_url_downloads(monkeypatch) -> None:
     event = type("E", (), {"message_obj": message_obj})()
 
     paths = run(cu.extract_images_from_message(event))
-    assert paths == ["/tmp/dl.png"]
+    assert paths == [str(tmp_path / "dl.png")]
     assert called == ["https://cdn/a.png"]
 
 

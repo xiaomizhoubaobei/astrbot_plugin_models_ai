@@ -211,7 +211,7 @@ def test_qwen_image_extract_choices_format() -> None:
     assert c._extract_image_url(data, spec) == "https://cdn/qwen.png"
 
 
-def test_qwen_image_sync_generate_success(monkeypatch) -> None:
+def test_qwen_image_sync_generate_success(monkeypatch, tmp_path) -> None:
     """Qwen-Image 走同步链路：一次 POST 即返回图片并落盘."""
     body = json.dumps(
         {
@@ -225,19 +225,20 @@ def test_qwen_image_sync_generate_success(monkeypatch) -> None:
     )
     session = FakeSession(FakeResponse(body=body, status=200))
     c = _make_client(model="qwen-image-3.0-pro")
+    expect = str(tmp_path / "qwen.png")
 
     async def _fake_session():
         return session
 
     async def _fake_download(url, sess):
         assert url == "https://cdn/qwen.png"
-        return "/tmp/qwen.png"
+        return expect
 
     monkeypatch.setattr(c.client_manager, "get_http_session", _fake_session)
     monkeypatch.setattr(c, "_download", _fake_download)
 
     result = run(c.generate_image("画一只猫", "1024*1024"))
-    assert result == "/tmp/qwen.png"
+    assert result == expect
     # 同步链路不带 X-DashScope-Async 头
     assert "X-DashScope-Async" not in session.posts[0]["headers"]
 
@@ -417,8 +418,12 @@ def _patch_session(client: QianwenClient, session: FakeSession) -> None:
     client.client_manager.get_http_session = _get_session  # type: ignore[assignment]
 
 
-def _patch_download(client: QianwenClient, path: str = "/tmp/out.png") -> list:
-    """替换图片下载为记录调用，返回记录列表."""
+def _patch_download(client: QianwenClient, path: str) -> list:
+    """替换图片下载为记录调用，返回记录列表.
+
+    产物路径由调用方显式传入（通常取自 pytest 的 ``tmp_path``），
+    不再硬编码到共享的临时目录。
+    """
     calls: list[tuple] = []
 
     async def _fake_download(image_url, session):
@@ -429,7 +434,7 @@ def _patch_download(client: QianwenClient, path: str = "/tmp/out.png") -> list:
     return calls
 
 
-def test_generate_image_sync_success() -> None:
+def test_generate_image_sync_success(tmp_path) -> None:
     """同步链路：构造请求 -> 解析 choices -> 下载落盘."""
     c = _make_client(model="z-image-turbo")
     body = json.dumps(
@@ -441,11 +446,12 @@ def test_generate_image_sync_success() -> None:
     )
     session = FakeSession(FakeResponse(body, 200))
     _patch_session(c, session)
-    downloads = _patch_download(c)
+    expect = str(tmp_path / "out.png")
+    downloads = _patch_download(c, expect)
 
     result = run(c.generate_image("一个女孩", "1024*1024"))
 
-    assert result == "/tmp/out.png"
+    assert result == expect
     assert downloads and downloads[0][0] == "https://cdn/a.png"
     # 请求体走新端点：messages 传参
     sent = session.posts[0]["json"]
@@ -455,7 +461,7 @@ def test_generate_image_sync_success() -> None:
     assert "X-DashScope-Async" not in session.posts[0]["headers"]
 
 
-def test_generate_image_async_success() -> None:
+def test_generate_image_async_success(tmp_path) -> None:
     """异步链路：提交任务 -> 轮询直到 SUCCEEDED -> 下载."""
     c = _make_client(model="wan2.6-t2i")
     submit_body = json.dumps({"output": {"task_id": "task-123"}})
@@ -471,11 +477,11 @@ def test_generate_image_async_success() -> None:
         [FakeResponse(submit_body, 200), FakeResponse(poll_body, 200)]
     )
     _patch_session(c, session)
-    downloads = _patch_download(c, "/tmp/b.png")
+    downloads = _patch_download(c, str(tmp_path / "b.png"))
 
     result = run(c.generate_image("一只猫", "1280*1280"))
 
-    assert result == "/tmp/b.png"
+    assert result == str(tmp_path / "b.png")
     # 提交请求应带异步头与幂等键
     submit_headers = session.posts[0]["headers"]
     assert submit_headers["X-DashScope-Async"] == "enable"
@@ -485,7 +491,7 @@ def test_generate_image_async_success() -> None:
     assert downloads[0][0] == "https://cdn/b.png"
 
 
-def test_generate_image_prompt_truncated() -> None:
+def test_generate_image_prompt_truncated(tmp_path) -> None:
     """超长提示词按模型上限截断后才下发."""
     c = _make_client(model="z-image-turbo")  # 上限 800
     body = json.dumps(
@@ -497,7 +503,7 @@ def test_generate_image_prompt_truncated() -> None:
     )
     session = FakeSession(FakeResponse(body, 200))
     _patch_session(c, session)
-    _patch_download(c)
+    _patch_download(c, str(tmp_path / "a.png"))
 
     run(c.generate_image("字" * 2000, "1024*1024"))
     sent_prompt = session.posts[0]["json"]["input"]["messages"][0]["content"][0]["text"]

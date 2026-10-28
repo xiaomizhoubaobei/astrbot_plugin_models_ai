@@ -19,6 +19,7 @@
 
 import asyncio
 import sys
+import tempfile
 import types
 from pathlib import Path
 
@@ -108,9 +109,13 @@ class _FakeStar:
 
 
 class _FakeStarTools:
-    """最小 ``StarTools`` 桩件：数据目录可注入，默认落到临时目录."""
+    """最小 ``StarTools`` 桩件：数据目录可注入，默认落到解释器私有临时目录.
 
-    _data_dir = "/tmp/astrbot-test"
+    默认值用 ``tempfile.mkdtemp()`` 而非硬编码的共享路径：固定路径可被同机
+    其它进程预创建 / 抢占（符号链接攻击面），且并发测试会互相污染。
+    """
+
+    _data_dir = tempfile.mkdtemp(prefix="astrbot-test-")
 
     @classmethod
     def get_data_dir(cls, *_a, **_k):

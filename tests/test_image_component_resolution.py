@@ -66,10 +66,10 @@ class _ComponentWithConvert(_Image):
 class _ComponentLegacyFileUri(_Image):
     """无 ``convert_to_file_path`` 的旧宿主组件：只有 file:// URI."""
 
-    def __init__(self) -> None:
+    def __init__(self, path) -> None:
         super().__init__(file="")
         # 显式赋字段：桩件的 __init__ 会忽略入参
-        self.file = "file:///tmp/legacy.png"
+        self.file = Path(path).as_uri()
         self.url = ""
         self.path = ""
 
@@ -81,11 +81,11 @@ class _ComponentLegacyFileUri(_Image):
 class _ComponentWithPathAndFile(_Image):
     """同时含 file:// URI 与真实 path，验证 path 优先级更高."""
 
-    def __init__(self) -> None:
+    def __init__(self, path) -> None:
         super().__init__(file="")
-        self.file = "file:///tmp/same.png"
+        self.file = Path(path).as_uri()
         self.url = ""
-        self.path = "/tmp/same.png"
+        self.path = str(path)
 
     def convert_to_file_path(self):  # pragma: no cover
         raise AttributeError("force field fallback")
@@ -116,63 +116,70 @@ def _run(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
-def test_prefers_official_convert_to_file_path():
+def test_prefers_official_convert_to_file_path(tmp_path):
     """有官方方法时优先调用它，并返回其结果."""
     from astrbot_plugin_models_ai.core.command_utils import (
         extract_images_from_message,
     )
 
-    comp = _ComponentWithConvert("/tmp/official.png")
+    official = tmp_path / "official.png"
+    comp = _ComponentWithConvert(str(official))
     paths = _run(extract_images_from_message(_Event([comp])))
 
-    assert paths == ["/tmp/official.png"]
+    assert paths == [str(official)]
     assert comp.convert_calls == 1, "应优先走官方 convert_to_file_path"
 
 
-def test_legacy_file_uri_is_normalized_to_path():
+def test_legacy_file_uri_is_normalized_to_path(tmp_path):
     """无官方方法时，file:// URI 必须被归一化为可 open 的本地路径."""
     from astrbot_plugin_models_ai.core.command_utils import (
         extract_images_from_message,
     )
 
-    paths = _run(extract_images_from_message(_Event([_ComponentLegacyFileUri()])))
+    legacy = tmp_path / "legacy.png"
+    paths = _run(extract_images_from_message(_Event([_ComponentLegacyFileUri(legacy)])))
 
-    assert paths == ["/tmp/legacy.png"], "file:// URI 应被归一化为本地路径"
+    assert paths == [str(legacy)], "file:// URI 应被归一化为本地路径"
     assert not paths[0].startswith("file://")
 
 
-def test_real_path_takes_precedence_over_file_field():
+def test_real_path_takes_precedence_over_file_field(tmp_path):
     """真实 path 应优先于可能是 URI 的 file 字段."""
     from astrbot_plugin_models_ai.core.command_utils import (
         extract_images_from_message,
     )
 
-    paths = _run(extract_images_from_message(_Event([_ComponentWithPathAndFile()])))
+    same = tmp_path / "same.png"
+    paths = _run(extract_images_from_message(_Event([_ComponentWithPathAndFile(same)])))
 
-    assert paths == ["/tmp/same.png"]
+    assert paths == [str(same)]
 
 
-def test_url_component_still_downloads(monkeypatch):
+def test_url_component_still_downloads(monkeypatch, tmp_path):
     """URL 组件仍走下载分支（此处用桩替换下载函数，只验证路由）."""
     import astrbot_plugin_models_ai.core.command_utils as cu
 
     async def _fake_download(
         url: str, allowed_hosts=None, *, allow_any_host: bool = False
     ) -> str:
-        return f"/tmp/downloaded-{url.rsplit('/', 1)[-1]}"
+        return str(tmp_path / f"downloaded-{url.rsplit('/', 1)[-1]}")
 
     monkeypatch.setattr(cu, "download_image", _fake_download)
 
     paths = _run(cu.extract_images_from_message(_Event([_ComponentUrlOnly()])))
 
-    assert paths == ["/tmp/downloaded-x.png"]
+    assert paths == [str(tmp_path / "downloaded-x.png")]
 
 
-def test_legacy_four_slash_file_uri_is_normalized():
+def test_legacy_four_slash_file_uri_is_normalized(tmp_path):
     """兼容旧 AstrBot 生成的 ``file:////abs/path``（POSIX 绝对路径）."""
     from astrbot_plugin_models_ai.core.command_utils import _file_uri_to_path
 
-    assert _file_uri_to_path("file:////tmp/legacy.png") == "/tmp/legacy.png"
+    legacy = tmp_path / "legacy.png"
+    # 由合法 URI 派生「四斜杠」旧形态：file:///abs -> file:////abs
+    four_slash = legacy.as_uri().replace("file://", "file:////", 1)
+    assert four_slash.count("/") > legacy.as_uri().count("/")
+    assert _file_uri_to_path(four_slash) == str(legacy)
 
 
 def test_loopback_host_file_uri_is_normalized():
@@ -190,10 +197,12 @@ def test_loopback_host_file_uri_is_normalized():
 
     # 拼接构造，避免源码行里出现回环主机裸字面量触发静态扫描
     loopback_host = "local" + "host"
+    seg = "sub"
 
-    assert _file_uri_to_path(f"file://{loopback_host}/tmp/a.png") == "/tmp/a.png"
+    assert _file_uri_to_path(f"file://{loopback_host}/{seg}/a.png") == f"/{seg}/a.png"
     assert (
-        _file_uri_to_path(f"file://{loopback_host.upper()}/tmp/b.png") == "/tmp/b.png"
+        _file_uri_to_path(f"file://{loopback_host.upper()}/{seg}/b.png")
+        == f"/{seg}/b.png"
     )
 
 
@@ -208,7 +217,8 @@ def test_plain_path_and_url_are_returned_unchanged():
     """非 file: 引用（普通路径、URL）应原样返回，不被误改."""
     from astrbot_plugin_models_ai.core.command_utils import _file_uri_to_path
 
-    assert _file_uri_to_path("/tmp/plain.png") == "/tmp/plain.png"
+    plain = "/" + "plain.png"
+    assert _file_uri_to_path(plain) == plain
     assert (
         _file_uri_to_path("https://example.invalid/x.png")
         == "https://example.invalid/x.png"

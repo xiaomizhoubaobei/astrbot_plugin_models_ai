@@ -19,6 +19,7 @@ AstrBot 依据 ``@filter_cmd.llm_tool`` 处理函数的 docstring ``Args`` 生�
 
 import asyncio
 import sys
+import tempfile
 import types
 from pathlib import Path
 
@@ -101,7 +102,8 @@ def _install_astrbot_stubs() -> None:
     class _FakeStarTools:
         @staticmethod
         def get_data_dir(*a, **k):
-            return "/tmp"
+            # 数据目录落到解释器私有临时目录，不硬编码共享 /tmp
+            return tempfile.mkdtemp(prefix="astrbot-draw-")
 
     def _noop(*_a, **_k):
         def deco(func):
@@ -223,10 +225,12 @@ class _FakeApiClient:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        # 产物路径落在本次运行独享的临时目录，避免硬编码共享路径
+        self.out_path = str(Path(tempfile.mkdtemp()) / "fake.png")
 
     async def generate_image(self, prompt: str, size: str = "") -> str:
         self.calls.append((prompt, size))
-        return "/tmp/fake.png"
+        return self.out_path
 
 
 class _FakePlugin:

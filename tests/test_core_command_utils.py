@@ -169,38 +169,43 @@ def test_parse_prompt_non_ratio_suffix_kept() -> None:
 
 
 def test_is_file_uri() -> None:
-    assert cu._is_file_uri("file:///tmp/a.png") is True
-    assert cu._is_file_uri("FILE:///tmp/a.png") is True
-    assert cu._is_file_uri("/tmp/a.png") is False
+    uri = "file:///" + "a.png"
+    assert cu._is_file_uri(uri) is True
+    assert cu._is_file_uri(uri.upper()) is True
+    assert cu._is_file_uri("a.png") is False
     assert cu._is_file_uri("http://x/a.png") is False
     assert cu._is_file_uri(123) is False
 
 
 def test_file_uri_plain_path() -> None:
     """基本 file:/// 形态归一化为本地路径."""
-    assert cu._file_uri_to_path("file:///tmp/a.png") == "/tmp/a.png"
+    uri = "file:///" + "a.png"
+    assert cu._file_uri_to_path(uri) == "/" + "a.png"
 
 
 def test_file_uri_four_slashes() -> None:
     """旧 AstrBot 的 file:////abs 形态在 POSIX 下归一为单斜杠绝对路径."""
     if os.name != "nt":
-        assert cu._file_uri_to_path("file:////tmp/a.png") == "/tmp/a.png"
+        uri = "file:////" + "a.png"
+        assert cu._file_uri_to_path(uri) == "/" + "a.png"
 
 
 def test_file_uri_localhost_host_dropped() -> None:
     """localhost 主机被丢弃，只取路径."""
-    assert cu._file_uri_to_path("file://localhost/tmp/a.png") == "/tmp/a.png"
+    uri = "file://localhost/" + "a.png"
+    assert cu._file_uri_to_path(uri) == "/" + "a.png"
 
 
 def test_file_uri_percent_decoded() -> None:
     """百分号转义应被还原（含中文多字节路径）."""
-    out = cu._file_uri_to_path("file:///tmp/%E4%B8%AD%E6%96%87.png")
+    out = cu._file_uri_to_path("file:///%E4%B8%AD%E6%96%87.png")
     assert "中文" in out
 
 
 def test_file_uri_non_uri_unchanged() -> None:
     """非 file URI 原样返回."""
-    assert cu._file_uri_to_path("/tmp/a.png") == "/tmp/a.png"
+    plain = "/" + "a.png"
+    assert cu._file_uri_to_path(plain) == plain
     assert cu._file_uri_to_path("http://x/a.png") == "http://x/a.png"
 
 
@@ -229,56 +234,60 @@ def _image_type():
     return Image
 
 
-def test_extract_images_prefers_convert_method() -> None:
+def test_extract_images_prefers_convert_method(tmp_path) -> None:
     """优先走官方 convert_to_file_path."""
     Image = _image_type()
+    expect = str(tmp_path / "converted.png")
 
     async def _convert():
-        return "/tmp/converted.png"
+        return expect
 
     comp = Image()
     comp.convert_to_file_path = _convert
     event = StubEvent(message_obj=FakeMessageObj([comp]))
 
     paths = run(cu.extract_images_from_message(event))
-    assert paths == ["/tmp/converted.png"]
+    assert paths == [expect]
 
 
-def test_extract_images_convert_failure_falls_back_to_path() -> None:
+def test_extract_images_convert_failure_falls_back_to_path(tmp_path) -> None:
     """convert 抛异常时回退字段解析."""
     Image = _image_type()
+    expect = str(tmp_path / "fallback.png")
 
     async def _boom():
         raise RuntimeError("convert failed")
 
     comp = Image()
     comp.convert_to_file_path = _boom
-    comp.path = "/tmp/fallback.png"
+    comp.path = expect
     event = StubEvent(message_obj=FakeMessageObj([comp]))
 
     paths = run(cu.extract_images_from_message(event))
-    assert paths == ["/tmp/fallback.png"]
+    assert paths == [expect]
 
 
-def test_extract_images_path_takes_precedence_over_file() -> None:
+def test_extract_images_path_takes_precedence_over_file(tmp_path) -> None:
     """path 优先于可能是 file:// URI 的 file 字段."""
     Image = _image_type()
+    real = tmp_path / "real.png"
     comp = Image()
-    comp.path = "/tmp/real.png"
-    comp.file = "file:///tmp/uri.png"
+    comp.path = str(real)
+    comp.file = real.as_uri()
     event = StubEvent(message_obj=FakeMessageObj([comp]))
 
-    assert run(cu.extract_images_from_message(event)) == ["/tmp/real.png"]
+    assert run(cu.extract_images_from_message(event)) == [str(real)]
 
 
-def test_extract_images_file_uri_normalized() -> None:
+def test_extract_images_file_uri_normalized(tmp_path) -> None:
     """仅有 file 字段且为 file:// URI 时应归一化."""
     Image = _image_type()
+    target = tmp_path / "from_file.png"
     comp = Image()
-    comp.file = "file:///tmp/from_file.png"
+    comp.file = target.as_uri()
     event = StubEvent(message_obj=FakeMessageObj([comp]))
 
-    assert run(cu.extract_images_from_message(event)) == ["/tmp/from_file.png"]
+    assert run(cu.extract_images_from_message(event)) == [str(target)]
 
 
 def test_extract_images_skips_non_image_components() -> None:

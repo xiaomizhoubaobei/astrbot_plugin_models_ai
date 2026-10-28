@@ -102,9 +102,10 @@ async def _fake_session():
     return object()
 
 
-def test_generate_image_url_path() -> None:
+def test_generate_image_url_path(tmp_path) -> None:
     """结果含 URL 时应走下载落盘分支."""
     c = _make_client()
+    out = str(tmp_path / "a.png")
     images = _FakeImages(_FakeImagesResp([_FakeImageData(url="https://cdn/a.png")]))
     _patch_openai(c, images)
     c.client_manager.get_http_session = _fake_session  # type: ignore[assignment]
@@ -113,12 +114,12 @@ def test_generate_image_url_path() -> None:
 
     async def _dl(url, session):
         downloaded.append((url, session))
-        return "/tmp/a.png"
+        return out
 
     c.image_manager.download_image = _dl  # type: ignore[assignment]
 
     result = run(c.generate_image("一只猫"))
-    assert result == "/tmp/a.png"
+    assert result == out
     assert downloaded[0][0] == "https://cdn/a.png"
     # 请求参数应含 size 与 extra_body（步数 + 负向提示词）
     kwargs = images.calls[0]
@@ -128,9 +129,10 @@ def test_generate_image_url_path() -> None:
     assert kwargs["extra_body"]["negative_prompt"] == "低质量"
 
 
-def test_generate_image_base64_path() -> None:
+def test_generate_image_base64_path(tmp_path) -> None:
     """结果含 b64_json 时应走 base64 落盘分支."""
     c = _make_client()
+    out = str(tmp_path / "b.jpg")
     payload = base64.b64encode(b"IMG").decode()
     images = _FakeImages(_FakeImagesResp([_FakeImageData(b64=payload)]))
     _patch_openai(c, images)
@@ -139,16 +141,16 @@ def test_generate_image_base64_path() -> None:
 
     async def _save(b64):
         saved.append(b64)
-        return "/tmp/b.jpg"
+        return out
 
     c.image_manager.save_base64_image = _save  # type: ignore[assignment]
 
     result = run(c.generate_image("一只猫"))
-    assert result == "/tmp/b.jpg"
+    assert result == out
     assert saved == [payload]
 
 
-def test_generate_image_custom_size_used() -> None:
+def test_generate_image_custom_size_used(tmp_path) -> None:
     """显式传入 size 时应覆盖默认尺寸，且空 size 回落默认."""
     c = _make_client()
     images = _FakeImages(_FakeImagesResp([_FakeImageData(url="https://cdn/a.png")]))
@@ -156,7 +158,7 @@ def test_generate_image_custom_size_used() -> None:
     c.client_manager.get_http_session = _fake_session  # type: ignore[assignment]
 
     async def _dl(_u, _s):
-        return "/tmp/a.png"
+        return str(tmp_path / "a.png")
 
     c.image_manager.download_image = _dl  # type: ignore[assignment]
 
@@ -164,7 +166,7 @@ def test_generate_image_custom_size_used() -> None:
     assert images.calls[0]["size"] == "512x512"
 
 
-def test_generate_image_empty_negative_prompt_omitted() -> None:
+def test_generate_image_empty_negative_prompt_omitted(tmp_path) -> None:
     """negative_prompt 为空时不应出现在 extra_body."""
     c = _make_client(negative_prompt="")
     images = _FakeImages(_FakeImagesResp([_FakeImageData(url="https://cdn/a.png")]))
@@ -172,7 +174,7 @@ def test_generate_image_empty_negative_prompt_omitted() -> None:
     c.client_manager.get_http_session = _fake_session  # type: ignore[assignment]
 
     async def _dl(_u, _s):
-        return "/tmp/a.png"
+        return str(tmp_path / "a.png")
 
     c.image_manager.download_image = _dl  # type: ignore[assignment]
 
@@ -436,14 +438,16 @@ def test_edit_image_url_no_download(tmp_path) -> None:
 
     downloaded: list = []
 
+    out = str(tmp_path / "edit.png")
+
     async def _dl(url, sess):
         downloaded.append(url)
-        return "/tmp/edit.png"
+        return out
 
     c.image_manager.download_image = _dl  # type: ignore[assignment]
 
     result = run(c.edit_image("改成油画", ["https://cdn/in.png"], download_urls=False))
-    assert result == "/tmp/edit.png"
+    assert result == out
     assert downloaded == ["https://cdn/edit.png"]
 
 
@@ -464,12 +468,12 @@ def test_edit_image_local_file(tmp_path) -> None:
     c.client_manager.get_http_session = _async_return(session)  # type: ignore
 
     async def _dl(_u, _s):
-        return "/tmp/o.png"
+        return str(tmp_path / "o.png")
 
     c.image_manager.download_image = _dl  # type: ignore[assignment]
 
     result = run(c.edit_image("x", [str(img)]))
-    assert result == "/tmp/o.png"
+    assert result == str(tmp_path / "o.png")
 
 
 def test_edit_image_url_with_download(tmp_path) -> None:
@@ -490,12 +494,12 @@ def test_edit_image_url_with_download(tmp_path) -> None:
     c.client_manager.get_http_session = _async_return(session)  # type: ignore
 
     async def _dl(_u, _s):
-        return "/tmp/o.png"
+        return str(tmp_path / "o.png")
 
     c.image_manager.download_image = _dl  # type: ignore[assignment]
 
     result = run(c.edit_image("x", ["https://cdn/in.png"], download_urls=True))
-    assert result == "/tmp/o.png"
+    assert result == str(tmp_path / "o.png")
 
 
 def test_edit_image_missing_task_id() -> None:
@@ -519,7 +523,7 @@ def test_edit_image_submit_http_error() -> None:
 # ===== 编辑任务轮询 =====
 
 
-def test_poll_edit_task_success() -> None:
+def test_poll_edit_task_success(tmp_path) -> None:
     """轮询到 success 且含 file_url 时下载并返回."""
     c = _make_client()
     resp = FakeResponse(
@@ -535,13 +539,15 @@ def test_poll_edit_task_success() -> None:
     )
     session = FakeSession(resp)
 
+    out = str(tmp_path / "o.png")
+
     async def _dl(url, _s):
         assert url == "https://cdn/o.png"
-        return "/tmp/o.png"
+        return out
 
     c.image_manager.download_image = _dl  # type: ignore[assignment]
     result = run(c._poll_edit_task("t1", session, "k", retry_interval=1))
-    assert result == "/tmp/o.png"
+    assert result == out
 
 
 def test_poll_edit_task_error_field() -> None:
@@ -582,7 +588,7 @@ def test_poll_edit_task_timeout() -> None:
         run(c._poll_edit_task("t1", session, "k", timeout=0, retry_interval=10))
 
 
-def test_poll_edit_task_pending_then_success(monkeypatch) -> None:
+def test_poll_edit_task_pending_then_success(monkeypatch, tmp_path) -> None:
     """先 running 后 success，应能继续轮询到成功."""
     c = _make_client()
 
@@ -601,10 +607,12 @@ def test_poll_edit_task_pending_then_success(monkeypatch) -> None:
     session = FakeSession([running, success])
 
     async def _dl(_u, _s):
-        return "/tmp/o.png"
+        return str(tmp_path / "o.png")
 
     c.image_manager.download_image = _dl  # type: ignore[assignment]
-    assert run(c._poll_edit_task("t1", session, "k", retry_interval=1)) == "/tmp/o.png"
+    assert run(c._poll_edit_task("t1", session, "k", retry_interval=1)) == str(
+        tmp_path / "o.png"
+    )
 
 
 def test_poll_edit_task_query_http_error() -> None:
