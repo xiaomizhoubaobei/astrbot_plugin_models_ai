@@ -191,6 +191,9 @@ taskflow:
         （规则：{{ result.rule }}，文件：{{ result.path }}，描述：{{ result.message }}），
         调用可用的 MCP Server（如 GitHub API / CodeQL toolbox）收集信息：
         - 告警的 source（来源点）与 sink（汇点）在该 Python 文件中的精确行号；
+          ⚠️ 用 CodeQL toolbox 查库时，database 参数填 `astrbot_plugin_models_ai`
+          （工作流已在 CODEQL_DBS_BASE_PATH 下按此名建好 python 库），
+          语言为 `python`；**不要**自行猜测库名，也不要指望联网重新建库。
         - 告警路径上是否有用户输入（不可信数据）流入（如聊天消息、指令参数、URL 参数、请求体、环境变量）；
         - 该代码路径是否在特权/高权限上下文（如服务端处理、凭证处理、文件系统操作、子进程调用）中执行；
         - 该告警触发的输入是否真的可被外部攻击者控制。

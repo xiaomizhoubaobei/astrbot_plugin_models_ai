@@ -162,6 +162,96 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
+      # ── 准备 Python（建库专用，必须早于「构建 CodeQL 数据库」）───────────────
+      # 成因：CodeQL 的 Python 提取器默认调用 PATH 上的 `python3`，而 ubuntu-latest
+      #   预装版本并不保证满足本插件的 `python>=3.12`——提取阶段一旦撞上版本不符
+      #   或缺少标准库，建库就会失败。显式装一个 3.12 并置于 PATH 最前，
+      #   让「建库用的解释器」与「项目声明的版本」对齐（与 CodeQL.yml 同一口径）。
+      - name: 设置 Python（CodeQL 建库所需）
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      # ── 解析 CodeQL CLI 并构建数据库（供 MCP codeql toolbox 读取）─────────────
+      # 为什么必须有这一步：审计人格挂了 seclab_taskflow_agent.toolboxes.codeql，
+      #   该 toolbox 只认两个环境变量——CODEQL_CLI（可执行文件**绝对路径**）与
+      #   CODEQL_DBS_BASE_PATH（数据库基目录），并在基目录下按相对路径找库。
+      #   二者缺一，codeql 取证工具就查不到数据库 → Agent 退化为凭空判定行号
+      #   （正是「必须精确定位 source/sink 行号」这条审计要求的反面）。
+      #
+      # ⚠️ CLI 定位与建库**拆成两步**：CLI 位置随 runner 而异（托管 runner 常在
+      #   带版本号的 tool-cache 路径，自托管 runner 可能在 /opt/codeql 或仅 PATH，
+      #   甚至没装）。探测收敛到 .github/scripts/resolve-codeql-cli.sh：多候选探测 +
+      #   兜底下载官方**固定版本** bundle（先校验 SHA-256 再解压执行，fail-closed）。
+      # 解析出的**绝对路径**经 GITHUB_ENV 透传，避免跨 cwd 失效（脚本内有详解）。
+      - name: 解析 CodeQL CLI（多候选探测 + 兜底安装）
+        run: |
+          set -euo pipefail
+          # shellcheck source=.github/scripts/resolve-codeql-cli.sh
+          source .github/scripts/resolve-codeql-cli.sh
+          if ! CLI="$(resolve_codeql_cli)"; then
+            echo "ERROR: 无法获得可执行的 CodeQL CLI（已知位置未命中且兜底安装失败）。" >&2
+            exit 1
+          fi
+          # 写 GITHUB_ENV 前再兜一层归一化：保证写入的**永不是**相对路径。
+          # （PATH 含相对条目时 `command -v codeql` 会返回 `bin/codeql` 这类相对
+          #   路径，只在当前 cwd 成立，而消费它的建库步 / 审计步 cwd 各不相同。）
+          if ! CLI_ABS="$(canonicalize_path "$CLI")"; then
+            echo "ERROR: CodeQL CLI 路径无法归一化为绝对路径：$CLI" >&2
+            exit 1
+          fi
+          if [ ! -x "$CLI_ABS" ]; then
+            echo "ERROR: 归一化后的 CodeQL CLI 不可执行：$CLI_ABS" >&2
+            exit 1
+          fi
+          echo "CodeQL CLI: $CLI_ABS"
+          "$CLI_ABS" version
+          echo "CODEQL_CLI=${CLI_ABS}" >> "$GITHUB_ENV"
+
+      - name: 构建 CodeQL 数据库
+        env:
+          # 数据库目录名即 codeql toolbox 的 `database` 入参（相对基目录的路径），
+          # 故这里只取仓库名（astrbot_plugin_models_ai），与 owner 无关、便于引用。
+          CODEQL_DB_NAME: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          # ① 直接消费上一步写入 GITHUB_ENV 的实测路径；缺失则回落同一脚本重新探测
+          #    （幂等自愈，避免「上一步异常但本步静默用错 CLI」）。
+          # shellcheck source=.github/scripts/resolve-codeql-cli.sh
+          source .github/scripts/resolve-codeql-cli.sh
+          if [ ! -x "${CODEQL_CLI:-}" ]; then
+            CLI="$(resolve_codeql_cli)" \
+              || { echo "ERROR: 未找到可执行的 CodeQL CLI，无法建库。" >&2; exit 1; }
+          else
+            CLI="$CODEQL_CLI"
+          fi
+          CLI="$(canonicalize_path "$CLI")" \
+            || { echo "ERROR: CODEQL_CLI 无法归一化为绝对路径：$CLI" >&2; exit 1; }
+          echo "CodeQL CLI: $CLI"
+          "$CLI" version
+
+          # ② 建库（纯离线本地操作：不联网、不上传，只需读权限）。
+          #    库落在 /tmp 而非检出树内：一是不污染工作区、不被 upload-artifact
+          #    误打包；二是路径显式固化，杜绝「建库一个路径、消费另一个路径」的漂移。
+          DBS_BASE="${CODEQL_DBS_BASE_PATH:-/tmp/codeql-dbs}"
+          DB_PATH="${DBS_BASE}/${CODEQL_DB_NAME}"
+          mkdir -p "$DBS_BASE"
+          "$CLI" database create "$DB_PATH" \
+            --language=python \
+            --source-root=. \
+            --overwrite
+
+          # ③ 双自检：目录存在 + 确属 CodeQL 数据库（有 codeql-database.yml 才认），
+          #    防止把空目录/半成品当「建库成功」放行，让后续取证静默退化。
+          test -d "$DB_PATH" \
+            || { echo "ERROR: CodeQL 数据库未生成：${DB_PATH}" >&2; exit 1; }
+          test -f "${DB_PATH}/codeql-database.yml" \
+            || { echo "ERROR: ${DB_PATH} 不是有效的 CodeQL 数据库。" >&2; exit 1; }
+
+          # ④ 固化**实测值**供下游消费：建库与消费同源，杜绝硬编码漂移。
+          echo "CODEQL_DBS_BASE_PATH=${DBS_BASE}" >> "$GITHUB_ENV"
+          echo "已建库：${DB_PATH}（language=python）"
+
       # 拉取 seclab-taskflow-agent 框架，固定到已复核发布的不可变 commit SHA
       - name: Checkout seclab-taskflow-agent 框架（固定 commit）
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -216,11 +306,31 @@ jobs:
           MCP_CONFIG: ${{ secrets.MCP_CONFIG }}
           # 审计结果落盘位置，供 publish job 消费
           AUDIT_VERDICT_FILE: /tmp/audit-verdicts.json
+          # ── CodeQL MCP（codeql toolbox）所需环境变量 ──────────────────────
+          # 说明：codeql toolbox 需要一个 **CLI 可执行文件绝对路径**与一个
+          #   **数据库基目录**（它在该目录下按相对路径找库，库名见下方 -g 注释）。
+          # ⚠️ 为什么不在 env: 里写 `$(which codeql)`：env: 是**静态 YAML**，
+          #   `$(...)` 属 shell 命令替换，在 env 里**不会被执行**，会被原样当字面量
+          #   传给 Agent，指向一个根本不存在的路径。
+          #   故这里引用建库步骤写入 GITHUB_ENV 的**实测值**（而非硬编码
+          #   /tmp/codeql-dbs）：基目录一旦被改为非默认值，硬编码会让 Agent
+          #   去错误目录找库，取证静默退化为「查不到数据库」。
+          CODEQL_CLI: ${{ env.CODEQL_CLI }}
+          CODEQL_DBS_BASE_PATH: ${{ env.CODEQL_DBS_BASE_PATH }}
           # 仓库路径（owner/repo）：与下方 `-g repo=` **同源**（都取 github.repository），
           # 供 shell 任务的第 0 步拉取告警端点使用，杜绝「拉 A 仓库告警、却按 B 仓库 key
           # 审计」的仓库分裂（shell 的 run: 不做模板渲染，拿不到 globals.repo）。
           AUDIT_REPO: ${{ github.repository }}
         run: |
+          # 兜底门禁：正常情况下二者由「解析 CLI」「构建 CodeQL 数据库」两步经
+          #   GITHUB_ENV 注入。这里再兜一层——若传递异常导致为空，codeql toolbox
+          #   会拿到空路径并静默查不到库（取证退化却看不出报错），故**硬失败**
+          #   比「跑完全程却全是幻觉行号」更可诊断。
+          : "${CODEQL_CLI:?缺少 CODEQL_CLI（应由「解析 CodeQL CLI」步骤注入）}"
+          : "${CODEQL_DBS_BASE_PATH:?缺少 CODEQL_DBS_BASE_PATH（应由「构建 CodeQL 数据库」步骤注入）}"
+          test -d "${CODEQL_DBS_BASE_PATH}" \
+            || { echo "ERROR: CodeQL 数据库基目录不存在：${CODEQL_DBS_BASE_PATH}" >&2; exit 1; }
+          echo "CodeQL 取证上下文：CLI=${CODEQL_CLI} DB_BASE=${CODEQL_DBS_BASE_PATH}"
           # 模型从仓库 Secret AI_MODEL_NAME 经 COPILOT_DEFAULT_MODEL 传入框架，
           # 因此调用前必须确保其非空（GitHub Actions 未配置的 Secret 会解析成空串）
           : "${AI_MODEL_NAME:?请配置仓库 Secret AI_MODEL_NAME 以指定 AI 审计所用模型}"
