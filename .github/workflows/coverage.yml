@@ -63,11 +63,21 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: 安装依赖
+      # ── 依赖安装（分两段，各自可解释）─────────────────────────────────────
+      # ① requirements.txt：插件运行依赖，走「版本下限」以便 AstrBot 宿主解析；
+      #    测试要跑通必须装上它们，故不能哈希锁定（锁死会与宿主的依赖图打架）。
+      # ② requirements-ci-tools.txt：**CI 工具链**（pytest / coverage），
+      #    版本 + sha256 双锁定，并用 --require-hashes 强制校验——供应链上
+      #    「同名包被换内容」会在安装瞬间失败，而不是静默执行陌生代码。
+      #    ⚠️ 不要退回 `pip install pytest coverage` 这种浮动写法：
+      #      Scorecard 的 PinnedDependenciesID 告警正是由它触发（#143/#144/#145）。
+      - name: 安装插件运行依赖
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-asyncio coverage
+
+      - name: 安装 CI 工具链（版本 + 哈希锁定）
+        run: python -m pip install --require-hashes -r requirements-ci-tools.txt
 
       # 仓库目录名不等于插件包名（astrbot_plugin_models_ai），测试统一按
       # 「顶层包名」导入（见 tests/_coverage_support.py）。此处铺一层同名符号
@@ -164,11 +174,14 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: 安装依赖
+      # 与 coverage job 同一套口径：运行依赖不锁（宿主解析），CI 工具链锁死。
+      - name: 安装插件运行依赖
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-asyncio
+
+      - name: 安装 CI 工具链（版本 + 哈希锁定）
+        run: python -m pip install --require-hashes -r requirements-ci-tools.txt
 
       - name: 构造可导入的包视图
         run: ln -sfn "$GITHUB_WORKSPACE" "$RUNNER_TEMP/astrbot_plugin_models_ai"

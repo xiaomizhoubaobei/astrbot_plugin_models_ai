@@ -938,7 +938,8 @@ python3 /app/scripts/bailian-memory.py delete --node-id node_abc
 ├── main.py                 # 插件主入口：AIImage(Star) 类、指令注册、LLM 工具注册、资源清理
 ├── metadata.yaml           # 插件元数据（name/desc/version/author/repo）
 ├── _conf_schema.json       # AstrBot 配置 schema（api_key/model/size 等）
-├── requirements.txt        # 运行依赖
+├── requirements.txt        # 运行依赖（版本下限，交宿主解析）
+├── requirements-ci-tools.txt  # CI 工具链依赖（版本 + sha256 双锁定，--require-hashes 安装）
 ├── commands/               # 指令处理逻辑
 │   ├── __init__.py         # 命令函数导出
 │   ├── generate.py         # /ai-gitee generate 文生图
@@ -1109,6 +1110,26 @@ pre-commit run --all-files
 > 其能力（静态安全分析）已由 `CodeQL.yml`（Python 语义级分析，单一运行器 + 单一 Python `3.13`）、
 > `DevSkim.yml`（`3.13/3.14/3.15` 多版本源码模式扫描）与 `security-scan.yml`（Bandit）完整覆盖，
 > 故直接移除该工作流以根治告警，避免为消警而长期背负一个无人维护的 Action。
+
+#### 11.8.0 CI 工具链依赖锁定（供应链口径）
+
+`.github/workflows/*` 里但凡需要装测试 / 扫描工具，**一律**通过
+`requirements-ci-tools.txt` + `pip install --require-hashes` 安装，不得在 workflow 里写
+`pip install pytest` / `pip install bandit` 之类浮动安装。
+
+| 项 | 口径 |
+| --- | --- |
+| 清单 | `requirements-ci-tools.txt`（**完整依赖闭包**：顶层工具 + 传递依赖） |
+| 锁定粒度 | 每个包 `==精确版本` + `sha256`，`--require-hashes` 强制校验，包内容变化即安装失败 |
+| 覆盖工作流 | `coverage.yml`（pytest / coverage）、`security-scan.yml`（bandit） |
+| 例外 | `ai-audit-scheduled.yml` 的 hatch 用**精确版本**（`hatch==1.14.0` / `virtualenv==20.39.1`）而非全量哈希——其依赖闭包 40+ 包、含多个 C 扩展，全量锁哈希的维护成本远超收益 |
+| 多版本矩阵 | 3.13/3.14/3.15 共用一份清单；C 扩展包（black / coverage / PyYAML）按解释器标签补哈希，**新增此类依赖必须补齐各标签**，否则某版本会因「找不到匹配分发」失败 |
+| 升级 | 走 Dependabot 的 `ci(deps)` PR（`package-ecosystem: pip`，标签 `ci-toolchain`），或按清单文件头命令手工重算哈希 |
+| 运行依赖 | 仍是 `requirements.txt`（版本下限，交 AstrBot 宿主解析），**两者不要混用** |
+
+> ⚠️ `PyYAML 6.0.3` 目前只发到 cp314（无 cp315 wheel、无通用 wheel）。这不影响现状：
+> `security-scan.yml` 是单版本工作流（固定 3.13），coverage 矩阵 3.15 上也不装 bandit。
+> 若日后把 bandit 塞进多版本矩阵，必须先补齐 PyYAML 的 cp315 分发。
 
 #### 11.8.1 覆盖率链路（Codecov 单一来源）
 

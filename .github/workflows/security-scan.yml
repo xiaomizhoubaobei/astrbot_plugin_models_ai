@@ -45,10 +45,16 @@ jobs:
         # 单版本工作流，跟随测试矩阵的起始版本（3.13）
         python-version: '3.13'
 
-    - name: 安装依赖项
+    # Bandit 从「版本 + 哈希锁定」的 CI 工具链清单安装，而不是 `pip install bandit`：
+    # 后者是浮动安装（上游换包内容即静默执行），正是 Scorecard PinnedDependenciesID
+    # 告警 #149/#150 的成因。`--require-hashes` 会让任何包内容变化在安装瞬间失败。
+    # ⚠️ 3.15 不在本工作流里跑（单版本工作流固定在 3.13），故 bandit 的依赖闭包
+    #    （PyYAML 尚无 cp315 wheel）不成问题；如日后把本工作流改成多版本矩阵，
+    #    需先补齐 PyYAML 的 cp315 分发，见 requirements-ci-tools.txt 文件头。
+    - name: 安装扫描工具（版本 + 哈希锁定）
       run: |
         python -m pip install --upgrade pip
-        pip install bandit
+        python -m pip install --require-hashes -r requirements-ci-tools.txt
 
     # 不加 `|| true`：Bandit 命中扫描阈值时以非零码退出，使本工作流真正告警。
     # 报告文件仍会在后续步骤上传，故失败也不丢证据。

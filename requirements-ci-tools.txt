@@ -1,0 +1,101 @@
+# =============================================================================
+# CI 工具链依赖（**版本 + 哈希双锁定**，非插件运行依赖）
+# =============================================================================
+# 用途：coverage.yml / security-scan.yml 等 GitHub Actions 工作流所需的
+#       测试与扫描工具。安装方式统一为：
+#
+#           pip install --require-hashes -r requirements-ci-tools.txt
+#
+# ── 为什么要单独一份清单（而不是写在 workflow 里 `pip install pytest`）────────
+#  1) 供应链安全（Scorecard `PinnedDependenciesID`）：工作流里的 `pip install bandit`
+#     属于「未固定版本的依赖安装」，上游随时可以换掉包内容，攻击者只需接管一次
+#     发布账号即可让 CI 执行任意代码。锁定 `==版本 + sha256` 后，包内容一旦变化
+#     安装即失败（fail-closed），而不是静默装上一个「同名新版」。
+#  2) 用 `--require-hashes` 时 pip 会**强制校验**每一份下载的哈希，并要求
+#     **所有**依赖（含间接依赖）都被锁定，因此本文件是完整的依赖闭包。
+#  3) 放在仓库里而不是工作流里：可被 Dependabot 的 `pip` 生态自动升级（见
+#     .github/dependabot.yml），版本漂移可审查、可回滚，而不是散落在 YAML 里。
+#
+# ── 与插件运行依赖的边界 ───────────────────────────────────────────────────
+#  本文件**不是**插件运行依赖（那是 requirements.txt，走版本下限以满足 AstrBot
+#  宿主的依赖解析）。本文件只服务于 CI 里的「跑测试 / 跑扫描」这一步。
+#
+# ── 多版本矩阵的兼容性（重要，勿删）─────────────────────────────────────────
+#  CI 矩阵覆盖 Python 3.13 / 3.14 / 3.15，而 `--require-hashes` **不会**按当前
+#  解释器自动挑 wheel：它要求本文件提供的候选里**必须有一个能装上**。因此每个
+#  含 C 扩展的包（black / coverage / pyyaml）都按 cp313 / cp314 / cp315 及通用
+#  wheel 分别列出哈希，覆盖「有对应 wheel」与「回落到通用 wheel」两种情形；
+#  纯 Python 包只有一份。⚠️ 新增 C 扩展依赖时务必同样补齐各解释器标签的哈希，
+#  否则矩阵中某个版本会因「找不到匹配分发」而安装失败。
+#
+# ── 升级方式（二选一）──────────────────────────────────────────────────────
+#  · 推荐：等 Dependabot 的 `ci(deps)` PR（它会把版本与哈希一起改掉）；
+#  · 手工：改版本号后按下述命令重新生成哈希并补齐各解释器标签：
+#        pip download --no-deps -d /tmp/w --python-version 3.13 \
+#          --only-binary=:all: --implementation cp --abi cp313 \
+#          --platform manylinux2014_x86_64 <包名>==<新版本>
+#        sha256sum /tmp/w/*.whl
+# =============================================================================
+
+# ── 单元测试与覆盖率（coverage.yml）──────────────────────────────────────────
+# 顶层工具：pytest / coverage
+#   注：测试用例统一走 tests/_plugin_harness.py 的 run() 自建事件循环，
+#   未使用 pytest-asyncio 插件，故不在此锁定该依赖（少一个包 = 少一份供应链面）
+pytest==8.4.2 \
+    --hash=sha256:872f880de3fc3a5bdc88a11b39c9710c3497a547cfa9320bc3c5e62fbf272e79
+coverage==7.8.2 \
+    --hash=sha256:dc67994df9bcd7e0150a47ef41278b9e0a0ea187caba72414b71dc590b99a108 \
+    --hash=sha256:726f32ee3713f7359696331a18daf0c3b3a70bb0ae71141b9d3c52be7c595e32 \
+    --hash=sha256:cb86337a4fcdd0e598ff2caeb513ac604d2f3da6d53df2c8e368e07ee38e277d \
+    --hash=sha256:ea561010914ec1c26ab4188aef8b1567272ef6de096312716f90e5baa79ef8ca
+# ── 静态安全扫描（security-scan.yml 的 Bandit）───────────────────────────────
+# 顶层工具：bandit
+bandit==1.9.4 \
+    --hash=sha256:f89ffa663767f5a0585ea075f01020207e966a9c0f2b9ef56a57c7963a3f6f8e
+# ── 上述工具的传递依赖（--require-hashes 要求依赖闭包完整）─────────────────────
+# 由 `pip install --dry-run --report` 解析出的实际闭包，按字母序排列；
+# 升级顶层工具后请重新解析并同步本段，否则安装会因「缺哈希」而失败。
+click==8.5.0 \
+    --hash=sha256:255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360
+exceptiongroup==1.3.1 \
+    --hash=sha256:a7a39a3bd276781e98394987d3a5701d0c4edffb633bb7a5144577f82c773598
+iniconfig==2.3.1 \
+    --hash=sha256:9121e2c1fdb355232495be3194c8dfe87ccc2d5dee45947b78e68f499790d7a7
+markdown-it-py==4.2.0 \
+    --hash=sha256:9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a
+mdurl==0.1.2 \
+    --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8
+mypy-extensions==1.1.0 \
+    --hash=sha256:1be4cccdb0f2482337c4743e60421de3a356cd97508abadd57d47403e94f5505
+packaging==26.3 \
+    --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+pathspec==1.1.1 \
+    --hash=sha256:a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189
+platformdirs==4.14.0 \
+    --hash=sha256:1dadfc59a8a5d7565b3d9270ae8fa71c065595352c4277b41c11ee6c222c4b91
+pluggy==1.7.0 \
+    --hash=sha256:7dd7b0d8832ba3cb632c306926ded123429211b83641b35dc5c41ad2d34f9bec
+Pygments==2.21.0 \
+    --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9
+pytokens==0.4.1 \
+    --hash=sha256:29d1d8fb1030af4d231789959f21821ab6325e463f0503a61d204343c9b355d1 \
+    --hash=sha256:dc74c035f9bfca0255c1af77ddd2d6ae8419012805453e4b0e7513e17904545d \
+    --hash=sha256:26cef14744a8385f35d0e095dc8b3a7583f6c953c2e3d269c7f82484bf5ad2de
+#  ⚠️ PyYAML 6.0.3 只发布到 cp314（PyPI 上无 cp315 wheel，也无 py3-none-any）。
+#     这只影响「把 bandit 装到 3.15 上」这一种用法——当前不存在该用法：
+#     security-scan.yml 是单版本工作流（固定 3.13），coverage 矩阵的 3.15 上也不装
+#     bandit，故现状不受影响。若日后把 bandit 塞进多版本矩阵，必须先等上游补发
+#     cp315 分发，否则 3.15 那一路会因「找不到匹配分发」而失败（这是**有意**的
+#     fail-closed，不要用 `--no-deps` 或去掉 --require-hashes 来绕过）。
+PyYAML==6.0.3 \
+    --hash=sha256:0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6 \
+    --hash=sha256:c458b6d084f9b935061bc36216e8a69a7e293a2f1e68bf956dcd9e6cbcd143f5
+rich==15.0.0 \
+    --hash=sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb
+stevedore==5.9.1 \
+    --hash=sha256:5c8ff3a9f336cc1a06ac0f597bc79d11a2f950bfd32e290ca56b5a301fafafbf
+tomli==2.5.0 \
+    --hash=sha256:5d8bac3d603c97e6854424e5b2b5b741bdbde387e09f162fb0446812b4a8362b \
+    --hash=sha256:7ac2027d37c3afbdf4bdd377f2676f6f1d2122a5be1f1137b49dced590b37e75
+typing_extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
