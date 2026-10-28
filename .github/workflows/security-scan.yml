@@ -42,8 +42,8 @@ jobs:
     - name: 设置 Python
       uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
       with:
-        # 单版本工作流，跟随测试矩阵的起始版本（3.12）
-        python-version: '3.12'
+        # 单版本工作流，跟随测试矩阵的起始版本（3.13）
+        python-version: '3.13'
 
     - name: 安装依赖项
       run: |

@@ -10,7 +10,7 @@
 [![Commit Activity](https://img.shields.io/github/commit-activity/w/xiaomizhoubaobei/astrbot_plugin_models_ai)](https://github.com/xiaomizhoubaobei/astrbot_plugin_models_ai)
 [![GitHub last commit](https://img.shields.io/github/last-commit/xiaomizhoubaobei/astrbot_plugin_models_ai)](https://github.com/xiaomizhoubaobei/astrbot_plugin_models_ai)
 [![GitHub contributors](https://img.shields.io/github/contributors/xiaomizhoubaobei/astrbot_plugin_models_ai)](https://github.com/xiaomizhoubaobei/astrbot_plugin_models_ai)
-![Python Version](https://img.shields.io/badge/Python-3.12+-blue.svg)
+![Python Version](https://img.shields.io/badge/Python-3.13+-blue.svg)
 ![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)
 ![Status](https://img.shields.io/badge/status-active-success.svg)
 ![Repo Size](https://img.shields.io/github/repo-size/xiaomizhoubaobei/astrbot_plugin_models_ai.svg)

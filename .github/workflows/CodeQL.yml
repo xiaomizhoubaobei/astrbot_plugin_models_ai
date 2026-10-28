@@ -39,8 +39,8 @@ jobs:
       matrix:
         language: [ 'python' ]
         os: [ 'ubuntu-latest' ]
-        # 单版本工作流，与测试矩阵的起始版本对齐到 3.12
-        python-version: [ '3.12' ]
+        # 单版本工作流，与测试矩阵的起始版本对齐到 3.13
+        python-version: [ '3.13' ]
 
     steps:
     - name: 加固运行器（审计所有出站调用）
@@ -77,7 +77,7 @@ jobs:
         #   Code Scanning 会据此把它视为**另一个分析类别**：历史告警仍挂在旧 category 下，
         #   既不会被本工作流刷新，也**不会**被自动关闭。
         #   处理方式：合并后到 Security → Code scanning 里把旧 category
-        #   （形如 `/os:ubuntu-latest/py:3.12`）下的告警**手动 dismiss（wont fix / used in tests）**
+        #   （形如 `/os:ubuntu-latest/py:3.13`）下的告警**手动 dismiss（wont fix / used in tests）**
         #   或删除该分析配置，否则 ai-audit 会一直把它们当成 open 告警反复送审。
         #   等旧 category 清空并累积一次成功运行后，新 category 才成为唯一事实来源。
         category: "/language:${{ matrix.language }}"

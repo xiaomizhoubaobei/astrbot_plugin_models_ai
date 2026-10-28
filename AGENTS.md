@@ -80,7 +80,7 @@ bash install_gpg_keys.sh
 ## 2. 编码与代码规范 (Coding Standards)
 
 ### 2.1 语言与类型
-- 核心代码库使用 **Python** 编写（本项目为 AstrBot 插件，要求 Python 3.12+）。
+- 核心代码库使用 **Python** 编写（本项目为 AstrBot 插件，要求 Python 3.13+）。
 - 函数与关键变量必须提供**类型注解**，并通过 `pre-commit` 中的 `mypy`（`ignore-missing-imports`）检查。
 - 禁止为图省事滥用 `Any`；能用具体类型或 `TypedDict` / `dataclass` 表达的地方必须明确类型。
 
@@ -923,7 +923,7 @@ python3 /app/scripts/bailian-memory.py delete --node-id node_abc
 | 类型 | AstrBot 插件（Python） |
 | 版本 | v0.0.8 |
 | 作者 | 祁筱欣 |
-| Python | 3.12+（CI 使用 black/flake8，声明 3.12+；pre-commit 中 black 指定 3.11） |
+| Python | 3.13+（CI 矩阵 3.13/3.14/3.15；pre-commit 中 black 语法目标版本 `py312`，只影响格式化产物，不构成运行时下限） |
 | 上游 API | Gitee AI（`https://ai.gitee.com/v1`，OpenAI 兼容接口） |
 | 主要依赖 | `aiofiles`, `aiohttp`, `openai`, `deprecated`（另用 `httpx`） |
 
@@ -1082,15 +1082,15 @@ pre-commit run --all-files
 
 | Workflow | 作用 |
 | --- | --- |
-| `CodeQL.yml` | 代码安全分析（单一运行器 + 单一 Python 版本 `3.12`，不做无增益的 os × 版本矩阵） |
+| `CodeQL.yml` | 代码安全分析（单一运行器 + 单一 Python 版本 `3.13`，不做无增益的 os × 版本矩阵） |
 | `security-scan.yml` / `DevSkim.yml` / `secret-scanning.yml` | 安全与密钥扫描（Bandit 仅中高危计入失败；密钥扫描统一走 trufflehog） |
-| `PythonDependencyAudit.yml` / `dependency-review.yml` | 依赖审计（矩阵 `3.12/3.13/3.14`）与依赖变更审查 |
+| `PythonDependencyAudit.yml` / `dependency-review.yml` | 依赖审计（矩阵 `3.13/3.14/3.15`）与依赖变更审查 |
 | `tfsec.yml` | IaC 安全扫描（Trivy `config` 扫描，即 tfsec 规则集的继任引擎） |
 | `Scorecard.yml` | 供应链安全评分 |
 | `inclusiveness-analyzer.yml` | 包容性分析（仅 warns，不阻断） |
 | `stale.yml` | 陈旧 Issue / PR 自动化（stale 30 天 / close 7 天） |
 | `release.yml` | 发布流程（tag 幂等跳过、发布包边界校验、证据包 + cosign 签名） |
-| `coverage.yml` | 覆盖率（`coverage` job 单版本统计上报 Codecov + `tests` 矩阵 `3.12/3.13/3.14` + `tests-gate` 汇总门禁） |
+| `coverage.yml` | 覆盖率（`coverage` job 以 `3.13` 统计上报 Codecov + `tests` 矩阵 `3.13/3.14/3.15` + `tests-gate` 汇总门禁） |
 | `ai-audit-scheduled.yml` | CodeQL 完成后的 AI 审计分流（`triage` / `publish` 两段式，artifact 加密交接） |
 
 > **权限口径（统一约定）**：所有工作流**顶层不给 `id-token: write`**，写能力（`contents: write` /
@@ -1106,8 +1106,8 @@ pre-commit run --all-files
 > **OSSAR 工作流已移除（`ossar.yml`）**：上游 `github/ossar-action` 停更在 v2.0.0（2024-04），
 > 其 `action.yml` 固定为 `node20`、内置 `@actions/core@1.2.6` 仍使用已废弃的 `set-output` 命令，
 > 因此持续产生「Node.js 20 弃用」与「`set-output` 弃用」两条告警，且**上游无 Node 24 版本可升**。
-> 其能力（静态安全分析）已由 `CodeQL.yml`（Python 语义级分析，单一运行器 + 单一 Python `3.12`）、
-> `DevSkim.yml`（`3.12/3.13/3.14` 多版本源码模式扫描）与 `security-scan.yml`（Bandit）完整覆盖，
+> 其能力（静态安全分析）已由 `CodeQL.yml`（Python 语义级分析，单一运行器 + 单一 Python `3.13`）、
+> `DevSkim.yml`（`3.13/3.14/3.15` 多版本源码模式扫描）与 `security-scan.yml`（Bandit）完整覆盖，
 > 故直接移除该工作流以根治告警，避免为消警而长期背负一个无人维护的 Action。
 
 #### 11.8.1 覆盖率链路（Codecov 单一来源）

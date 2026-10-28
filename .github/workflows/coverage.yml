@@ -25,14 +25,14 @@ jobs:
   coverage:
     name: 单元测试与覆盖率 (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    # 测试矩阵：只在「当前受支持的 3.12 / 3.13 / 3.14」上跑单测，
+    # 测试矩阵：只在「当前受支持的 3.13 / 3.14 / 3.15」上跑单测，
     # 逐个版本覆盖是为了尽早暴露版本相关的行为差异（如 asyncio 事件循环、
     # 标准库弃用告警），而不是只在一个版本上「绿了就算过」。
     # fail-fast: false —— 某一版本失败不该掩盖其它版本的结论。
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13", "3.14"]
+        python-version: ["3.13", "3.14", "3.15"]
     # ⚠️ 【令牌只在「上报」这一步可见】切勿把 CODECOV_TOKEN 提到 job / workflow 级 env：
     #   本 job 会 `pip install -r requirements.txt` 并执行 **PR 可控的测试代码**，
     #   job 级 env 会让这些不可信代码直接读到 Secret，一个 `curl $CODECOV_TOKEN`
@@ -113,11 +113,11 @@ jobs:
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           files: ./coverage.xml
-          # 覆盖率只跑单一版本（矩阵起始的 3.12）：多版本重复上报同一份
+          # 覆盖率只跑单一版本（矩阵起始的 3.13）：多版本重复上报同一份
           # 源码的覆盖率没有增量信息，只会让 Codecov 侧互相覆盖。
           # 其余版本由下面的 tests 矩阵负责「跑通」这一结论。
           flags: unittests
-          name: python-3.12
+          name: python-3.13
           fail_ci_if_error: false
           verbose: true
           # CLI 默认下载到检出根目录并长期留存；改用临时目录并在结束后清理，
@@ -135,7 +135,7 @@ jobs:
           path: coverage.xml
           if-no-files-found: warn
 
-  # 纯单测矩阵：3.12 / 3.13 / 3.14 逐版本跑一遍 pytest。
+  # 纯单测矩阵：3.13 / 3.14 / 3.15 逐版本跑一遍 pytest。
   # 为什么与 coverage job 分开：覆盖率只需算一次（同一份源码），
   # 而「代码在这些版本上都能跑通」必须逐版本验证；两者混在一个 job 里
   # 会让覆盖率被重复计算、被重复上报，纯属浪费。
@@ -146,7 +146,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13", "3.14"]
+        python-version: ["3.13", "3.14", "3.15"]
     steps:
       - name: 加固运行器 (审计全部出网调用)
         uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
@@ -197,4 +197,4 @@ jobs:
             echo "❌ 单测矩阵未全部通过：${{ needs.tests.result }}"
             exit 1
           fi
-          echo "✅ 3.12 / 3.13 / 3.14 全部通过"
+          echo "✅ 3.13 / 3.14 / 3.15 全部通过"

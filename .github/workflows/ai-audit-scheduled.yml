@@ -164,13 +164,13 @@ jobs:
 
       # ── 准备 Python（建库专用，必须早于「构建 CodeQL 数据库」）───────────────
       # 成因：CodeQL 的 Python 提取器默认调用 PATH 上的 `python3`，而 ubuntu-latest
-      #   预装版本并不保证满足本插件的 `python>=3.12`——提取阶段一旦撞上版本不符
-      #   或缺少标准库，建库就会失败。显式装一个 3.12 并置于 PATH 最前，
+      #   预装版本并不保证满足本插件的 `python>=3.13`——提取阶段一旦撞上版本不符
+      #   或缺少标准库，建库就会失败。显式装一个 3.13 并置于 PATH 最前，
       #   让「建库用的解释器」与「项目声明的版本」对齐（与 CodeQL.yml 同一口径）。
       - name: 设置 Python（CodeQL 建库所需）
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: '3.12'
+          python-version: '3.13'
 
       # ── 解析 CodeQL CLI 并构建数据库（供 MCP codeql toolbox 读取）─────────────
       # 为什么必须有这一步：审计人格挂了 seclab_taskflow_agent.toolboxes.codeql，
