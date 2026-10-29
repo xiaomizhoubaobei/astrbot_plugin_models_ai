@@ -41,8 +41,9 @@
 # 顶层工具：pytest / coverage
 #   注：测试用例统一走 tests/_plugin_harness.py 的 run() 自建事件循环，
 #   未使用 pytest-asyncio 插件，故不在此锁定该依赖（少一个包 = 少一份供应链面）
-pytest==8.4.2 \
-    --hash=sha256:872f880de3fc3a5bdc88a11b39c9710c3497a547cfa9320bc3c5e62fbf272e79
+pytest==9.0.3 \
+    --hash=sha256:2c5efc453d45394fdd706ade797c0a81091eccd1d6e4bccfcd476e2b8e0ab5d9 \
+    --hash=sha256:b86ada508af81d19edeb213c681b1d48246c1a91d304c6c81a427674c17eb91c
 coverage==7.8.2 \
     --hash=sha256:dc67994df9bcd7e0150a47ef41278b9e0a0ea187caba72414b71dc590b99a108 \
     --hash=sha256:726f32ee3713f7359696331a18daf0c3b3a70bb0ae71141b9d3c52be7c595e32 \
