@@ -477,7 +477,7 @@ jobs:
       # 10. 创建 GitHub Release（tag 已存在则跳过，避免覆盖既有 Release 的资产与正文）
       - name: 创建 GitHub Release
         if: steps.get_info.outputs.tag_exists != 'true'
-        uses: softprops/action-gh-release@e598afbe1493e6b1bafb1f389cabb956eab91231 # v3.0.3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ steps.get_info.outputs.tag_name }}
           name: Release ${{ steps.get_info.outputs.version }}
