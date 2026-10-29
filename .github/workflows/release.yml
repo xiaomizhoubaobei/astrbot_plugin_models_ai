@@ -7,7 +7,8 @@ on:
       - main
     paths:
       - '**/*.py'
-  workflow_dispatch:  # 允许手动触发（下发给 build 任务的 refs/heads/main 闸门会拒绝非 main 分支）
+  workflow_dispatch:  # 允许手动触发。可选 ref：main（重新发布 main 当前版本）或版本 tag
+    #（如 v0.0.1，用该 tag 指向的提交重新发布）；其它 ref 由 gate 任务拦下
     # 手动触发语义：**手动触发即重新发布**。
     # 与 push 触发的区别只在于「tag 已存在时怎么办」：
     #   - push 触发：tag 已存在就跳过（每次 .py 变更都会跑本工作流，版本号未变时不得覆盖既有 Release）；
@@ -15,6 +16,13 @@ on:
     #     （action-gh-release 对已存在 Release 是 update 语义，同名资产按名替换）。
     # 故此处不再提供「强制重新发布」开关——手动触发本身就是那个动作。
     # 唯一的例外是 dry_run：试运行只验证构建链路，绝不产生任何对外可见变更。
+    #
+    # ⚠️ 选 ref 的语义差别（很容易踩）：
+    #   选 main → 构建 **main 最新代码**，版本号取 main 的 metadata.yaml；
+    #   选 tag  → 构建 **该 tag 指向的提交**（可能是几个月前的快照），版本号取那份快照的
+    #             metadata.yaml。想让 v0.0.1 这个 Release 的产物变「新」，唯一正确做法是把
+    #             v0.0.1 这个 tag 重新指到新提交，而不是选 v0.0.1 这个 ref 重跑——
+    #             后者只会把同一份旧快照再打一遍包，产物哈希变了、内容没变。
     inputs:
       dry_run:
         description: '试运行：只构建与打包，不创建 tag / 不发 Release / 不生成签名证据'
@@ -29,23 +37,92 @@ permissions:
   actions: read
 
 # ⚠️ 【发布串行化】release 是「先查 tag 是否存在、再建 tag、再发布」的三段动作，
-#   GitHub Actions 无法把「查」与「建」做成一个原子操作。若两次 main 推送同时跑，
+#   GitHub Actions 无法把「查」与「建」做成一个原子操作。若两次运行同时跑，
 #   两者都可能先观察到「该版本 tag 尚不存在」，于是各建一次同名 tag → 后到者要么
 #   撞 tag 失败、要么把同一版本发两遍（Release 页面出现重复/覆盖的产物）。
 #   故用 concurrency 把发布**串行化**：同一时刻只允许一个 release 在跑，
 #   cancel-in-progress: false —— 发布是「必须完成的动作」，不能被新提交顶掉，
 #   后来的排队等前一个跑完即可（它拿到锁后会重新查 tag，从而正确跳过已发布的版本）。
+#
+# ⚠️⚠️ 【分组必须与 ref 解耦，否则「重新发布」会与 main 上的发布并行撞车】
+#   曾被写成 `release-${{ github.ref }}`，这是一个真实踩过的坑：
+#   GitHub 手动触发（workflow_dispatch）可以选择「用哪个 ref 跑本工作流」，
+#   一旦选择 tag（如 v0.0.1），github.ref 就是 `refs/tags/v0.0.1`、github.ref_name
+#   就是 `v0.0.1`，于是闸门 `github.ref == 'refs/heads/main'` 直接判否 —— 整个 job
+#   被跳过，Actions 上却显示「success」（job 被跳过不等于失败），看起来就像
+#   「流水线跑了但没重新发布」。更隐蔽的是，即便把闸门改成放行，不同 ref 也会落到
+#   **不同的并发分组**，串行化形同虚设，重新发布与 main 上的发布可能同时改写同一个
+#   Release 的资产。
+#   故分组只认**推导出来的逻辑仓库**（owner/repo），不认 ref：
+#   同一仓库的任何触发（push main / 手动选 main / 手动选 tag）共用同一把锁，
+#   这样「查 tag → 发布」的三段动作在任何入口下都是串行的。
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
+  # ⚠️ 【发布闸门：只放行 main 与版本 tag，绝不放行普通分支】
+  #   本任务持有 contents: write，一旦跑起来就会打 tag、发 Release，所以必须限定入口。
+  #
+  #   历史写法是裸的 `if: github.ref == 'refs/heads/main'`，它把**版本 tag 触发的
+  #   重新发布**一起挡在门外：手动触发时若 ref 选的是 `v0.0.1`，github.ref 为
+  #   `refs/tags/v0.0.1`，条件判否 → 整个 job 被跳过，而 Actions 上仍显示 success
+  #   （被跳过的 job 不是失败），于是「跑了流水线但产物没变」。这正是本闸门被放宽的
+  #   原因：tag 指向的历史提交同样是一个合法的、可重现的发布源。
+  #
+  #   放行规则（三条，任一命中即可）：
+  #     1) 推送到 main                       —— 常规发版入口；
+  #     2) 手动触发 + ref 为 main            —— 在 main 上重新发布当前 metadata 版本；
+  #     3) 手动触发 + ref 为版本 tag         —— 用该 tag 指向的提交重新发布（内容取自 tag 快照）。
+  #   普通分支与 pull_request 一律不放行：既避免误发，也避免有人借分支改写正式 Release。
+  #
+  #   为什么额外要求 event_name == 'workflow_dispatch'：tag 推送也会让 github.ref 变成
+  #   refs/tags/*，若不加这条，随手 push 一个 tag 就会触发一次发布，与「发布必须可追溯」
+  #   的约定冲突。
+  #
+  #   仍需注意的是：tag 触发时构建用的是**tag 指向的提交**（checkout 默认取触发 ref），
+  #   不是 main 的最新代码。想发最新内容请在 main 上手动触发，或先提升 metadata.yaml 版本。
+  gate:
+    name: 发布闸门
+    runs-on: ubuntu-latest
+    outputs:
+      allow: ${{ steps.decide.outputs.allow }}
+      reason: ${{ steps.decide.outputs.reason }}
+    steps:
+      - name: 判定是否放行发布
+        id: decide
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ALLOW=false
+          if [ "$REF" = "refs/heads/main" ]; then
+            ALLOW=true
+            REASON="ref 为 main（事件：${EVENT_NAME}）"
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            # 版本 tag 形如 v0.0.1；只认 refs/tags/v<数字...>，避免 ci-* 之类的辅助 tag 误触发布
+            case "$REF" in
+              refs/tags/v[0-9]*)
+                ALLOW=true
+                REASON="手动触发 + 版本 tag ${REF_NAME}，将用该 tag 指向的提交重新发布"
+                ;;
+            esac
+          fi
+          if [ "$ALLOW" != "true" ]; then
+            REASON="ref=${REF} 且事件=${EVENT_NAME}，不在发布白名单内（仅 main 与版本 tag 可发布）"
+          fi
+          echo "::notice::发布闸门：${REASON}"
+          echo "allow=$ALLOW" >> "$GITHUB_OUTPUT"
+          echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+
   build:
     name: 构建 Release
+    needs: gate
+    # 闸门判定不放行时，本 job 不创建（skipped），且不会有人为它花 runner 时间。
+    if: needs.gate.outputs.allow == 'true'
     runs-on: ubuntu-latest
-    # 手动触发时可指定任意分支，本任务持有 contents: write 会打 tag 并发布；
-    # 因此强制只在 main 上发布，防止把非 main 分支的内容发成正式 Release。
-    if: github.ref == 'refs/heads/main'
     permissions:
       contents: write
       id-token: write  # 为签名所必需
