@@ -139,6 +139,7 @@ pre-commit run --all-files    # 首次会联网安装各 hook 环境，稍慢
 ### 测试与覆盖率
 
 - 单元测试位于 `tests/`，本地运行：`pytest tests -q`。
+- 测试工具版本钉定为 **pytest 9.0.3**（见 `.github/workflows/coverage.yml`）：pytest 9 存在破坏性变更（`PytestRemovedIn9Warning` 类废弃默认升级为错误），不钉定会让 CI 结果随上游发版时机漂移；本地复现 CI 时请对齐同版本：`pip install pytest==9.0.3 pytest-asyncio`。
 - 覆盖率门槛目前为**提示性**（不卡 PR），但新增业务代码请尽量带测试：
   - 整体覆盖率与增量门禁配置在 `codecov.yml`（`informational: true`）。
   - 覆盖率仅由 GitHub 侧工作上传统计并上报 Codecov；CNB 侧的上报已移除。改动覆盖率链路前请先读 `AGENTS.md` 10.8.1。
