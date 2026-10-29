@@ -1090,7 +1090,7 @@ pre-commit run --all-files
 | `inclusiveness-analyzer.yml` | 包容性分析（仅 warns，不阻断） |
 | `stale.yml` | 陈旧 Issue / PR 自动化（stale 30 天 / close 7 天） |
 | `release.yml` | 发布流程（tag 幂等跳过、发布包边界校验、证据包 + cosign 签名） |
-| `coverage.yml` | 覆盖率（`coverage` job 以 `3.13` 统计上报 Codecov + `tests` 矩阵 `3.13/3.14/3.15` + `tests-gate` 汇总门禁） |
+| `coverage.yml` | 覆盖率（`coverage` job 以 `3.13` 统计上报 Codecov + `tests` 矩阵 `3.13/3.14/3.15` + `tests-gate` 汇总门禁）；测试工具钉定 `pytest==9.0.3` |
 | `ai-audit-scheduled.yml` | CodeQL 完成后的 AI 审计分流（`triage` / `publish` 两段式，artifact 加密交接） |
 
 > **权限口径（统一约定）**：所有工作流**顶层不给 `id-token: write`**，写能力（`contents: write` /
