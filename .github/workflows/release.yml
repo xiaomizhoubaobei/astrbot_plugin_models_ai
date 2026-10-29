@@ -8,13 +8,14 @@ on:
     paths:
       - '**/*.py'
   workflow_dispatch:  # 允许手动触发（下发给 build 任务的 refs/heads/main 闸门会拒绝非 main 分支）
-    # 手动触发专属开关。push 触发时这些输入为空，行为与原先完全一致（tag 已存在就跳过，
-    # 绝不覆盖已发布的 Release）；只有人工显式勾选「强制重新发布」才会走到覆盖分支。
+    # 手动触发语义：**手动触发即重新发布**。
+    # 与 push 触发的区别只在于「tag 已存在时怎么办」：
+    #   - push 触发：tag 已存在就跳过（每次 .py 变更都会跑本工作流，版本号未变时不得覆盖既有 Release）；
+    #   - 手动触发：无视 tag 是否已存在，一律按当前 metadata.yaml 的版本重新发一次
+    #     （action-gh-release 对已存在 Release 是 update 语义，同名资产按名替换）。
+    # 故此处不再提供「强制重新发布」开关——手动触发本身就是那个动作。
+    # 唯一的例外是 dry_run：试运行只验证构建链路，绝不产生任何对外可见变更。
     inputs:
-      force_republish:
-        description: '强制按当前 metadata.yaml 版本重新发布（会覆盖同名 Release 的正文与同名资产）'
-        type: boolean
-        default: false
       dry_run:
         description: '试运行：只构建与打包，不创建 tag / 不发 Release / 不生成签名证据'
         type: boolean
@@ -87,15 +88,15 @@ jobs:
           PLUGIN_NAME=$(grep "^name:" metadata.yaml | awk '{print $2}')
           echo "plugin_name=$PLUGIN_NAME" >> $GITHUB_OUTPUT
           # ---- 发布决策 ----
-          # push 触发时 IN_FORCE / IN_DRY_RUN 均为空，两者一律按 false 处理，
-          # 等同于「tag 已存在就跳过」的老行为；只有 workflow_dispatch 勾选开关才会改变流向。
-          IN_FORCE="${{ inputs.force_republish }}"
+          # 判据只有两个：本次是不是手动触发、以及有没有勾选试运行。
+          # push 触发时 inputs 为空 → IS_MANUAL=false，走「tag 已存在就跳过」的老行为；
+          # 手动触发（workflow_dispatch）→ IS_MANUAL=true，tag 已存在也照样重新发布。
           IN_DRY_RUN="${{ inputs.dry_run }}"
-          IN_FORCE="${IN_FORCE:-false}"
           IN_DRY_RUN="${IN_DRY_RUN:-false}"
+          IS_MANUAL="${{ github.event_name == 'workflow_dispatch' }}"
+          IS_MANUAL="${IS_MANUAL:-false}"
 
-          # 判断该版本 tag 是否已存在：每次 .py 变更都会跑本工作流，
-          # 版本号未变时必须跳过发布，避免覆盖已有 Release 的资产与正文
+          # 判断该版本 tag 是否已存在：手工触发时要据此提示「这是一次重新发布」
           if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
             TAG_EXISTS=true
           else
@@ -103,24 +104,29 @@ jobs:
           fi
 
           # publish：是否真的走到「发 Release」这一步。
-          # 手动的 dry_run 优先级最高——试运行只验证构建链路，绝不产生任何对外可见变更。
+          #   - dry_run 优先级最高：只构建打包，绝不建 tag / 不发布 / 不生成签名证据；
+          #   - 手动触发：无条件发布（tag 已存在 = 重新发布，不存在 = 首次发布）；
+          #   - push 触发：tag 已存在则跳过，避免覆盖既有 Release。
           if [ "$IN_DRY_RUN" = "true" ]; then
             PUBLISH=false
             echo "::notice::试运行模式（dry_run）：仅构建打包，不建 tag、不发 Release"
-          elif [ "$TAG_EXISTS" = "true" ] && [ "$IN_FORCE" != "true" ]; then
+          elif [ "$IS_MANUAL" = "true" ]; then
+            PUBLISH=true
+            if [ "$TAG_EXISTS" = "true" ]; then
+              echo "::warning::手动触发：tag v${VERSION} 已存在，本次将重新发布（覆盖同名 Release 的正文与同名资产）"
+            else
+              echo "::notice::手动触发：tag v${VERSION} 尚不存在，本次为首次发布"
+            fi
+          elif [ "$TAG_EXISTS" = "true" ]; then
             PUBLISH=false
-            echo "::notice::tag v${VERSION} 已存在，跳过发布；如确需重发请在手动触发时勾选 force_republish"
+            echo "::notice::tag v${VERSION} 已存在，跳过发布；如需重发请手动触发本工作流"
           else
             PUBLISH=true
           fi
 
-          if [ "$TAG_EXISTS" = "true" ] && [ "$PUBLISH" = "true" ]; then
-            echo "::warning::tag v${VERSION} 已存在且已勾选强制重新发布，本次将覆盖同名 Release 的正文与同名资产"
-          fi
-
           echo "tag_exists=$TAG_EXISTS" >> "$GITHUB_OUTPUT"
           echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
-          echo "force=$IN_FORCE" >> "$GITHUB_OUTPUT"
+          echo "manual=$IS_MANUAL" >> "$GITHUB_OUTPUT"
           echo "dry_run=$IN_DRY_RUN" >> "$GITHUB_OUTPUT"
           # 兼容旧变量名：原逻辑以「tag 不存在」作为发布闸门，现统一收敛到 publish
           echo "publish_needed=$PUBLISH" >> "$GITHUB_OUTPUT"
@@ -523,8 +529,8 @@ jobs:
 
       # 10. 创建 GitHub Release
       # 是否真的走到这里已由前面的 publish 闸门决定：
-      #   - tag 不存在 → 新建 Release（常规路径）；
-      #   - tag 已存在 + 勾选 force_republish → 覆盖同名 Release 的正文与同名资产
+      #   - push 触发 + tag 不存在 → 新建 Release（常规路径）；
+      #   - 手动触发 → 无条件发布；tag 已存在即「重新发布」，覆盖同名 Release 的正文与同名资产
       #     （action-gh-release 对已存在 Release 是 update 语义，同名文件按名替换，
       #     不会堆出重复资产；但被删掉的旧资产不会自动清理，需要人工核实）。
       - name: 创建 GitHub Release
@@ -583,10 +589,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 提示强制重新发布
-        if: steps.get_info.outputs.publish == 'true' && steps.get_info.outputs.force == 'true' && steps.get_info.outputs.tag_exists == 'true'
+      - name: 提示重新发布
+        if: steps.get_info.outputs.publish == 'true' && steps.get_info.outputs.tag_exists == 'true'
         run: |
-          echo "::warning::本次为强制重新发布：tag ${{ steps.get_info.outputs.tag_name }} 已存在，Release 正文与同名资产已被覆盖，请人工核对是否残留旧资产"
+          echo "::warning::本次为重新发布：tag ${{ steps.get_info.outputs.tag_name }} 已存在，Release 正文与同名资产已被覆盖，请人工核对是否残留旧资产"
 
       - name: 提示跳过发布
         if: steps.get_info.outputs.publish != 'true'
@@ -594,5 +600,5 @@ jobs:
           if [ "${{ steps.get_info.outputs.dry_run }}" = "true" ]; then
             echo "::notice::试运行完成：zip 已生成但未发布。正式发布请取消勾选 dry_run"
           else
-            echo "::notice::tag ${{ steps.get_info.outputs.tag_name }} 已存在，跳过本次 Release；如需重新发布请先提升 metadata.yaml 中的 version，或手动触发时勾选 force_republish"
+            echo "::notice::tag ${{ steps.get_info.outputs.tag_name }} 已存在，跳过本次 Release；如需重新发布请手动触发本工作流（或将 metadata.yaml 的 version 提升后再推送）"
           fi
