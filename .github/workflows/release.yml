@@ -1,604 +1,156 @@
-name: 'Release 构建'
-
-# 触发条件：推送到 main 分支时触发或手动触发
-on:
-  push:
-    branches:
-      - main
-    paths:
-      - '**/*.py'
-  workflow_dispatch:  # 允许手动触发（下发给 build 任务的 refs/heads/main 闸门会拒绝非 main 分支）
-    # 手动触发语义：**手动触发即重新发布**。
-    # 与 push 触发的区别只在于「tag 已存在时怎么办」：
-    #   - push 触发：tag 已存在就跳过（每次 .py 变更都会跑本工作流，版本号未变时不得覆盖既有 Release）；
-    #   - 手动触发：无视 tag 是否已存在，一律按当前 metadata.yaml 的版本重新发一次
-    #     （action-gh-release 对已存在 Release 是 update 语义，同名资产按名替换）。
-    # 故此处不再提供「强制重新发布」开关——手动触发本身就是那个动作。
-    # 唯一的例外是 dry_run：试运行只验证构建链路，绝不产生任何对外可见变更。
-    inputs:
-      dry_run:
-        description: '试运行：只构建与打包，不创建 tag / 不发 Release / 不生成签名证据'
-        type: boolean
-        default: false
-
-# 顶层默认最小权限：只用只读能力。真正需要的写能力（contents: write 建 tag/发 Release、
-# id-token: write 供 Sigstore 签名）一律下沉到下方 build job，避免工作流级授予写权限——
-# 否则任一步骤被替换即可拿到发布与签名能力。actions: read 用于读取同仓 Actions 元数据。
-permissions:
-  contents: read
-  actions: read
-
-# ⚠️ 【发布串行化】release 是「先查 tag 是否存在、再建 tag、再发布」的三段动作，
-#   GitHub Actions 无法把「查」与「建」做成一个原子操作。若两次 main 推送同时跑，
-#   两者都可能先观察到「该版本 tag 尚不存在」，于是各建一次同名 tag → 后到者要么
-#   撞 tag 失败、要么把同一版本发两遍（Release 页面出现重复/覆盖的产物）。
-#   故用 concurrency 把发布**串行化**：同一时刻只允许一个 release 在跑，
-#   cancel-in-progress: false —— 发布是「必须完成的动作」，不能被新提交顶掉，
-#   后来的排队等前一个跑完即可（它拿到锁后会重新查 tag，从而正确跳过已发布的版本）。
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
-
-jobs:
-  build:
-    name: 构建 Release
-    runs-on: ubuntu-latest
-    # 手动触发时可指定任意分支，本任务持有 contents: write 会打 tag 并发布；
-    # 因此强制只在 main 上发布，防止把非 main 分支的内容发成正式 Release。
-    if: github.ref == 'refs/heads/main'
-    permissions:
-      contents: write
-      id-token: write  # 为签名所必需
-      actions: read
-
-    steps:
-      # 0. 安全加固
-      - name: 加固运行器
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
-        with:
-          egress-policy: audit
-
-      # 1. 检出代码
-      - name: 检出代码
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0  # 获取完整的 git 历史
-          # 不把具备写权限的 GITHUB_TOKEN 落到本地 git 配置，避免后续第三方 action 复用；
-          # 需要写权限的 action 已通过 env 显式接收 token
-          persist-credentials: false
-
-      # 2. 设置 Python 环境
-      - name: 设置 Python
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          # 单版本工作流，跟随测试矩阵的起始版本（3.13）
-          python-version: '3.13'
-
-      # 3. 获取版本号和插件名称
-      - name: 获取版本号和插件名称
-        id: get_info
-        run: |
-          # 从 metadata.yaml 文件中读取版本号
-          VERSION=$(grep "^version:" metadata.yaml | awk '{print $2}')
-          # 移除可能存在的 'v' 前缀以避免重复
-          VERSION=${VERSION#v}
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag_name=v$VERSION" >> $GITHUB_OUTPUT
-          # 从 metadata.yaml 文件中读取插件名称
-          PLUGIN_NAME=$(grep "^name:" metadata.yaml | awk '{print $2}')
-          echo "plugin_name=$PLUGIN_NAME" >> $GITHUB_OUTPUT
-          # ---- 发布决策 ----
-          # 判据只有两个：本次是不是手动触发、以及有没有勾选试运行。
-          # push 触发时 inputs 为空 → IS_MANUAL=false，走「tag 已存在就跳过」的老行为；
-          # 手动触发（workflow_dispatch）→ IS_MANUAL=true，tag 已存在也照样重新发布。
-          IN_DRY_RUN="${{ inputs.dry_run }}"
-          IN_DRY_RUN="${IN_DRY_RUN:-false}"
-          IS_MANUAL="${{ github.event_name == 'workflow_dispatch' }}"
-          IS_MANUAL="${IS_MANUAL:-false}"
-
-          # 判断该版本 tag 是否已存在：手工触发时要据此提示「这是一次重新发布」
-          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
-            TAG_EXISTS=true
-          else
-            TAG_EXISTS=false
-          fi
-
-          # publish：是否真的走到「发 Release」这一步。
-          #   - dry_run 优先级最高：只构建打包，绝不建 tag / 不发布 / 不生成签名证据；
-          #   - 手动触发：无条件发布（tag 已存在 = 重新发布，不存在 = 首次发布）；
-          #   - push 触发：tag 已存在则跳过，避免覆盖既有 Release。
-          if [ "$IN_DRY_RUN" = "true" ]; then
-            PUBLISH=false
-            echo "::notice::试运行模式（dry_run）：仅构建打包，不建 tag、不发 Release"
-          elif [ "$IS_MANUAL" = "true" ]; then
-            PUBLISH=true
-            if [ "$TAG_EXISTS" = "true" ]; then
-              echo "::warning::手动触发：tag v${VERSION} 已存在，本次将重新发布（覆盖同名 Release 的正文与同名资产）"
-            else
-              echo "::notice::手动触发：tag v${VERSION} 尚不存在，本次为首次发布"
-            fi
-          elif [ "$TAG_EXISTS" = "true" ]; then
-            PUBLISH=false
-            echo "::notice::tag v${VERSION} 已存在，跳过发布；如需重发请手动触发本工作流"
-          else
-            PUBLISH=true
-          fi
-
-          echo "tag_exists=$TAG_EXISTS" >> "$GITHUB_OUTPUT"
-          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
-          echo "manual=$IS_MANUAL" >> "$GITHUB_OUTPUT"
-          echo "dry_run=$IN_DRY_RUN" >> "$GITHUB_OUTPUT"
-          # 兼容旧变量名：原逻辑以「tag 不存在」作为发布闸门，现统一收敛到 publish
-          echo "publish_needed=$PUBLISH" >> "$GITHUB_OUTPUT"
-
-      # 4. 安装依赖（仅在确实需要构建时执行）
-      - name: 安装依赖
-        if: steps.get_info.outputs.publish == 'true'
-        run: |
-          if [ -f requirements.txt ] && [ -s requirements.txt ]; then
-            pip install -r requirements.txt
-          else
-            echo "requirements.txt 不存在或为空，跳过依赖安装"
-          fi
-
-      # 5. 创建插件目录
-      - name: 创建插件目录
-        if: steps.get_info.outputs.publish == 'true'
-        run: |
-          mkdir -p "${{ steps.get_info.outputs.plugin_name }}"
-
-      # 6. 复制插件文件到构建目录
-      - name: 复制插件文件
-        if: steps.get_info.outputs.publish == 'true'
-        run: |
-          PLUGIN_NAME="${{ steps.get_info.outputs.plugin_name }}"
-
-          # 插件必需文件：缺失即失败，避免产出残缺包却发布成功
-          cp main.py "$PLUGIN_NAME/"
-          cp metadata.yaml requirements.txt _conf_schema.json "$PLUGIN_NAME/"
-          # 复制插件入口
-          cp __init__.py "$PLUGIN_NAME/"
-          # 复制子包：命令层 / 核心能力 / 上游 API 接入 / LLM 工具 / 千问云接入
-          cp -r commands "$PLUGIN_NAME/"
-          cp -r core "$PLUGIN_NAME/"
-          cp -r gitee "$PLUGIN_NAME/"
-          cp -r llm_tools "$PLUGIN_NAME/"
-          cp -r qianwen "$PLUGIN_NAME/"
-          # 注意：commands/style_prompts.json（风格提示词字典）随 commands/ 一并打包，
-          # 属于运行时依赖，不要单独漏拷。
-          # 复制 logo 文件（可选，缺失不影响插件运行）
-          cp logo.png "$PLUGIN_NAME/" || true
-
-      # 7. 打包为 zip 文件
-      - name: 创建 zip 包
-        if: steps.get_info.outputs.publish == 'true'
-        run: |
-          PLUGIN_NAME="${{ steps.get_info.outputs.plugin_name }}"
-
-          # 构建目录里只有上一步按复制白名单 cp 进来的文件，白名单即发布包内容的唯一来源,
-          # 无需再做排除过滤，直接整目录打包即可（CNB 只做镜像同步，不涉及打包）。
-          zip -r "${PLUGIN_NAME}.zip" "$PLUGIN_NAME/"
-
-          echo "== 发布包内容 =="
-          unzip -l "${PLUGIN_NAME}.zip"
-
-      # 7.1 校验发布包边界：只允许白名单文件，必需文件不得缺失
-      - name: 校验发布包边界
-        if: steps.get_info.outputs.publish == 'true'
-        run: |
-          PLUGIN_NAME="${{ steps.get_info.outputs.plugin_name }}"
-          ARTIFACT="${PLUGIN_NAME}.zip"
-          # awk 取第 4 列文件名；去掉目录行与表头 / 分隔行，再滤掉空行，
-          # 否则首尾空行会让逐行断言失去意义
-          LIST=$(unzip -l "$ARTIFACT" | awk '{print $4}' | grep -v '/$' \
-            | grep -vE '^(Name|-+)?$' || true)
-
-          # 1) 必需文件必须在包内
-          for required in main.py __init__.py metadata.yaml requirements.txt _conf_schema.json \
-                          commands/generate.py core/config.py gitee/api_client.py \
-                          llm_tools/draw.py qianwen/api_client.py; do
-            echo "$LIST" | grep -qx "${PLUGIN_NAME}/$required" \
-              || { echo "::error::发布包缺少必需文件: $required"; exit 1; }
-          done
-
-          # 2) 包内只能出现白名单条目：开发 / CI 资产（AGENTS.md、install_gpg_keys.sh、
-          #    ai-audit/、.github/、tests/ 等）一旦混进包，会被铺到使用者的插件目录里，
-          #    其中拉取私钥、改写全局 git 配置的脚本若被误执行，风险由使用者承担。
-          #    白名单须与上面「复制插件文件」步骤保持一致（logo.png 可选）。
-          while IFS= read -r entry; do
-            case "$entry" in
-              "${PLUGIN_NAME}/main.py"|"${PLUGIN_NAME}/__init__.py"| \
-              "${PLUGIN_NAME}/metadata.yaml"|"${PLUGIN_NAME}/requirements.txt"| \
-              "${PLUGIN_NAME}/_conf_schema.json"|"${PLUGIN_NAME}/logo.png")
-                continue
-                ;;
-              # 业务子包：只允许 plugins 目录内的 .py 与风格提示词 JSON，
-              # 杜绝 tests/、docs/、ai-audit/、install_gpg_keys.sh 等开发资产混入发布包
-              "${PLUGIN_NAME}/commands/"*.py|"${PLUGIN_NAME}/commands/"*.json| \
-              "${PLUGIN_NAME}/core/"*.py|"${PLUGIN_NAME}/gitee/"*.py| \
-              "${PLUGIN_NAME}/llm_tools/"*.py|"${PLUGIN_NAME}/qianwen/"*.py)
-                continue
-                ;;
-            esac
-            echo "::error::发布包内混入了白名单之外的条目: ${entry}"
-            exit 1
-          done <<< "$LIST"
-
-          echo "发布包边界校验通过"
-
-      # 8. 生成 Release Notes
-      - name: 生成 Release Notes
-        id: release_notes
-        if: steps.get_info.outputs.publish == 'true'
-        run: |
-          # 从上一个版本标签生成发布说明：只认 vX.Y.Z 家族的 tag，
-          # 否则 CI / 维护类的无关 tag 会被误当作上一版本，导致首次发布说明被抑制或漏掉提交
-          PREVIOUS_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --merged HEAD^ --sort=-v:refname 2>/dev/null | head -n 1 || echo "")
-          echo "上一个版本标签: ${PREVIOUS_TAG:-<无>}"
-          VERSION=${{ steps.get_info.outputs.version }}
-
-          # 定义生成更新日志的函数
-          generate_changelog_from_git() {
-            local PREVIOUS_TAG=$1
-            local VERSION=$2
-
-            # 初始化分类
-            local FEAT=""
-            local FIX=""
-            local REFACTOR=""
-            local DOCS=""
-            local TEST=""
-            local STYLE=""
-            local CHORE=""
-            local PERF=""
-            local CI=""
-            local BUILD=""
-            local OTHER=""
-
-            # 遍历所有 commit
-            while IFS= read -r commit; do
-              # 提取 commit 类型和消息，兼容本仓库要求的 type(scope): subject 格式
-              # （scope 可选，如 fix(claude): xxx；解析时先剥离 scope 再分类与去前缀）
-              type=$(echo "$commit" | sed -nE 's/^([a-z]+)(\([^)]*\))?!?:.*/\1/p')
-              msg=$(echo "$commit" | sed -E 's/^([a-z]+)(\([^)]*\))?!?:[[:space:]]*//')
-
-              # 按类型分类（解析不到 type 的 commit 归入「其他」）
-              case "${type:-other}" in
-                feat)    FEAT="${FEAT}- ${msg}\n" ;;
-                fix)     FIX="${FIX}- ${msg}\n" ;;
-                refactor) REFACTOR="${REFACTOR}- ${msg}\n" ;;
-                docs)    DOCS="${DOCS}- ${msg}\n" ;;
-                test)    TEST="${TEST}- ${msg}\n" ;;
-                style)   STYLE="${STYLE}- ${msg}\n" ;;
-                chore)   CHORE="${CHORE}- ${msg}\n" ;;
-                perf)    PERF="${PERF}- ${msg}\n" ;;
-                ci)      CI="${CI}- ${msg}\n" ;;
-                build)   BUILD="${BUILD}- ${msg}\n" ;;
-                *)       OTHER="${OTHER}- ${msg}\n" ;;
-              esac
-            done < <(git log ${PREVIOUS_TAG}..HEAD --pretty=format:"%s" --no-merges)
-
-            # 构建更新日志
-            NOTES="## 📦 Release v${VERSION}\n\n"
-
-            # 添加各个分类
-            if [ -n "$FEAT" ]; then
-              NOTES="${NOTES}### ✨ 新功能\n\n${FEAT}\n"
-            fi
-
-            if [ -n "$FIX" ]; then
-              NOTES="${NOTES}### 🐛 修复\n\n${FIX}\n"
-            fi
-
-            if [ -n "$PERF" ]; then
-              NOTES="${NOTES}### ⚡ 性能优化\n\n${PERF}\n"
-            fi
-
-            if [ -n "$REFACTOR" ]; then
-              NOTES="${NOTES}### ♻️ 重构\n\n${REFACTOR}\n"
-            fi
-
-            if [ -n "$DOCS" ]; then
-              NOTES="${NOTES}### 📝 文档\n\n${DOCS}\n"
-            fi
-
-            if [ -n "$TEST" ]; then
-              NOTES="${NOTES}### ✅ 测试\n\n${TEST}\n"
-            fi
-
-            if [ -n "$STYLE" ]; then
-              NOTES="${NOTES}### 💄 样式\n\n${STYLE}\n"
-            fi
-
-            if [ -n "$CI" ]; then
-              NOTES="${NOTES}### 👷 CI\n\n${CI}\n"
-            fi
-
-            if [ -n "$BUILD" ]; then
-              NOTES="${NOTES}### 📦 构建\n\n${BUILD}\n"
-            fi
-
-            if [ -n "$CHORE" ]; then
-              NOTES="${NOTES}### 🔧 杂项\n\n${CHORE}\n"
-            fi
-
-            if [ -n "$OTHER" ]; then
-              NOTES="${NOTES}### 其他\n\n${OTHER}\n"
-            fi
-
-            # 如果没有任何提交
-            if [ "$NOTES" = "## 📦 Release v${VERSION}\n\n" ]; then
-              NOTES="${NOTES}无更新内容\n"
-            fi
-
-            echo -e "$NOTES"
-          }
-
-          if [ -z "$PREVIOUS_TAG" ]; then
-            # 首次 Release
-            NOTES="## 🎉 首次 Release v${VERSION}\n\n这是 AstrBot AI 模型插件的首次正式 Release。\n\n### 功能特性\n\n- 支持多家模型服务提供商的图片生成功能\n- 通过自然语言让 LLM 生成内容\n- 让 bot 自拍给你看\n\n### 使用方法\n\n请参考项目 README.md 了解详细使用方法。"
-          else
-            # 检查是否存在 CHANGELOG.md
-            if [ -f "CHANGELOG.md" ]; then
-              # 从 CHANGELOG.md 提取当前版本的更新内容
-              # 先判断是否已进入下一节标题再打印，否则会把下一个版本的标题一起带进本次 Release
-              CHANGELOG_CONTENT=$(awk -v version="\\[${VERSION}\\]" '
-                $0 ~ version {found=1; print; next}
-                found && /^## / {exit}
-                found {print}
-              ' CHANGELOG.md | tail -n +2)
-
-              if [ -n "$CHANGELOG_CONTENT" ]; then
-                NOTES="## 📦 Release v${VERSION}\n\n${CHANGELOG_CONTENT}"
-              else
-                # CHANGELOG 中没有找到当前版本，从 git log 生成
-                NOTES=$(generate_changelog_from_git "$PREVIOUS_TAG" "$VERSION")
-              fi
-            else
-              # 从 git log 生成更新日志
-              NOTES=$(generate_changelog_from_git "$PREVIOUS_TAG" "$VERSION")
-            fi
-          fi
-
-          # 添加 Release Notes
-          # 代码围栏必须闭合，否则后续「证据包」说明会被渲染进安装代码块
-          RELEASE_FOOTER="\n\n---\n\n### 📥 安装方法\n\n\`\`\`bash\n# 下载插件包后，解压到 AstrBot 的 data/plugins 目录\n# 重启 AstrBot 服务或在管理面板重载插件\n\`\`\`\n"
-
-          NOTES="${NOTES}${RELEASE_FOOTER}"
-
-          # 保存到文件
-          echo -e "$NOTES" > release_notes.md
-
-          # 输出到环境变量
-          {
-            echo 'notes<<EOF'
-            cat release_notes.md
-            echo EOF
-          } >> $GITHUB_OUTPUT
-
-      # 9. 生成证据包（ci-evidence-pack v0.0.2）
-      #
-      # 引用方式：钉到 v0.0.2 的 commit SHA（53216365…），而不是 @main 或可移动的
-      # tag。浮动引用会让「本次跑的到底是哪一版」永远说不清，出了事故也无法回放。
-      #
-      # v0.0.2 的契约要点（与本段逐条对齐，改之前先读 action.yml）：
-      #   1) include 必填，留空会让打包脚本直接 exit 1，而不是产出一个空包；
-      #   2) 输出目录 ≠ 上传目录：本作业用 _evidence_dist，签名产物路径只能从
-      #      steps.evidence.outputs.* 取，手拼文件名会在改名时静默缺件；
-      #   3) 签名产物是 cosign v3 的 .sigstore.json 单文件，.sig + .crt 双文件形态已废弃；
-      #   4) 签名默认开启，信任根是 job 的 id-token: write（job 级 permissions 会
-      #      覆盖顶层声明，所以它必须写在本 job 上）；
-      #   5) identity 留空时按本次触发 ref 自动拼，这里**不写死** @refs/heads/main ——
-      #      写死会在 tag 触发的场景判 2「签名身份不是我以为的那个」。
-      - name: 生成证据包
-        id: evidence
-        if: steps.get_info.outputs.publish == 'true'
-        uses: xiaomizhoubaobei/ci-evidence-pack@53216365066a9fe64de178ab0184539ad253e355 # v0.0.2
-        with:
-          # 收集范围：插件 zip 产物 + 发布正文 + 构建输入清单。
-          # 只列必需项，不整目录收录（否则 .git 与本地缓存会一起进包）。
-          include: |
-            ${{ steps.get_info.outputs.plugin_name }}.zip
-            release_notes.md
-            metadata.yaml
-            requirements.txt
-            _conf_schema.json
-          out-dir: _evidence_dist
-          sbom: auto
-          sign: 'true'
-          # 包外锚点：sha256 登记到包外台账，随 Release 一起分发供下游核对。
-          anchor-file: _anchor/anchor.txt
-          expect-repo: ${{ github.repository }}
-          # 自检不通过即红：发出一份自己都不信的包，比不发更糟。
-          fail-on-invalid: true
-
-      # 9.1 阻塞闸门：自检退出码非 0 就不许发布
-      # Action 内已按 fail-on-invalid 把步骤判红，这里再显式拦一道，确保后续
-      # 发布步骤不会在「证据无效」的状态下继续（2 = 证据无效，3 = 工具异常）。
-      - name: 校验证据包自检结论
-        if: steps.get_info.outputs.publish == 'true'
-        env:
-          VERIFY_CODE: ${{ steps.evidence.outputs.verify-exit-code }}
-          VERIFY_OK: ${{ steps.evidence.outputs.verify-ok }}
-        run: |
-          set -euo pipefail
-          if [ "${VERIFY_CODE:-3}" != "0" ]; then
-            echo "::error::证据包自检未通过（退出码 ${VERIFY_CODE:-空}）：拒绝发布"
-            exit 1
-          fi
-          echo "证据包自检通过：verify-ok=${VERIFY_OK:-true}"
-
-      # 9.2 解出透明日志（Rekor）条目，供发布正文引用可复核位置
-      # 条目坐标只从签名 bundle 里读，不从日志文本里抠 —— logIndex / logId
-      # 只有那一处是权威的。读不出来不拦发布，但正文须如实写明「没有公开落点」。
-      - name: 解析 Rekor 透明日志条目
-        id: rekor
-        if: steps.get_info.outputs.publish == 'true'
-        env:
-          SIG_BUNDLE: ${{ steps.evidence.outputs.signature-bundle }}
-        run: |
-          set -uo pipefail
-          mkdir -p _anchor
-          MARKDOWN=_anchor/rekor.md
-          # 正文走 heredoc 写进 step output：GITHUB_OUTPUT 支持多行值，
-          # 比「先存路径、再在发布正文里读文件」少一层对文件生命周期的依赖。
-          emit() {
-            {
-              echo 'notes<<REKOR_EOF'
-              cat "$1"
-              echo REKOR_EOF
-            } >> "$GITHUB_OUTPUT"
-          }
-          # `${VAR:-}`：set -u 下未注入该 env 时也不该炸，按「没有签名」处理。
-          if [ -z "${SIG_BUNDLE:-}" ] || [ ! -f "${SIG_BUNDLE:-}" ]; then
-            printf '%s\n' "- 本次未产出签名 bundle，因而没有透明日志条目；信任根只有上方 sha256 锚点。" > "$MARKDOWN"
-            echo "::warning::没有签名 bundle，跳过 Rekor 条目解析"
-            emit "$MARKDOWN"
-            exit 0
-          fi
-          # 解析透明日志，用与上面 evidence 步骤**完全同一个 commit** 的 CLI。
-          #
-          # 不能用 `GITHUB_ACTION_PATH` 借 action 自带的源码：该变量只在 composite
-          # action 内部有效，普通 workflow step 里永远是空的。曾因此退化成
-          # `pip install 'evidence-pack>=0.0.1'` 的兜底 —— 一个可移动的版本区间，
-          # 会在本 job（contents: write + id-token: write）里装进没人审过的包。
-          #
-          # 也不能走 pip 的 VCS 安装（`package @ git+https://…@<sha>`）：本包
-          # pyproject.toml 在仓库根、源码在 src/，实测 pip 22 经由该路径构建出的
-          # 是空的 `UNKNOWN-0.0.0`（dist-info + LICENSE，无任何 py 文件），
-          # 装完 import 直接 ModuleNotFoundError。安静装个空包比装错版本更糟。
-          #
-          # 所以：按 SHA 取源码 → 验 SHA → 以 PYTHONPATH 直接用它，全程不经过
-          # PyPI、不构建包、不装 typer。rekor 子命令只用标准库（json/pathlib）。
-          # 注意这是裸 `python -m`，**不能**用 evidence_pack.cli 的 Typer 入口 ——
-          # 那条入口要 typer，而这里刻意不装依赖。
-          EVIDENCE_PACK_REV='53216365066a9fe64de178ab0184539ad253e355'
-          EVIDENCE_PACK_SRC="${RUNNER_TEMP:-/tmp}/ci-evidence-pack"
-          # ⚠️ 【拿到解析器 = 可选项，不是发布前提】Rekor 条目只是给正文补一个
-          #   「可复核的公开落点」，本步开头就声明「读不出来不拦发布」。因此**取不到
-          #   解析器也必须走同一条降级路径**：写一条如实的说明、继续发布。
-          #   早期此处对 fetch 失败直接 `exit 1`，等于让一次网络抖动把整个发布掐死，
-          #   与「不拦发布」的承诺自相矛盾——顺手把「有证据但没法解析」错报成
-          #   「发布失败」，比没有落点更误导。
-          rm -rf "$EVIDENCE_PACK_SRC"
-          git init --quiet "$EVIDENCE_PACK_SRC"
-          git -C "$EVIDENCE_PACK_SRC" remote add origin \
-            https://github.com/xiaomizhoubaobei/ci-evidence-pack.git
-          # 把「取源码 + 校验提交」整体包成可失败的判断：任一环节不成就降级，不 exit。
-          if git -C "$EVIDENCE_PACK_SRC" fetch --quiet --depth 1 origin "$EVIDENCE_PACK_REV" 2>/dev/null \
-             && git -C "$EVIDENCE_PACK_SRC" checkout --quiet FETCH_HEAD 2>/dev/null \
-             && [ "$(git -C "$EVIDENCE_PACK_SRC" rev-parse HEAD)" = "$EVIDENCE_PACK_REV" ]; then
-            export PYTHONPATH="$EVIDENCE_PACK_SRC/src${PYTHONPATH:+:$PYTHONPATH}"
-          else
-            # 取不到解析器 / 落地提交与钉定的不符：一律按「没有可复核落点」处理。
-            # 不 echo 原始错误内容（可能含远端地址等噪音），只记一条警告。
-            printf '%s\n' "- 未能取得透明日志解析器（网络或提交校验失败），本次不提供可复核的 Rekor 落点；信任根只有上方 sha256 锚点。" > "$MARKDOWN"
-            echo "::warning::取不到 ci-evidence-pack@${EVIDENCE_PACK_REV}，跳过 Rekor 条目解析，发布继续"
-            emit "$MARKDOWN"
-            exit 0
-          fi
-          if python3 -m evidence_pack rekor "${SIG_BUNDLE:-}" --json > _anchor/rekor.json 2>/dev/null; then
-            python3 - "$MARKDOWN" <<'PY'
-          import json
-          import sys
-
-          markdown_path = sys.argv[1]
-          entries = json.load(open("_anchor/rekor.json", encoding="utf-8")).get("entries", [])
-          lines: list[str] = []
-          if not entries:
-              lines.append("- 签名 bundle 内**没有**透明日志条目：这条签名缺少可复核的公开落点，")
-              lines.append("  不能单独构成证据。请检查 Rekor 连通性。")
-          for entry in entries:
-              lines.append(f"- logIndex `{entry['log_index']}`，integratedTime `{entry['integrated_time']}`")
-              if entry["log_id"]:
-                  lines.append(f"  - logId `{entry['log_id']}`")
-              # 查询地址落在条目 uuid 上（/api/v1/log/entries/<uuid>），
-              # 不是 ?logIndex= —— 后者是给人翻页的过滤参数，不是定位符。
-              if entry["url"]:
-                  lines.append(f"  - 查询地址 {entry['url']}")
-          with open(markdown_path, "w", encoding="utf-8") as handle:
-              handle.write("\n".join(lines) + "\n")
-          PY
-          else
-            printf '%s\n' "- 条目解析失败，本次没有可复核的透明日志位置；信任根只有上方 sha256 锚点。" > "$MARKDOWN"
-            echo "::warning::Rekor 条目解析失败，发布正文将如实标注"
-          fi
-          rm -f _anchor/rekor.json
-          cat "$MARKDOWN"
-          emit "$MARKDOWN"
-
-      # 10. 创建 GitHub Release
-      # 是否真的走到这里已由前面的 publish 闸门决定：
-      #   - push 触发 + tag 不存在 → 新建 Release（常规路径）；
-      #   - 手动触发 → 无条件发布；tag 已存在即「重新发布」，覆盖同名 Release 的正文与同名资产
-      #     （action-gh-release 对已存在 Release 是 update 语义，同名文件按名替换，
-      #     不会堆出重复资产；但被删掉的旧资产不会自动清理，需要人工核实）。
-      - name: 创建 GitHub Release
-        if: steps.get_info.outputs.publish == 'true'
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-        with:
-          tag_name: ${{ steps.get_info.outputs.tag_name }}
-          name: Release ${{ steps.get_info.outputs.version }}
-          body: |
-            ${{ steps.release_notes.outputs.notes }}
-
-            ---
-
-            ## 📦 证据包说明
-
-            本 Release 包含以下文件：
-
-            - **${{ steps.get_info.outputs.plugin_name }}.zip**: 插件安装包
-            - **evidence-\*.tar.gz**: CI 证据包（确定性打包 + 严格 manifest + SBOM）
-            - **evidence-\*.tar.gz.sigstore.json**: cosign v3 签名 bundle（keyless，OIDC 短期证书）
-            - **anchor.txt**: 证据包的包外 sha256 台账
-
-            证据包 sha256：`${{ steps.evidence.outputs.bundle-sha256 }}`
-
-            签名身份（identity）由 Action 按 `github.workflow_ref` 现拼，形如
-            `https://github.com/<owner>/<repo>/.github/workflows/release.yml@refs/heads/main`，
-            即「仓库 + 工作流文件 + 触发 ref」三者都定死。验签时按它核对：
-
-            ```bash
-            cosign verify-blob \
-              --bundle evidence-*.tar.gz.sigstore.json \
-              --certificate-identity 'https://github.com/${{ github.repository }}/.github/workflows/release.yml@refs/heads/main' \
-              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-              evidence-*.tar.gz
-            ```
-
-            注意：这里用的是 `--certificate-identity`（全等匹配），**不要**退化成
-            `--certificate-identity-regexp 'https://github.com/${{ github.repository }}/'`。
-            那条正则只锚到仓库前缀就收尾，同一仓库下**别的**工作流、**别的** ref
-            签出来的包也会被判通过 —— 而本工作流只在 `main` 上发布（job 级
-            `if: github.ref == 'refs/heads/main'`），身份只可能是这一个。
-
-            ### 透明日志（Rekor）
-
-            签名写入公开透明日志后，任何人都能在包外独立复核「这条签名在某个时刻确实存在过」。
-            这是 sha256 锚点之外的第二个落点：锚点记在哪里由你决定，日志记在哪里由密码学决定。
-
-            ${{ steps.rekor.outputs.notes }}
-          draft: false
-          prerelease: false
-          files: |
-            ${{ steps.get_info.outputs.plugin_name }}.zip
-            ${{ steps.evidence.outputs.bundle-path }}
-            ${{ steps.evidence.outputs.signature-bundle }}
-            ${{ steps.evidence.outputs.anchor-file }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: 提示重新发布
-        if: steps.get_info.outputs.publish == 'true' && steps.get_info.outputs.tag_exists == 'true'
-        run: |
-          echo "::warning::本次为重新发布：tag ${{ steps.get_info.outputs.tag_name }} 已存在，Release 正文与同名资产已被覆盖，请人工核对是否残留旧资产"
-
-      - name: 提示跳过发布
-        if: steps.get_info.outputs.publish != 'true'
-        run: |
-          if [ "${{ steps.get_info.outputs.dry_run }}" = "true" ]; then
-            echo "::notice::试运行完成：zip 已生成但未发布。正式发布请取消勾选 dry_run"
-          else
-            echo "::notice::tag ${{ steps.get_info.outputs.tag_name }} 已存在，跳过本次 Release；如需重新发布请手动触发本工作流（或将 metadata.yaml 的 version 提升后再推送）"
-          fi
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index 50c787b..d055968 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -404,6 +404,10 @@ jobs:
+             requirements.txt
+             _conf_schema.json
+           out-dir: _evidence_dist
++          # 显式钉住包名：默认是 evidence-<短sha>.tar.gz，同一版本重发会换新文件名，
++          # Release 页面于是同时躺着两份「同一版本」的证据包，谁也说不清哪份对着哪个 commit。
++          # 改用带版本号的稳定名后，重发走 action-gh-release 的同名替换语义，旧件不会残留。
++          bundle-name: evidence-v${{ steps.get_info.outputs.version }}.tar.gz
+           sbom: auto
+           sign: 'true'
+           # 包外锚点：sha256 登记到包外台账，随 Release 一起分发供下游核对。
+@@ -412,6 +416,44 @@ jobs:
+           # 自检不通过即红：发出一份自己都不信的包，比不发更糟。
+           fail-on-invalid: true
+ 
++      # 9.0 把证据包相关路径固化到 job 级 output
++      #
++      # 后面有三处要用「证据包 / 签名 bundle / 锚点台账 到底叫什么」，分别是
++      # 发布正文、assets 清单、发布后校验。三处各写一遍文件名，就必然有一处写错，
++      # 而写错的后果是「资产没上传，但流水线是绿的」。故统一从这里取。
++      #
++      # 取值只认 Action 自己的 outputs（改名时它会跟着变），不手拼文件名；
++      # 只有在 Action 没给出时，才按它的命名约定兜底，保证正文里的名字与实物一致。
++      - name: 固化证据包产物路径
++        id: evidence_paths
++        if: steps.get_info.outputs.publish == 'true'
++        env:
++          BUNDLE_PATH: ${{ steps.evidence.outputs.bundle-path }}
++          BUNDLE_NAME: ${{ steps.evidence.outputs.bundle-name }}
++          SIG_BUNDLE: ${{ steps.evidence.outputs.signature-bundle }}
++          ANCHOR_FILE: ${{ steps.evidence.outputs.anchor-file }}
++          OUT_DIR: _evidence_dist
++        run: |
++          set -euo pipefail
++          bundle_name="${BUNDLE_NAME:-}"
++          if [ -z "$bundle_name" ]; then
++            bundle_name="evidence-v${{ steps.get_info.outputs.version }}.tar.gz"
++          fi
++          # cosign v3 只有 .sigstore.json 单文件形态；.sig + .crt 双文件已废弃。
++          # 这里按「包名 + 后缀」兜底，是为了让正文能如实写出签名文件名。
++          sig_bundle="${SIG_BUNDLE:-}"
++          if [ -z "$sig_bundle" ]; then
++            sig_bundle="${OUT_DIR}/${bundle_name}.sigstore.json"
++          fi
++          anchor_file="${ANCHOR_FILE:-_anchor/anchor.txt}"
++          echo "bundle_name=$bundle_name" >> "$GITHUB_OUTPUT"
++          echo "bundle_dir=${OUT_DIR}" >> "$GITHUB_OUTPUT"
++          echo "signature_name=$(basename "$sig_bundle")" >> "$GITHUB_OUTPUT"
++          echo "anchor_name=$(basename "$anchor_file")" >> "$GITHUB_OUTPUT"
++          echo "证据包: ${BUNDLE_PATH:-<未取到>}"
++          echo "签名 bundle: ${sig_bundle}"
++          echo "锚点台账: ${anchor_file}"
++
+       # 9.1 阻塞闸门：自检退出码非 0 就不许发布
+       # Action 内已按 fail-on-invalid 把步骤判红，这里再显式拦一道，确保后续
+       # 发布步骤不会在「证据无效」的状态下继续（2 = 证据无效，3 = 工具异常）。
+@@ -546,27 +588,30 @@ jobs:
+ 
+             ## 📦 证据包说明
+ 
+-            本 Release 包含以下文件：
++            本 Release 包含以下文件（文件名均为本版本的实际产物名，不是通配符示意）：
+ 
+             - **${{ steps.get_info.outputs.plugin_name }}.zip**: 插件安装包
+-            - **evidence-\*.tar.gz**: CI 证据包（确定性打包 + 严格 manifest + SBOM）
+-            - **evidence-\*.tar.gz.sigstore.json**: cosign v3 签名 bundle（keyless，OIDC 短期证书）
+-            - **anchor.txt**: 证据包的包外 sha256 台账
++            - **${{ steps.evidence_paths.outputs.bundle_name }}**: CI 证据包（确定性打包 + 严格 manifest + SBOM）
++            - **${{ steps.evidence_paths.outputs.signature_name }}**: cosign v3 签名 bundle（keyless，OIDC 短期证书，`.sigstore.json` 单文件形态）
++            - **${{ steps.evidence_paths.outputs.anchor_name }}**: 证据包的包外 sha256 台账
+ 
+             证据包 sha256：`${{ steps.evidence.outputs.bundle-sha256 }}`
+ 
+             签名身份（identity）由 Action 按 `github.workflow_ref` 现拼，形如
+-            `https://github.com/<owner>/<repo>/.github/workflows/release.yml@refs/heads/main`，
+-            即「仓库 + 工作流文件 + 触发 ref」三者都定死。验签时按它核对：
++            `https://github.com/<owner>/<repo>/.github/workflows/release.yml@<refs/heads/main 或 refs/tags/vX.Y.Z>`。
++            仓库 + 工作流文件 + 触发 ref 三者都定死；其中 ref 段**随本次触发方式变化**，
++            这里不写死 —— 写死会在 tag 场景下把你引到一条必然验不过的命令上。验签前先确认本次身份：
+ 
+             ```bash
+             cosign verify-blob \
+-              --bundle evidence-*.tar.gz.sigstore.json \
+-              --certificate-identity 'https://github.com/${{ github.repository }}/.github/workflows/release.yml@refs/heads/main' \
++              --bundle ${{ steps.evidence_paths.outputs.signature_name }} \
++              --certificate-identity 'https://github.com/${{ github.repository }}/.github/workflows/release.yml@<refs/heads/main 或 refs/tags/vX.Y.Z>' \
+               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+-              evidence-*.tar.gz
++              ${{ steps.evidence_paths.outputs.bundle_name }}
+             ```
+ 
++            （把 `<...>` 换成签名 bundle 内证书里的实际 `sub`，即可直接执行。）
++
+             注意：这里用的是 `--certificate-identity`（全等匹配），**不要**退化成
+             `--certificate-identity-regexp 'https://github.com/${{ github.repository }}/'`。
+             那条正则只锚到仓库前缀就收尾，同一仓库下**别的**工作流、**别的** ref
+@@ -589,10 +634,54 @@ jobs:
+         env:
+           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+ 
++      # 10.1 发布后校验：证据包三件套必须真的挂在 Release 上
++      #
++      # 「正文里写了证据包」与「证据包真的在」是两件事。action-gh-release 的
++      # files 一旦有路径取空（例如 Action 某个 output 没给出），它会安静地少传
++      # 一个资产，而流水线照样是绿的 —— 使用者点进 Release 只看到 zip，
++      # 于是就有了「tag 指向存在、产物却缺证据包」这种看起来自相矛盾的现象。
++      # 故发布后回查一次资产清单，缺件即红，让问题停在 CI 里而不是停在释出页上。
++      - name: 校验 Release 资产完整性
++        if: steps.get_info.outputs.publish == 'true'
++        env:
++          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++          TAG_NAME: ${{ steps.get_info.outputs.tag_name }}
++          PLUGIN_NAME: ${{ steps.get_info.outputs.plugin_name }}
++          BUNDLE_NAME: ${{ steps.evidence_paths.outputs.bundle_name }}
++          SIGNATURE_NAME: ${{ steps.evidence_paths.outputs.signature_name }}
++          ANCHOR_NAME: ${{ steps.evidence_paths.outputs.anchor_name }}
++        run: |
++          set -euo pipefail
++          # 只读公开 REST 接口，不依赖 gh CLI（runner 上有，但别把校验绑在它身上）。
++          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}"
++          assets=$(curl -sS -H "Authorization: Bearer ${GITHUB_TOKEN}" \
++                         -H "Accept: application/vnd.github+json" \
++                         "${api}" | python3 -c 'import json,sys; print("\n".join(a["name"] for a in json.load(sys.stdin).get("assets", [])))')
++
++          echo "== Release ${TAG_NAME} 实际资产 =="
++          echo "${assets:-<空>}"
++
++          missing=0
++          for required in "${PLUGIN_NAME}.zip" "${BUNDLE_NAME}" "${SIGNATURE_NAME}" "${ANCHOR_NAME}"; do
++            if echo "$assets" | grep -qxF "$required"; then
++              echo "✓ ${required}"
++            else
++              echo "::error::Release ${TAG_NAME} 缺少必需资产: ${required}"
++              missing=1
++            fi
++          done
++          if [ "$missing" -ne 0 ]; then
++            echo "::error::证据包未完整挂到 Release 上：请核对 ci-evidence-pack 步骤是否成功、out-dir 是否与上传路径一致"
++            exit 1
++          fi
++          echo "Release 资产完整性校验通过"
++
+       - name: 提示重新发布
+         if: steps.get_info.outputs.publish == 'true' && steps.get_info.outputs.tag_exists == 'true'
+         run: |
+-          echo "::warning::本次为重新发布：tag ${{ steps.get_info.outputs.tag_name }} 已存在，Release 正文与同名资产已被覆盖，请人工核对是否残留旧资产"
++          # 包名已按版本号固定，重发走同名替换，旧证据包不会各自堆一份；
++          # 但 action-gh-release 不会自动清掉「本次没有、上次有」的旧资产，仍需人工过一眼。
++          echo "::warning::本次为重新发布：tag ${{ steps.get_info.outputs.tag_name }} 已存在，Release 正文与同名资产已被覆盖；若历史版本残留了其它命名的旧资产，请人工清理"
+ 
+       - name: 提示跳过发布
+         if: steps.get_info.outputs.publish != 'true'
