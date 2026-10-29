@@ -67,7 +67,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-asyncio coverage
+          # 测试工具钉定版本：pytest 9 的破坏性变更（PytestRemovedIn9Warning
+          # 默认升级为错误等）会让「今天绿、明天红」取决于上游发版时机，
+          # 与本项目「依赖下限约束」的运行依赖分开治理。
+          pip install pytest==9.0.3 pytest-asyncio coverage
 
       # 仓库目录名不等于插件包名（astrbot_plugin_models_ai），测试统一按
       # 「顶层包名」导入（见 tests/_coverage_support.py）。此处铺一层同名符号
@@ -168,7 +171,8 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-asyncio
+          # 与 coverage job 保持同一 pytest 版本，避免两处漂移出不同结论
+          pip install pytest==9.0.3 pytest-asyncio
 
       - name: 构造可导入的包视图
         run: ln -sfn "$GITHUB_WORKSPACE" "$RUNNER_TEMP/astrbot_plugin_models_ai"
