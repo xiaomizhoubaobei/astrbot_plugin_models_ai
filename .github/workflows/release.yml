@@ -16,7 +16,7 @@ index 50c787b..d055968 100644
 @@ -412,6 +416,44 @@ jobs:
            # 自检不通过即红：发出一份自己都不信的包，比不发更糟。
            fail-on-invalid: true
- 
+
 +      # 9.0 把证据包相关路径固化到 job 级 output
 +      #
 +      # 后面有三处要用「证据包 / 签名 bundle / 锚点台账 到底叫什么」，分别是
@@ -59,12 +59,12 @@ index 50c787b..d055968 100644
        # Action 内已按 fail-on-invalid 把步骤判红，这里再显式拦一道，确保后续
        # 发布步骤不会在「证据无效」的状态下继续（2 = 证据无效，3 = 工具异常）。
 @@ -546,27 +588,30 @@ jobs:
- 
+
              ## 📦 证据包说明
- 
+
 -            本 Release 包含以下文件：
 +            本 Release 包含以下文件（文件名均为本版本的实际产物名，不是通配符示意）：
- 
+
              - **${{ steps.get_info.outputs.plugin_name }}.zip**: 插件安装包
 -            - **evidence-\*.tar.gz**: CI 证据包（确定性打包 + 严格 manifest + SBOM）
 -            - **evidence-\*.tar.gz.sigstore.json**: cosign v3 签名 bundle（keyless，OIDC 短期证书）
@@ -72,16 +72,16 @@ index 50c787b..d055968 100644
 +            - **${{ steps.evidence_paths.outputs.bundle_name }}**: CI 证据包（确定性打包 + 严格 manifest + SBOM）
 +            - **${{ steps.evidence_paths.outputs.signature_name }}**: cosign v3 签名 bundle（keyless，OIDC 短期证书，`.sigstore.json` 单文件形态）
 +            - **${{ steps.evidence_paths.outputs.anchor_name }}**: 证据包的包外 sha256 台账
- 
+
              证据包 sha256：`${{ steps.evidence.outputs.bundle-sha256 }}`
- 
+
              签名身份（identity）由 Action 按 `github.workflow_ref` 现拼，形如
 -            `https://github.com/<owner>/<repo>/.github/workflows/release.yml@refs/heads/main`，
 -            即「仓库 + 工作流文件 + 触发 ref」三者都定死。验签时按它核对：
 +            `https://github.com/<owner>/<repo>/.github/workflows/release.yml@<refs/heads/main 或 refs/tags/vX.Y.Z>`。
 +            仓库 + 工作流文件 + 触发 ref 三者都定死；其中 ref 段**随本次触发方式变化**，
 +            这里不写死 —— 写死会在 tag 场景下把你引到一条必然验不过的命令上。验签前先确认本次身份：
- 
+
              ```bash
              cosign verify-blob \
 -              --bundle evidence-*.tar.gz.sigstore.json \
@@ -92,7 +92,7 @@ index 50c787b..d055968 100644
 -              evidence-*.tar.gz
 +              ${{ steps.evidence_paths.outputs.bundle_name }}
              ```
- 
+
 +            （把 `<...>` 换成签名 bundle 内证书里的实际 `sub`，即可直接执行。）
 +
              注意：这里用的是 `--certificate-identity`（全等匹配），**不要**退化成
@@ -101,7 +101,7 @@ index 50c787b..d055968 100644
 @@ -589,10 +634,54 @@ jobs:
          env:
            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
- 
+
 +      # 10.1 发布后校验：证据包三件套必须真的挂在 Release 上
 +      #
 +      # 「正文里写了证据包」与「证据包真的在」是两件事。action-gh-release 的
@@ -151,6 +151,6 @@ index 50c787b..d055968 100644
 +          # 包名已按版本号固定，重发走同名替换，旧证据包不会各自堆一份；
 +          # 但 action-gh-release 不会自动清掉「本次没有、上次有」的旧资产，仍需人工过一眼。
 +          echo "::warning::本次为重新发布：tag ${{ steps.get_info.outputs.tag_name }} 已存在，Release 正文与同名资产已被覆盖；若历史版本残留了其它命名的旧资产，请人工清理"
- 
+
        - name: 提示跳过发布
          if: steps.get_info.outputs.publish != 'true'
