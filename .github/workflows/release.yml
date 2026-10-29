@@ -8,6 +8,17 @@ on:
     paths:
       - '**/*.py'
   workflow_dispatch:  # 允许手动触发（下发给 build 任务的 refs/heads/main 闸门会拒绝非 main 分支）
+    # 手动触发专属开关。push 触发时这些输入为空，行为与原先完全一致（tag 已存在就跳过，
+    # 绝不覆盖已发布的 Release）；只有人工显式勾选「强制重新发布」才会走到覆盖分支。
+    inputs:
+      force_republish:
+        description: '强制按当前 metadata.yaml 版本重新发布（会覆盖同名 Release 的正文与同名资产）'
+        type: boolean
+        default: false
+      dry_run:
+        description: '试运行：只构建与打包，不创建 tag / 不发 Release / 不生成签名证据'
+        type: boolean
+        default: false
 
 # 顶层默认最小权限：只用只读能力。真正需要的写能力（contents: write 建 tag/发 Release、
 # id-token: write 供 Sigstore 签名）一律下沉到下方 build job，避免工作流级授予写权限——
@@ -75,17 +86,48 @@ jobs:
           # 从 metadata.yaml 文件中读取插件名称
           PLUGIN_NAME=$(grep "^name:" metadata.yaml | awk '{print $2}')
           echo "plugin_name=$PLUGIN_NAME" >> $GITHUB_OUTPUT
+          # ---- 发布决策 ----
+          # push 触发时 IN_FORCE / IN_DRY_RUN 均为空，两者一律按 false 处理，
+          # 等同于「tag 已存在就跳过」的老行为；只有 workflow_dispatch 勾选开关才会改变流向。
+          IN_FORCE="${{ inputs.force_republish }}"
+          IN_DRY_RUN="${{ inputs.dry_run }}"
+          IN_FORCE="${IN_FORCE:-false}"
+          IN_DRY_RUN="${IN_DRY_RUN:-false}"
+
           # 判断该版本 tag 是否已存在：每次 .py 变更都会跑本工作流，
           # 版本号未变时必须跳过发布，避免覆盖已有 Release 的资产与正文
           if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
-            echo "tag_exists=true" >> $GITHUB_OUTPUT
-            echo "::notice::tag v${VERSION} 已存在，后续发布步骤将跳过"
+            TAG_EXISTS=true
           else
-            echo "tag_exists=false" >> $GITHUB_OUTPUT
+            TAG_EXISTS=false
           fi
 
-      # 4. 安装依赖
+          # publish：是否真的走到「发 Release」这一步。
+          # 手动的 dry_run 优先级最高——试运行只验证构建链路，绝不产生任何对外可见变更。
+          if [ "$IN_DRY_RUN" = "true" ]; then
+            PUBLISH=false
+            echo "::notice::试运行模式（dry_run）：仅构建打包，不建 tag、不发 Release"
+          elif [ "$TAG_EXISTS" = "true" ] && [ "$IN_FORCE" != "true" ]; then
+            PUBLISH=false
+            echo "::notice::tag v${VERSION} 已存在，跳过发布；如确需重发请在手动触发时勾选 force_republish"
+          else
+            PUBLISH=true
+          fi
+
+          if [ "$TAG_EXISTS" = "true" ] && [ "$PUBLISH" = "true" ]; then
+            echo "::warning::tag v${VERSION} 已存在且已勾选强制重新发布，本次将覆盖同名 Release 的正文与同名资产"
+          fi
+
+          echo "tag_exists=$TAG_EXISTS" >> "$GITHUB_OUTPUT"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "force=$IN_FORCE" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$IN_DRY_RUN" >> "$GITHUB_OUTPUT"
+          # 兼容旧变量名：原逻辑以「tag 不存在」作为发布闸门，现统一收敛到 publish
+          echo "publish_needed=$PUBLISH" >> "$GITHUB_OUTPUT"
+
+      # 4. 安装依赖（仅在确实需要构建时执行）
       - name: 安装依赖
+        if: steps.get_info.outputs.publish == 'true'
         run: |
           if [ -f requirements.txt ] && [ -s requirements.txt ]; then
             pip install -r requirements.txt
@@ -95,11 +137,13 @@ jobs:
 
       # 5. 创建插件目录
       - name: 创建插件目录
+        if: steps.get_info.outputs.publish == 'true'
         run: |
           mkdir -p "${{ steps.get_info.outputs.plugin_name }}"
 
       # 6. 复制插件文件到构建目录
       - name: 复制插件文件
+        if: steps.get_info.outputs.publish == 'true'
         run: |
           PLUGIN_NAME="${{ steps.get_info.outputs.plugin_name }}"
 
@@ -121,6 +165,7 @@ jobs:
 
       # 7. 打包为 zip 文件
       - name: 创建 zip 包
+        if: steps.get_info.outputs.publish == 'true'
         run: |
           PLUGIN_NAME="${{ steps.get_info.outputs.plugin_name }}"
 
@@ -133,6 +178,7 @@ jobs:
 
       # 7.1 校验发布包边界：只允许白名单文件，必需文件不得缺失
       - name: 校验发布包边界
+        if: steps.get_info.outputs.publish == 'true'
         run: |
           PLUGIN_NAME="${{ steps.get_info.outputs.plugin_name }}"
           ARTIFACT="${PLUGIN_NAME}.zip"
@@ -177,6 +223,7 @@ jobs:
       # 8. 生成 Release Notes
       - name: 生成 Release Notes
         id: release_notes
+        if: steps.get_info.outputs.publish == 'true'
         run: |
           # 从上一个版本标签生成发布说明：只认 vX.Y.Z 家族的 tag，
           # 否则 CI / 维护类的无关 tag 会被误当作上一版本，导致首次发布说明被抑制或漏掉提交
@@ -339,7 +386,7 @@ jobs:
       #      写死会在 tag 触发的场景判 2「签名身份不是我以为的那个」。
       - name: 生成证据包
         id: evidence
-        if: steps.get_info.outputs.tag_exists != 'true'
+        if: steps.get_info.outputs.publish == 'true'
         uses: xiaomizhoubaobei/ci-evidence-pack@53216365066a9fe64de178ab0184539ad253e355 # v0.0.2
         with:
           # 收集范围：插件 zip 产物 + 发布正文 + 构建输入清单。
@@ -363,7 +410,7 @@ jobs:
       # Action 内已按 fail-on-invalid 把步骤判红，这里再显式拦一道，确保后续
       # 发布步骤不会在「证据无效」的状态下继续（2 = 证据无效，3 = 工具异常）。
       - name: 校验证据包自检结论
-        if: steps.get_info.outputs.tag_exists != 'true'
+        if: steps.get_info.outputs.publish == 'true'
         env:
           VERIFY_CODE: ${{ steps.evidence.outputs.verify-exit-code }}
           VERIFY_OK: ${{ steps.evidence.outputs.verify-ok }}
@@ -380,7 +427,7 @@ jobs:
       # 只有那一处是权威的。读不出来不拦发布，但正文须如实写明「没有公开落点」。
       - name: 解析 Rekor 透明日志条目
         id: rekor
-        if: steps.get_info.outputs.tag_exists != 'true'
+        if: steps.get_info.outputs.publish == 'true'
         env:
           SIG_BUNDLE: ${{ steps.evidence.outputs.signature-bundle }}
         run: |
@@ -474,9 +521,14 @@ jobs:
           cat "$MARKDOWN"
           emit "$MARKDOWN"
 
-      # 10. 创建 GitHub Release（tag 已存在则跳过，避免覆盖既有 Release 的资产与正文）
+      # 10. 创建 GitHub Release
+      # 是否真的走到这里已由前面的 publish 闸门决定：
+      #   - tag 不存在 → 新建 Release（常规路径）；
+      #   - tag 已存在 + 勾选 force_republish → 覆盖同名 Release 的正文与同名资产
+      #     （action-gh-release 对已存在 Release 是 update 语义，同名文件按名替换，
+      #     不会堆出重复资产；但被删掉的旧资产不会自动清理，需要人工核实）。
       - name: 创建 GitHub Release
-        if: steps.get_info.outputs.tag_exists != 'true'
+        if: steps.get_info.outputs.publish == 'true'
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ steps.get_info.outputs.tag_name }}
@@ -531,7 +583,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 提示跳过发布
-        if: steps.get_info.outputs.tag_exists == 'true'
+      - name: 提示强制重新发布
+        if: steps.get_info.outputs.publish == 'true' && steps.get_info.outputs.force == 'true' && steps.get_info.outputs.tag_exists == 'true'
         run: |
-          echo "::notice::tag ${{ steps.get_info.outputs.tag_name }} 已存在，跳过本次 Release；如需重新发布请先提升 metadata.yaml 中的 version"
+          echo "::warning::本次为强制重新发布：tag ${{ steps.get_info.outputs.tag_name }} 已存在，Release 正文与同名资产已被覆盖，请人工核对是否残留旧资产"
+
+      - name: 提示跳过发布
+        if: steps.get_info.outputs.publish != 'true'
+        run: |
+          if [ "${{ steps.get_info.outputs.dry_run }}" = "true" ]; then
+            echo "::notice::试运行完成：zip 已生成但未发布。正式发布请取消勾选 dry_run"
+          else
+            echo "::notice::tag ${{ steps.get_info.outputs.tag_name }} 已存在，跳过本次 Release；如需重新发布请先提升 metadata.yaml 中的 version，或手动触发时勾选 force_republish"
+          fi
