@@ -42,7 +42,7 @@ jobs:
         # 本工作流会 pip install requirements.txt，出站域名随依赖变化而波动，
         # 阻断模式下的白名单极易因依赖新增而漏项，故回退为观察模式，
         # 与仓库内其余工作流口径统一（egress-policy: audit）。
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           egress-policy: audit
       - name: 检出仓库

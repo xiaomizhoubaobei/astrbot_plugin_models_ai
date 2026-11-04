@@ -47,7 +47,7 @@ jobs:
       # 故必须补齐该审计 Action；egress-policy: audit 仅审计出网调用，
       # 保持"记录不阻断"的既有策略，与其它工作流口径统一。
       - name: 加固运行器 (审计全部出网调用)
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           egress-policy: audit
 
@@ -152,7 +152,7 @@ jobs:
         python-version: ["3.13", "3.14", "3.15"]
     steps:
       - name: 加固运行器 (审计全部出网调用)
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           egress-policy: audit
 
