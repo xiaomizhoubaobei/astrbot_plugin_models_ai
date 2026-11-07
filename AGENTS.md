@@ -121,6 +121,15 @@ bash install_gpg_keys.sh
 - 创建 CNB PR 前，先检查本仓库 `.cnb.yml` 是否配置了到 Github 的同步/镜像能力（重点 grep `git-sync` / `github-mirror` / `sync-github` / `github.com` 等关键字）；若存在，则同步在 Github 镜像仓库创建完全一致的 PR。
 - 若 `.cnb.yml` 中**没有任何**同步到 Github 的 stage（如仅有 `docker build & push`、知识库更新、代码扫描、NPC 触发等），则该仓库不适用本条双端同步要求，本 PR 只需在 CNB 维护即可。
 
+#### 3.5.1 同步方向：镜像 PR 只做单程（Github → CNB 不建镜像 PR）
+
+- **镜像 PR 只走 CNB → Github 一个方向。** 变更的**原始出处是 Github** 时（Github 侧已有对应 PR / 提交，经同步链路进入 CNB），CNB 侧**不再创建镜像 PR**，也不得为它反向补一条"CNB 镜像 PR"：Github 侧那条 PR 就是唯一评审载体，CNB 侧只做同步落地与跟进。
+- **判定看出处，不看分支在哪**：先问"这次改动的原始 PR / 提交提在哪个平台"。
+  - 出处是 **Github** → 不建镜像 PR（本小节情形）；
+  - 出处是 **CNB**（Issue / PR 在 CNB 发起、由 NPC 在此派发）→ 按 3.5 正文在 Github 建同名同分支同内容的 PR。
+- **为什么必须单向**：两个方向各自建镜像 PR 会形成 PR 回环——同一份变更出现两条并行评审路径，评审、合并与后续同步互相打转，冲突与状态不一致全由此而来。
+- **例外**：使用者**明确要求**在 CNB 侧另开一条 PR 承接 Github 的变更时，才可破例创建，并在 PR 描述里写明"来源 Github PR <链接>，按要求另开"。
+
 ## 4. 持续集成与部署规范 (CI/CD - .cnb.yml)
 
 ### 4.1 配置文件规范
