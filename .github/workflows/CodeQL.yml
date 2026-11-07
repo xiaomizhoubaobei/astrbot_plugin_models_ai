@@ -48,7 +48,7 @@ jobs:
       # 曾短暂切换为 block + 白名单，因阻断模式下任何未覆盖端点都会直接
       # 让步骤失败（如 setup-python 回退拉取 versions-manifest.json），
       # 故按仓库统一策略回退为观察模式；后续如需收紧，先凭审计日志收敛白名单。
-      uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+      uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
       with:
         egress-policy: audit
 
