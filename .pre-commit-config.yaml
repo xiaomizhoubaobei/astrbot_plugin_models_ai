@@ -22,19 +22,19 @@ repos:
     # 不绑定 language_version：仅要求本机具备任意受支持的 Python，跨版本可跑通
     args: ['--target-version', 'py312']
 - repo: https://github.com/pycqa/flake8
-  rev: 7.4.1
+  rev: 7.5.0
   hooks:
   - id: flake8
     args: ['--max-line-length=100', '--extend-ignore=E203,W503']
 - repo: https://github.com/pycqa/isort
-  rev: 10.0.0b1
+  rev: 10.0.0b2
   hooks:
   - id: isort
     # isort 10+ 要求 Python >= 3.11；显式钉到 3.12，避免 CI 默认解释器（3.10）装不上该钩子
     language_version: python3.12
     args: ['--profile', 'black']
 - repo: https://github.com/pre-commit/mirrors-mypy
-  rev: v2.4.0
+  rev: v2.4.1
   hooks:
   - id: mypy
     additional_dependencies: [types-aiofiles]
