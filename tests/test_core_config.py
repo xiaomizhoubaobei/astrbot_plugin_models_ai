@@ -41,7 +41,7 @@ def test_resolve_provider_default_gitee() -> None:
 
 def test_resolve_provider_unknown_falls_back() -> None:
     """未知 provider 回退 gitee，并给出可诊断提示."""
-    provider, notice = cfg.resolve_provider({"provider": "openai"})
+    provider, notice = cfg.resolve_provider({"provider": "unknown-vendor"})
     assert provider == "gitee"
     assert notice and "未知的服务商" in notice
 

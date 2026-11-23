@@ -3,6 +3,7 @@
 支持 /ai 命令调用，支持多种图片比例和多 Key 轮询。
 """
 
+import json
 from typing import Any, AsyncGenerator
 
 from astrbot.api import logger
@@ -23,10 +24,12 @@ from .core import (
     DEFAULT_INFERENCE_STEPS,
     DEFAULT_MODEL,
     DEFAULT_NEGATIVE_PROMPT,
+    DEFAULT_OPENAI_BASE_URL,
     DEFAULT_QIANWEN_BASE_URL,
     DEFAULT_QIANWEN_MODEL,
     DEFAULT_QIANWEN_SIZE,
     DEFAULT_SIZE,
+    PROVIDER_OPENAI,
     PROVIDER_QIANWEN,
     ImageGenerationClient,
     RateLimiter,
@@ -37,6 +40,7 @@ from .core import (
 from .core.url_guard import build_allowed_hosts, extract_host
 from .gitee import GiteeAIClient, ModelLister
 from .llm_tools import draw_image_tool
+from .openai_compat import OpenAICompatibleClient
 from .qianwen import QianwenClient
 from .qianwen.model_config import is_supported_model
 
@@ -105,11 +109,14 @@ class AIImage(Star):
         # 否则插件可能被当作访问内网的跳板（详见 core/url_guard.py）。
         # 当前服务商的 API 端点主机自动纳入，避免自身端点反被拒；
         # 其余主机需经 allowed_image_hosts 显式追加。
-        effective_base_url = (
-            config.get("qianwen_base_url", DEFAULT_QIANWEN_BASE_URL)
-            if provider == PROVIDER_QIANWEN
-            else base_url
-        )
+        if provider == PROVIDER_QIANWEN:
+            effective_base_url = config.get(
+                "qianwen_base_url", DEFAULT_QIANWEN_BASE_URL
+            )
+        elif provider == PROVIDER_OPENAI:
+            effective_base_url = config.get("openai_base_url", DEFAULT_OPENAI_BASE_URL)
+        else:
+            effective_base_url = base_url
         self.image_allowed_hosts = build_allowed_hosts(
             provider_hosts=[extract_host(effective_base_url)],
             extra_hosts=_parse_allowed_hosts(config.get("allowed_image_hosts", "")),
@@ -137,6 +144,12 @@ class AIImage(Star):
                 default_size=default_size,
                 negative_prompt=negative_prompt,
             )
+        elif provider == PROVIDER_OPENAI:
+            self.api_client = self._build_openai_client(
+                config=config,
+                model=model,
+                default_size=default_size,
+            )
         else:
             self.api_client = GiteeAIClient(
                 api_keys=api_keys,
@@ -156,6 +169,66 @@ class AIImage(Star):
         )
 
         self.debug_log("插件初始化完成")
+
+    def _build_openai_client(
+        self,
+        config: dict,
+        model: str,
+        default_size: str,
+    ) -> OpenAICompatibleClient:
+        """构建通用 OpenAI 兼容上游客户端.
+
+        专用 Key 为空时回退到通用 ``api_key``，便于从 Gitee 迁移；base_url 与
+        额外请求体按配置透传，模型与尺寸复用跨服务商的统一字段。
+
+        Args:
+            config: 插件配置字典
+            model: 配置的模型名称
+            default_size: 配置的默认尺寸
+
+        Returns:
+            已初始化的通用 OpenAI 兼容客户端
+        """
+        openai_keys = parse_api_keys(config.get("openai_api_key", []))
+        if not openai_keys:
+            openai_keys = parse_api_keys(config.get("api_key", []))
+        openai_base_url = config.get("openai_base_url", DEFAULT_OPENAI_BASE_URL)
+
+        # extra_body 在配置层是 JSON 字符串，解析失败时忽略并告警，
+        # 避免一份写错的 JSON 让整个插件初始化失败
+        extra_body: dict[str, Any] | None = None
+        raw_extra_body = config.get("openai_extra_body")
+        if isinstance(raw_extra_body, dict):
+            extra_body = raw_extra_body
+        elif isinstance(raw_extra_body, str) and raw_extra_body.strip():
+            try:
+                parsed = json.loads(raw_extra_body)
+                if isinstance(parsed, dict):
+                    extra_body = parsed
+                else:
+                    logger.warning(
+                        "[AstrBot-GiteeAI] openai_extra_body 不是 JSON 对象，已忽略。"
+                    )
+            except json.JSONDecodeError:
+                logger.warning(
+                    "[AstrBot-GiteeAI] openai_extra_body 不是合法 JSON，已忽略。"
+                )
+
+        self.debug_log(
+            f"OpenAI 兼容上游参数: model={model}, size={default_size}, "
+            f"base_url={openai_base_url}, api_keys={len(openai_keys)}"
+        )
+
+        return OpenAICompatibleClient(
+            api_keys=openai_keys,
+            model=model,
+            default_size=default_size,
+            base_url=openai_base_url,
+            debug_mode=self.debug_mode,
+            extra_body=extra_body,
+            allowed_image_hosts=sorted(self.image_allowed_hosts),
+            allow_any_image_host=self.allow_any_image_host,
+        )
 
     def _build_qianwen_client(
         self,

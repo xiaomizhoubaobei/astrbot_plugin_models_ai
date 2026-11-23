@@ -3,10 +3,11 @@
         "description": "服务商",
         "type": "string",
         "default": "gitee",
-        "hint": "可选 gitee(Gitee AI) 或 qianwen(千问云，含 Qwen-Image / 万相 wan2.x / z-image)。切换到 qianwen 后，生图命令与 LLM 生图工具统一调用千问云接口",
+        "hint": "可选 gitee(Gitee AI)、qianwen(千问云，含 Qwen-Image / 万相 wan2.x / z-image)、openai(任意 OpenAI Images API 兼容上游)。切换后生图命令与 LLM 生图工具统一调用对应服务商接口",
         "options": [
             "gitee",
-            "qianwen"
+            "qianwen",
+            "openai"
         ],
         "obvious_hint": true
     },
@@ -51,6 +52,26 @@
         "type": "bool",
         "default": true,
         "hint": "开启后模型增强推理能力以提升出图质量，但会增加生成耗时；仅在 prompt_extend 开启且模型为 qwen-image-3.0 系列 / qwen-image-2.1-pro 时生效"
+    },
+    "openai_api_key": {
+        "description": "OpenAI 兼容上游 API 密钥（支持多 Key 轮询）",
+        "type": "list",
+        "hint": "仅 provider=openai 时生效；留空时回退使用通用 api_key。支持逗号分隔字符串或列表",
+        "default": [],
+        "obvious_hint": true
+    },
+    "openai_base_url": {
+        "description": "OpenAI 兼容上游 API 基础地址",
+        "type": "string",
+        "default": "https://api.openai.com/v1",
+        "hint": "任意兼容 /v1/images/generations 与 /v1/models 协议的网关地址，末尾不要带 /images/generations",
+        "obvious_hint": true
+    },
+    "openai_extra_body": {
+        "description": "OpenAI 兼容上游额外请求体（JSON 对象）",
+        "type": "string",
+        "default": "",
+        "hint": "可选；需要向上游透传私有参数时填写 JSON 对象字符串，如 {\"response_format\":\"b64_json\"}。留空则不透传"
     },
     "model": {
         "description": "使用的模型名称",
