@@ -28,7 +28,14 @@ async def help_command(
     if hasattr(plugin, "config"):
         provider = str(plugin.config.get("provider", "gitee")).strip().lower()
 
-    if provider == "qianwen":
+    if provider == "openai":
+        provider_section = (
+            "🌐 当前服务商: OpenAI 兼容上游 (openai)\n"
+            "  接口: /v1/images/generations、/v1/models、/v1/images/edits\n"
+            "  模型: 由配置 model 决定，可用 /ai-gitee text2image 查询上游列表\n"
+            "  注意: 图生图与图片编辑需上游支持标准 images/edits 接口\n"
+        )
+    elif provider == "qianwen":
         provider_section = (
             "🌐 当前服务商: 千问云 (Qwen / 万相)\n"
             "  可用模型: z-image-turbo / wan2.6-t2i / wan2.5-t2i-preview\n"

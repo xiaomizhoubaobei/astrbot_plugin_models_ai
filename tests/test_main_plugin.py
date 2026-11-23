@@ -36,7 +36,7 @@ def test_default_provider_is_gitee() -> None:
 
 def test_unknown_provider_falls_back_to_gitee() -> None:
     """未知 provider 回退 Gitee，且不装配千问云客户端."""
-    plugin = _make_plugin({"provider": "openai", "api_key": "k1"})
+    plugin = _make_plugin({"provider": "unknown-vendor", "api_key": "k1"})
     assert isinstance(plugin.api_client, GiteeAIClient)
 
 

@@ -8,16 +8,46 @@
 | --- | --- | --- |
 | `gitee`（默认） | Gitee AI | 文生图、图生图、风格转换、AI 图片编辑、模型列表查询 |
 | `qianwen` | 千问云（platform.qianwenai.com） | 文生图（Qwen-Image / 万相 / Z-Image 系列）；图片编辑与图生图暂不支持 |
+| `openai` | 任意 OpenAI Images API 兼容上游 | 文生图、模型列表、标准 `images/edits` 图片编辑与图生图 |
 
 ## 配置项
 
 | 配置项 | 说明 |
 | --- | --- |
-| `provider` | `gitee` 或 `qianwen` |
+| `provider` | `gitee`、`qianwen` 或 `openai` |
 | `qianwen_api_key` | 千问云 API Key，仅 `provider=qianwen` 时生效，支持多 Key 轮询 |
 | `qianwen_base_url` | 千问云 API 基础地址，默认 `https://maas.qianwenaiapi.com/api/v1` |
 | `qianwen_prompt_extend` | 是否开启提示词自动扩写（部分模型不支持，会自动忽略） |
 | `model` / `size` | 跨服务商共用；千问云会自动把尺寸的 `宽x高` 转成官方要求的 `宽*高` |
+| `openai_api_key` | OpenAI 兼容上游 API Key，仅 `provider=openai` 生效；留空回退到通用 `api_key`，支持多 Key 轮询 |
+| `openai_base_url` | 上游基础地址，默认 `https://api.openai.com/v1`；填写到 `/v1` 即可，不要拼上 `/images/generations` |
+| `openai_extra_body` | 可选 JSON 对象字符串，向兼容上游透传私有请求字段（如 `{"response_format":"b64_json"}`）；留空不透传 |
+
+## OpenAI 兼容上游（provider=openai）
+
+只要上游实现以下三个标准端点，即可通过配置接入，无需改代码：
+
+| 能力 | 端点 |
+| --- | --- |
+| 文生图 | `POST {openai_base_url}/images/generations` |
+| 模型列表 | `GET {openai_base_url}/models` |
+| 图片编辑 / 图生图 | `POST {openai_base_url}/images/edits` |
+
+最小配置示例：
+
+```yaml
+provider: openai
+openai_api_key: ["your-key"]        # 留空则使用通用 api_key
+openai_base_url: "https://your-gateway.com/v1"
+model: "your-image-model"
+size: "1024x1024"
+```
+
+说明：
+
+- 生图结果同时兼容 `url` 与 `b64_json` 两种返回格式，URL 取图受出站主机白名单约束。
+- 图片编辑走标准 multipart 文件上传，`task_types` / `num_inference_steps` 等 Gitee 专有参数不透传；上游若不提供 `images/edits`，对应命令会报明确错误。
+- `openai_extra_body` 仅在你确认上游需要私有字段时填写，非法 JSON 会被忽略并告警，不影响插件初始化。
 
 ## 千问云支持的模型
 

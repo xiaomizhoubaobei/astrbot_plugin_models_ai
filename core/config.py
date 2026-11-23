@@ -89,12 +89,21 @@ def parse_api_keys(api_keys: Any) -> list[str]:
 # 服务商配置（provider）
 PROVIDER_GITEE = "gitee"
 PROVIDER_QIANWEN = "qianwen"  # 千问云（万相 / Qwen-Image / Z-Image）
-SUPPORTED_PROVIDERS: list[str] = [PROVIDER_GITEE, PROVIDER_QIANWEN]
+PROVIDER_OPENAI = "openai"  # 任意 OpenAI Images API 兼容上游
+SUPPORTED_PROVIDERS: list[str] = [
+    PROVIDER_GITEE,
+    PROVIDER_QIANWEN,
+    PROVIDER_OPENAI,
+]
+
+# 通用 OpenAI 兼容上游默认地址（指向 OpenAI 官方，用户可覆盖为任意兼容网关）
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 # 各服务商对应的 API Key 配置项，便于按 provider 取用正确的 Key
 PROVIDER_API_KEY_FIELDS: dict[str, str] = {
     PROVIDER_GITEE: "api_key",
     PROVIDER_QIANWEN: "qianwen_api_key",
+    PROVIDER_OPENAI: "openai_api_key",
 }
 
 
