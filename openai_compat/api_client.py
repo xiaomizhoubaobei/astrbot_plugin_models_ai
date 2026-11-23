@@ -377,9 +377,7 @@ class OpenAICompatibleClient:
                 payloads.append((name, content, mime))
             else:
                 with open(filepath, "rb") as handle:
-                    payloads.append(
-                        (name, handle.read(), "application/octet-stream")
-                    )
+                    payloads.append((name, handle.read(), "application/octet-stream"))
 
         async def _request():
             """执行一次标准图片编辑请求."""
